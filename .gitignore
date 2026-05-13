@@ -1,0 +1,35 @@
+# Build products
+build/
+out/
+cmake-build-*/
+third_party/
+*.exe
+*.dll
+*.lib
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.manifest
+
+# IDE / local state
+.vs/
+.vscode/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+
+# Audio/editor scratch
+*.wav
+*.aif
+*.aiff
+*.flac
+*.mp3
+*.ogg
+*.tmp
+*.log
+
+# OS noise
+Thumbs.db
+Desktop.ini
