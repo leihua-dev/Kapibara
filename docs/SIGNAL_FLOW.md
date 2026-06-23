@@ -1,52 +1,74 @@
 # Signal Flow
 
-Realtime audio path:
-
 ```text
-MIDI / keyboard
--> SynthCore event queue
--> Voice or SamplePlaybackEngine
--> MatrixEngine control update
--> Voice render
--> Tone FX
--> ResamplingEngine / SampleCraft
--> Mix FX
--> output safety buffer
--> audio device
+MIDI note
+  -> MotifForgeSeedPlugin  (DPF MIDI handler)
+  -> SynthCore::noteOn()   (voice allocation, snapshot freeze)
+  -> RenderSnapshot        (immutable read-only render state)
+  -> Voice x N             (wavetable oscillators + unison + per-voice ADSR)
+       -> MatrixEngine     (LFO / ENV modulation applied per control-rate block)
+  -> Effects               (Seed tone FX: EQ + filter)
+  -> Output gain + safety limiter
 ```
 
-Spectral Seed path:
+## Note Events
+
+The on-screen keyboard calls `MotifForgeSeedPlugin::previewNoteOn()` /
+`previewNoteOff()`, which forward to `SynthCore::noteOn()` / `noteOff()`.
+External DPF MIDI events are handled in `MotifForgeSeedPlugin::run()` and
+forwarded to the same lock-free MIDI queue inside `SynthCore`. Panic calls
+`SynthCore::allNotesOff()`.
+
+Every note-on freezes the current master envelope plus each Source Track Amp
+Envelope onto the newly allocated voice. Later UI changes publish a new
+`RenderSnapshot`; currently held voices pick up track ranges and strip state
+at control-rate boundaries (every 32 samples).
+
+## Seed Render State
+
+`SynthCore::publishSnapshotNoLock()` expands the current `SeedPatch`
+(`model/CompositionModel.h`) into one immutable `RenderSnapshot`.
+
+- `Partial Bank` tracks contribute their own additive partial bank.
+- `Meta Oscillator` tracks contribute a multi-frame wavetable (baked by
+  `dsp/Generators`).
+- `Basic Oscillator` and `Sample / Noise` tracks are converted into bounded
+  partial render data within the safety budget (max 64 partial lanes,
+  16 source tracks).
+
+The flattened wavetable state is read-only during audio rendering.
+
+## Wavetable Pipeline (UI thread only)
 
 ```text
-Generator params
--> GeneratorBank
--> SpectralTimeline
--> OperatorChain
--> MatrixEngine
--> Voice render
+WAV import / TIME draw / SPECTRUM edit
+  -> FFT analysis + phase alignment  (dsp/Generators)
+  -> frame morphing / reorder        (dsp/Generators)
+  -> band-limited mip cache bake     (dsp/Generators, 11 mip levels)
+  -> publishSnapshotNoLock()
+  -> immutable RenderSnapshot        (audio thread reads from here)
 ```
 
-Functional sample path:
+File I/O, FFT, phase alignment, and frame morphing never run in the audio
+callback.
 
-```text
-sample file
--> offline analysis / track linking
--> FunctionalSpectralSource cache
--> bakeToTimeline
--> SpectralTimeline
-```
+## Modulation
 
-Ordinary sample path:
+`MatrixEngine` (`engine/MatrixEngine`) evaluates at control rate (every 32
+samples):
 
-```text
-sample file
--> SamplePlaybackEngine
--> keyboard pitch control
--> Tone FX / Resampling / Mix FX
-```
+- 4 global LFOs with asymmetric shape (ξ, ρ, p\_up, p\_down)
+- 4 per-voice ENV breakpoint curves (`MatrixEnvParams::points`)
+- 16 routing rules mapping sources (LFO, ENV, velocity, key-track, chaos,
+  random, per-voice ADSR) to global partial destinations or a stable track ID
+- Realtime-safe track destinations include gain, pan, Meta pitch, Morph and Warp
+- Weight functions restrict rules to partial frequency bands (low/mid/high μ
+  groups)
 
-Realtime-safety notes:
+`Freq` destination interprets rule depth as octaves (`2^depth`), allowing wide
+pitch sweeps. `Amp` destination is clamped to a non-negative gain multiplier.
 
-- Functional sample analysis is offline/control-thread work.
-- Audio render must not run FFT, file load, JSON parse, or heap-heavy analysis.
-- The final output safety buffer is a last-resort anti-pop/anti-clip guard, not a substitute for gain staging.
+## Output
+
+Seed tone FX (`dsp/Effects`: 3-band EQ + multi-mode filter) process the
+rendered voice mix. Global gain and output safety limiting are applied last.

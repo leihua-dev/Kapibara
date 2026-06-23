@@ -46,6 +46,14 @@ float envCurveEval(EnvCurve mode, float tau, float eta)
     return tau;
 }
 
+float adsrCurveEval(float tau, float curve)
+{
+    tau = clampf(tau, 0.0f, 1.0f);
+    curve = clampf(curve, 0.0f, 1.0f);
+    const float exponent = std::pow(2.0f, (0.5f - curve) * 6.0f);
+    return std::pow(tau, std::max(0.05f, exponent));
+}
+
 // -----------------------------------------------------------------------------
 // Lfo
 // -----------------------------------------------------------------------------
@@ -123,11 +131,13 @@ void MatrixEngine::reset()
 }
 
 void MatrixEngine::setParams(const std::array<LfoParams, kMaxLfos> &lfos,
+                             const std::array<MatrixEnvParams, kMaxModEnvs> &envs,
                              const std::array<MatrixRule, kMaxMatrixRules> &rules,
                              const ChaosParams &chaos,
                              const ShapeSourceParams &shape)
 {
     lfoParams_ = lfos;
+    envParams_ = envs;
     rules_ = rules;
     chaosParams_ = chaos;
     shapeParams_ = shape;
@@ -141,6 +151,15 @@ void MatrixEngine::setLfoParams(int idx, const LfoParams &p)
 LfoParams MatrixEngine::getLfoParams(int idx) const
 {
     return (idx >= 0 && idx < kMaxLfos) ? lfoParams_[(size_t)idx] : LfoParams {};
+}
+void MatrixEngine::setEnvParams(int idx, const MatrixEnvParams &p)
+{
+    if(idx >= 0 && idx < kMaxModEnvs)
+        envParams_[(size_t)idx] = p;
+}
+MatrixEnvParams MatrixEngine::getEnvParams(int idx) const
+{
+    return (idx >= 0 && idx < kMaxModEnvs) ? envParams_[(size_t)idx] : MatrixEnvParams {};
 }
 void MatrixEngine::setChaosParams(const ChaosParams &p) { chaosParams_ = p; }
 ChaosParams MatrixEngine::getChaosParams() const { return chaosParams_; }
@@ -242,7 +261,12 @@ void MatrixEngine::evaluateForVoice(MatrixVoiceOutput &out,
                                     float velocity,
                                     float keyTrack01,
                                     float adsrLevel,
-                                    float randPerVoice) const
+                                    const std::array<float, kMaxModEnvs> &envLevels,
+                                    float randPerVoice,
+                                    const uint32_t *trackIds,
+                                    const int *trackBegin,
+                                    const int *trackEnd,
+                                    int trackCount) const
 {
     initMatrixOutput(out);
 
@@ -259,14 +283,19 @@ void MatrixEngine::evaluateForVoice(MatrixVoiceOutput &out,
     const float logMax = std::log(std::max(1e-6f, maxNu));
 
     auto sourceValue = [&](ModSource s, int partialIndex) -> float {
-        if(s >= ModSource::Lfo1 && s <= ModSource::Lfo8)
+        if(s >= ModSource::Lfo1 && s <= ModSource::Lfo4)
             return lfoLastValue_[(size_t)((int)s - (int)ModSource::Lfo1)];
+        if(s >= ModSource::Env1 && s <= ModSource::Env4)
+        {
+            const int idx = (int)s - (int)ModSource::Env1;
+            return envParams_[(size_t)idx].enabled ? clampf(envLevels[(size_t)idx], 0.0f, 1.0f) : 0.0f;
+        }
         switch(s)
         {
             case ModSource::Velocity: return velocity * 2.0f - 1.0f;
             case ModSource::KeyTrack: return keyTrack01 * 2.0f - 1.0f;
             case ModSource::Random:   return randPerVoice * 2.0f - 1.0f;
-            case ModSource::Adsr:     return adsrLevel * 2.0f - 1.0f;
+            case ModSource::Adsr:     return clampf(adsrLevel, 0.0f, 1.0f);
             case ModSource::GeneratorSelf:
             {
                 const float ln = std::log(std::max(1e-6f, frame.nu[partialIndex]));
@@ -294,15 +323,27 @@ void MatrixEngine::evaluateForVoice(MatrixVoiceOutput &out,
         const auto &rule = rules_[(size_t)r];
         if(!rule.enabled || rule.source == ModSource::None || std::abs(rule.depth) < 1e-6f)
             continue;
-        const float mScalar = sourceValue(rule.source, 0);
-        if(rule.dest == ModDestination::DecayTime)
-        {
-            // Single scalar effect on voice decay scaling: 1 + alpha * m.
-            out.decayTimeMul *= clampf(1.0f + rule.depth * mScalar, 0.05f, 8.0f);
+        // Insert-parameter destinations are handled globally (per-strip) by SynthCore.
+        if(insertModParamForDest(rule.dest) >= 0)
             continue;
+        int begin = 0;
+        int end = N;
+        if(rule.targetTrackId != 0)
+        {
+            begin = end = 0;
+            for(int t = 0; t < trackCount; ++t)
+            {
+                if(trackIds != nullptr && trackIds[t] == rule.targetTrackId)
+                {
+                    begin = std::clamp(trackBegin != nullptr ? trackBegin[t] : 0, 0, N);
+                    end = std::clamp(trackEnd != nullptr ? trackEnd[t] : N, begin, N);
+                    break;
+                }
+            }
+            if(begin >= end)
+                continue;
         }
-
-        for(int i = 0; i < N; ++i)
+        for(int i = begin; i < end; ++i)
         {
             const float m = sourceValue(rule.source, i);
             const float w = weightFn(rule, i, frame);
@@ -310,18 +351,63 @@ void MatrixEngine::evaluateForVoice(MatrixVoiceOutput &out,
             switch(rule.dest)
             {
                 case ModDestination::Amp:
-                    out.mAmp[i] *= clampf(1.0f + contrib, 0.0f, 8.0f);
+                    out.mAmp[i] *= clampf(1.0f + contrib, 0.0f, 32.0f);
                     break;
                 case ModDestination::Freq:
-                    out.mFreq[i] *= clampf(1.0f + 0.5f * contrib, 0.05f, 8.0f);
+                    out.mFreq[i] *= std::pow(2.0f, clampf(contrib, -12.0f, 12.0f));
                     break;
                 case ModDestination::Phase:
                     out.dPhase[i] += contrib * kPi; // depth=1 -> +/- pi swing
                     break;
                 case ModDestination::DecayTime:
-                    break; // already handled
+                    break;
+                case ModDestination::SpectralDecay:
+                    break;
+                case ModDestination::TrackGain:
+                    out.mAmp[i] *= clampf(1.0f + contrib, 0.0f, 4.0f);
+                    break;
+                case ModDestination::TrackPan:
+                case ModDestination::MetaPan:
+                    out.dPan[i] += contrib;
+                    break;
+                case ModDestination::PitchOct:
+                    out.mFreq[i] *= std::pow(2.0f, clampf(contrib, -4.0f, 4.0f));
+                    break;
+                case ModDestination::PitchSem:
+                    out.mFreq[i] *= std::pow(2.0f, clampf(contrib, -48.0f, 48.0f) / 12.0f);
+                    break;
+                case ModDestination::PitchFine:
+                case ModDestination::PitchCrs:
+                    out.mFreq[i] *= std::pow(2.0f, clampf(contrib, -400.0f, 400.0f) / 1200.0f);
+                    break;
+                case ModDestination::MetaMorph:
+                    out.dMorph[i] += contrib;
+                    break;
+                case ModDestination::MetaWarp:
+                    out.dWarp[i] += contrib;
+                    break;
+                default: // effect-parameter destinations handled in evaluateEffectMod
+                    break;
             }
         }
+    }
+}
+
+float MatrixEngine::globalModSource(ModSource s, float adsrRep, const std::array<float, kMaxModEnvs> &envRep) const
+{
+    if(s >= ModSource::Lfo1 && s <= ModSource::Lfo4)
+        return lfoLastValue_[(size_t)((int)s - (int)ModSource::Lfo1)];
+    if(s >= ModSource::Env1 && s <= ModSource::Env4)
+    {
+        const int idx = (int)s - (int)ModSource::Env1;
+        return envParams_[(size_t)idx].enabled ? clampf(envRep[(size_t)idx], 0.0f, 1.0f) : 0.0f;
+    }
+    switch(s)
+    {
+        case ModSource::Adsr:  return clampf(adsrRep, 0.0f, 1.0f);
+        case ModSource::Chaos: return chaosValue_;
+        case ModSource::Shape: return shapeOutput(shapeParams_, 0.5f);
+        default:               return 0.0f; // per-voice-only sources are n/a for per-strip FX
     }
 }
 

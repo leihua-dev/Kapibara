@@ -9,27 +9,21 @@ namespace synth
 {
 
 // Architectural scaling constants. See SpectralTimeline 中心架构.md sections 4 / 6 / 7.
-constexpr int kMaxPartials = 256;      // N hard cap per StaticSpectralFrame.
-                                       // Effective N is dynamically capped by floor(20000/f0)
-                                       // (Nyquist / audible bound). See §8.2.
-constexpr int kMaxUnison = 16;         // U: per-voice unison sub-voices (§4 Unison).
+constexpr int kMaxPartials = 500;      // N hard cap per StaticSpectralFrame.
+constexpr int kMaxUnison = 16;         // U: unison spread parameter upper bound (§4 Unison).
 constexpr int kMaxTimelineFrames = 32; // T: source-intrinsic frames per SpectralTimeline
 constexpr int kMaxVoices = 16;         // V: polyphony budget (§7)
-constexpr int kMaxLfos = 8;            // §3.8 lfo shape View *8
+constexpr int kMaxLfos = 4;            // §3.8 lfo shape View *4
+constexpr int kMaxModEnvs = 4;         // Matrix ENV scalar sources per voice
+constexpr int kMaxAmpEnvs = 4;         // Shared ADSR envelopes referenced by source tracks
 constexpr int kMaxMatrixRules = 16;    // R_k count (§3.6)
 constexpr int kControlBlockSize = 32;  // control-rate granularity (§6)
-constexpr float kAudibleMaxHz = 20000.0f; // upper bound for partial-count auto cap.
 
-// Returns the maximum useful partial count for a given root frequency,
-// i.e. the largest N such that N * refHz <= kAudibleMaxHz (and <= kMaxPartials).
+// Manual UI helper. It does not impose a realtime partial budget.
 inline int maxPartialCountForRefHz(float refHz)
 {
-    if(refHz <= 1.0f)
-        return kMaxPartials;
-    const int n = (int)std::floor(kAudibleMaxHz / refHz);
-    if(n < 1) return 1;
-    if(n > kMaxPartials) return kMaxPartials;
-    return n;
+    (void)refHz;
+    return kMaxPartials;
 }
 
 enum class FreqMode : uint8_t
@@ -47,8 +41,7 @@ enum class PhaseInitMode : uint8_t
 };
 
 // P_i^src = (nu_i, a_i, x_i, mu_i) per architecture §0.
-// Plus: per-partial ADSR scaling and phase init / dynamic phase metadata.
-// Audio-rate theta_i is still owned by Voice (§0.3).
+// Plus phase init / dynamic phase metadata. Audio-rate theta_i is still owned by Voice (§0.3).
 struct StaticSpectralFrame
 {
     int partialCount = 32;
@@ -68,17 +61,6 @@ struct StaticSpectralFrame
     std::array<float, kMaxPartials> phaseDriftHz {};
     std::array<float, kMaxPartials> phaseJitter {};
 
-    // Per-partial ADSR scaling (multiplies global ADSR times). 1.0 = same as global.
-    // Enables physical behavior such as high partials decaying faster (§3.5 partial-specific ADSR).
-    std::array<float, kMaxPartials> attackScale {};
-    std::array<float, kMaxPartials> decayScale {};
-    std::array<float, kMaxPartials> sustainLevel {};
-    std::array<float, kMaxPartials> releaseScale {};
-
-    // Optional reference ADSR times in seconds, expressed for partial 0. When > 0
-    // they let downstream stages (e.g. SamplePartialSet's baked timeline envelope)
-    // recover the absolute attack/decay/release of the underlying recording.
-    // attackScale[i] etc. remain relative ratios so global ADSR scaling still works.
     float refAttackSec = 0.0f;
     float refDecaySec = 0.0f;
     float refReleaseSec = 0.0f;
@@ -86,10 +68,6 @@ struct StaticSpectralFrame
 
 inline void initFrameDefaults(StaticSpectralFrame &f)
 {
-    f.attackScale.fill(1.0f);
-    f.decayScale.fill(1.0f);
-    f.sustainLevel.fill(1.0f);
-    f.releaseScale.fill(1.0f);
     f.phaseDriftHz.fill(0.0f);
     f.phaseJitter.fill(0.0f);
     f.refAttackSec = 0.0f;
@@ -162,10 +140,6 @@ inline StaticSpectralFrame interpolateFrames(const StaticSpectralFrame &a,
         out.phaseLocked[i] = lerpAngle(a.phaseLocked[i], b.phaseLocked[i], x);
         out.phaseDriftHz[i] = lerpFloat(a.phaseDriftHz[i], b.phaseDriftHz[i], x);
         out.phaseJitter[i] = lerpFloat(a.phaseJitter[i], b.phaseJitter[i], x);
-        out.attackScale[i] = lerpFloat(a.attackScale[i], b.attackScale[i], x);
-        out.decayScale[i] = lerpFloat(a.decayScale[i], b.decayScale[i], x);
-        out.sustainLevel[i] = lerpFloat(a.sustainLevel[i], b.sustainLevel[i], x);
-        out.releaseScale[i] = lerpFloat(a.releaseScale[i], b.releaseScale[i], x);
     }
     out.refAttackSec = lerpFloat(a.refAttackSec, b.refAttackSec, x);
     out.refDecaySec = lerpFloat(a.refDecaySec, b.refDecaySec, x);

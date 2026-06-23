@@ -1,8 +1,10 @@
 #pragma once
 
-#include "SpectralFrame.h"
+#include "model/SpectralFrame.h"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 
 namespace synth
@@ -10,7 +12,8 @@ namespace synth
 
 // Architecture §3 Matrix / Performance Mapping.
 // Provides:
-//   - 8 LFOs with the asymmetric shape from §3.8 (xi, rho_lfo, p_u, p_d).
+//   - 4 LFOs with the asymmetric shape from §3.8 (xi, rho_lfo, p_u, p_d).
+//   - 4 per-voice scalar ENV sources.
 //   - Envelope shape library §3.5 (Exp / Power / Sigmoid).
 //   - Up to 16 matrix rules R_k = (m_k, d_k, alpha_k, T_k, W_k).
 //   - Per-block output of M_i^amp[i], M_i^freq[i], Delta_phi_i[i].
@@ -91,19 +94,81 @@ enum class EnvCurve : uint8_t
 
 float envCurveEval(EnvCurve mode, float tau, float eta); // F~(tau; mode, eta)
 
-struct GlobalAdsrParams
+static constexpr int kMaxMatrixEnvPoints = 16;
+
+struct MatrixEnvPoint
 {
+    float x = 0.0f;
+    float y = 0.0f;
+    float curve = 0.0f;
+
+    constexpr MatrixEnvPoint() = default;
+    constexpr MatrixEnvPoint(float xIn, float yIn, float curveIn)
+        : x(xIn), y(yIn), curve(curveIn)
+    {
+    }
+};
+
+struct AdsrParams
+{
+    float attack = 0.005f;
+    float decay = 0.35f;
+    float sustain = 0.0f;
+    float release = 0.08f;
+    float curve = 0.5f;
+};
+
+float adsrCurveEval(float tau, float curve);
+
+struct MatrixEnvParams
+{
+    bool enabled = false;
     float attack = 0.01f;
     float decay = 0.20f;
-    float sustain = 0.70f;
-    float release = 0.40f;
+    float sustain = 0.0f;
+    float release = 0.30f;
     EnvCurve attackCurve = EnvCurve::Exp;
     EnvCurve decayCurve = EnvCurve::Exp;
     EnvCurve releaseCurve = EnvCurve::Exp;
     float etaA = 4.0f;
     float etaD = 4.0f;
     float etaR = 4.0f;
+    int pointCount = 4;
+    std::array<MatrixEnvPoint, kMaxMatrixEnvPoints> points {
+        MatrixEnvPoint { 0.0f, 0.0f, 0.0f },
+        MatrixEnvPoint { 0.02f, 1.0f, 0.0f },
+        MatrixEnvPoint { 0.42f, 0.0f, 0.0f },
+        MatrixEnvPoint { 1.0f, 0.0f, 0.0f }
+    };
 };
+
+inline float matrixEnvSegmentValue(const MatrixEnvPoint &a, const MatrixEnvPoint &b, float t)
+{
+    t = std::clamp(t, 0.0f, 1.0f);
+    const float curve = std::clamp(a.curve, -1.0f, 1.0f);
+    const float shaped = curve >= 0.0f ? std::pow(t, 1.0f + curve * 4.0f)
+                                       : 1.0f - std::pow(1.0f - t, 1.0f - curve * 4.0f);
+    return a.y + (b.y - a.y) * shaped;
+}
+
+inline float matrixEnvBreakpointEval(const MatrixEnvParams &p, float x)
+{
+    const int count = std::clamp(p.pointCount, 2, kMaxMatrixEnvPoints);
+    x = std::clamp(x, 0.0f, 1.0f);
+    if(x <= p.points[0].x)
+        return std::clamp(p.points[0].y, 0.0f, 1.0f);
+    for(int i = 0; i + 1 < count; ++i)
+    {
+        const auto &a = p.points[(size_t)i];
+        const auto &b = p.points[(size_t)i + 1];
+        if(x <= b.x || i + 2 == count)
+        {
+            const float span = std::max(0.0001f, b.x - a.x);
+            return std::clamp(matrixEnvSegmentValue(a, b, (x - a.x) / span), 0.0f, 1.0f);
+        }
+    }
+    return std::clamp(p.points[(size_t)count - 1].y, 0.0f, 1.0f);
+}
 
 // -----------------------------------------------------------------------------
 // Matrix rule
@@ -111,7 +176,8 @@ struct GlobalAdsrParams
 enum class ModSource : uint8_t
 {
     None = 0,
-    Lfo1 = 1, Lfo2, Lfo3, Lfo4, Lfo5, Lfo6, Lfo7, Lfo8,
+    Lfo1 = 1, Lfo2, Lfo3, Lfo4,
+    Env1 = 5, Env2, Env3, Env4,
     Velocity = 9,
     KeyTrack = 10,
     Random = 11,
@@ -126,8 +192,44 @@ enum class ModDestination : uint8_t
     Amp = 0,         // M_i^amp
     Freq = 1,        // M_i^freq
     Phase = 2,       // Delta phi_i
-    DecayTime = 3    // scales global decay (channel 0 of voice ADSR)
+    DecayTime = 3,   // legacy destination; ignored by the v0.4 ADSR path
+    SpectralDecay = 4,// legacy destination; ignored by the v0.4 ADSR path
+    TrackGain = 5,
+    TrackPan,
+    PitchOct,
+    PitchSem,
+    PitchFine,
+    PitchCrs,
+    MetaMorph,
+    MetaWarp,
+    MetaPan,
+    // Generic insert-parameter destinations (target an insert via MatrixRule::targetSlot
+    // = insert index in the track's chain). Param meaning is per-effect-type (knob 0..3).
+    InsertP0,
+    InsertP1,
+    InsertP2,
+    InsertP3
 };
+
+constexpr int kModDestinationCount = int(ModDestination::InsertP3) + 1;
+
+// Per-strip insert modulation: matrix can modulate the first kMaxModInserts inserts of a
+// track, 4 knob params each. Indexed [insertIdx * kInsertModParams + param].
+constexpr int kMaxModInserts = 8;
+constexpr int kInsertModParams = 4;
+inline int insertModIndex(int insertIdx, int param) { return insertIdx * kInsertModParams + param; }
+// Maps an insert-param ModDestination to its knob index (0..3), or -1 if not one.
+inline int insertModParamForDest(ModDestination d)
+{
+    switch(d)
+    {
+        case ModDestination::InsertP0: return 0;
+        case ModDestination::InsertP1: return 1;
+        case ModDestination::InsertP2: return 2;
+        case ModDestination::InsertP3: return 3;
+        default: return -1;
+    }
+}
 
 enum class WeightMode : uint8_t
 {
@@ -145,10 +247,12 @@ struct MatrixRule
     bool enabled = false;
     ModSource source = ModSource::None;
     ModDestination dest = ModDestination::Amp;
-    float depth = 0.0f;       // alpha_k in -2..+2
+    float depth = 0.0f;       // alpha_k; UI exposes roughly -12..+12 for wide pitch/phase sweeps
     WeightMode weight = WeightMode::All;
     int bandLo = 0;           // for WeightMode::BandIndex
     int bandHi = kMaxPartials;
+    uint32_t targetTrackId = 0; // 0 keeps legacy global-partial routing
+    int targetSlot = 0;        // bank slot (0..7) for filter/dist effect destinations
 };
 
 // -----------------------------------------------------------------------------
@@ -159,7 +263,9 @@ struct MatrixVoiceOutput
     std::array<float, kMaxPartials> mAmp {};   // M_i^amp[i]  (multiplicative)
     std::array<float, kMaxPartials> mFreq {};  // M_i^freq[i] (multiplicative)
     std::array<float, kMaxPartials> dPhase {}; // Delta phi_i[i] (additive radians)
-    float decayTimeMul = 1.0f;
+    std::array<float, kMaxPartials> dPan {};   // additive pan offset
+    std::array<float, kMaxPartials> dMorph {}; // additive wavetable morph offset
+    std::array<float, kMaxPartials> dWarp {};  // additive wavetable warp offset
 };
 
 inline void initMatrixOutput(MatrixVoiceOutput &o)
@@ -167,7 +273,9 @@ inline void initMatrixOutput(MatrixVoiceOutput &o)
     o.mAmp.fill(1.0f);
     o.mFreq.fill(1.0f);
     o.dPhase.fill(0.0f);
-    o.decayTimeMul = 1.0f;
+    o.dPan.fill(0.0f);
+    o.dMorph.fill(0.0f);
+    o.dWarp.fill(0.0f);
 }
 
 // -----------------------------------------------------------------------------
@@ -180,12 +288,15 @@ class MatrixEngine
     void reset();
 
     void setParams(const std::array<LfoParams, kMaxLfos> &lfos,
+                   const std::array<MatrixEnvParams, kMaxModEnvs> &envs,
                    const std::array<MatrixRule, kMaxMatrixRules> &rules,
                    const ChaosParams &chaos,
                    const ShapeSourceParams &shape);
 
     void setLfoParams(int idx, const LfoParams &p);
     LfoParams getLfoParams(int idx) const;
+    void setEnvParams(int idx, const MatrixEnvParams &p);
+    MatrixEnvParams getEnvParams(int idx) const;
     void setChaosParams(const ChaosParams &p);
     ChaosParams getChaosParams() const;
     void setShapeSourceParams(const ShapeSourceParams &p);
@@ -203,13 +314,23 @@ class MatrixEngine
                           float velocity,
                           float keyTrack01,
                           float adsrLevel,
-                          float randPerVoice) const;
+                          const std::array<float, kMaxModEnvs> &envLevels,
+                          float randPerVoice,
+                          const uint32_t *trackIds = nullptr,
+                          const int *trackBegin = nullptr,
+                          const int *trackEnd = nullptr,
+                          int trackCount = 0) const;
+
+    // Global (per-strip, control-rate) value of a modulation source. Per-voice-only
+    // sources (velocity/key/random) return 0; ADSR/ENV use the passed representatives.
+    float globalModSource(ModSource s, float adsrRep, const std::array<float, kMaxModEnvs> &envRep) const;
 
   private:
     static float weightFn(const MatrixRule &r, int i, const StaticSpectralFrame &frame);
     static float shapeOutput(const ShapeSourceParams &p, float x);
 
     std::array<LfoParams, kMaxLfos> lfoParams_ {};
+    std::array<MatrixEnvParams, kMaxModEnvs> envParams_ {};
     std::array<Lfo, kMaxLfos> lfos_;
     std::array<float, kMaxLfos> lfoLastValue_ {};
     std::array<MatrixRule, kMaxMatrixRules> rules_ {};

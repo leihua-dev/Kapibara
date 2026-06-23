@@ -1,36 +1,47 @@
 # Performance Notes
 
-The main realtime cost is:
+The main DSP cost is additive oscillator lane count:
 
 ```text
-partialCount * unisonVoices * activeVoices
+rendered partial slots  ×  unison voices  ×  active voices
 ```
 
-Example:
+The Source Rack UI allows free track creation, but the audio renderer clamps
+the flattened realtime budget to **64 partial lanes** and **16 source tracks**.
+True unison multiplies oscillator lanes: 64 partials at 16 unison voices =
+**1024 oscillator lanes** before tone FX.
 
-```text
-182 partials * 16 unison = 2912 oscillator lanes per note
-```
+## Realtime Rules
 
-With 4 held notes this becomes 11648 oscillator lanes before Matrix, FX, resampling, UI repaint, or audio driver overhead. That is a large CPU load for a realtime JUCE app.
+Enforced in `engine/SynthCore` and `engine/Voice`:
 
-Current bottlenecks:
+- No heap allocation in the audio callback.
+- No file I/O in the audio callback.
+- No locks, JSON parsing, logging, or sample analysis in `renderBlock()`.
+- Control-rate modulation (`engine/MatrixEngine`) runs every 32 samples;
+  interpolation buffers smooth parameter changes between control-rate blocks.
 
-- `Voice::renderAdd`: nested loops over samples, active partials, and unison voices.
-- Per-partial ADSR state and per-block smoothing are updated for every active partial.
-- Matrix is evaluated per voice and partial at control rate.
-- High unison multiplies oscillator phase accumulation and pan/gain mixing.
+UI actions may perform non-realtime work (wavetable bake, FFT, file import)
+outside the audio `run()`. Any DPF preset or WAV import code must stay on the
+UI thread.
 
-Near-term optimization plan:
+## Wavetable Cost
 
-1. Add quality/performance modes that cap effective partials and unison separately from preset values.
-2. Skip inaudible partials earlier using amplitude and Nyquist thresholds.
-3. Add voice-level CPU budget fallback: reduce unison or partials when polyphony rises.
-4. Precompute per-block constants for unison and phase increments.
-5. Consider SIMD or wavetable oscillator paths after the architecture is stable.
+Meta Oscillator tracks use baked multi-frame mip tables. Tables are built in
+`dsp/Generators` when `SynthCore::publishSnapshotNoLock()` is called — never
+inside the audio callback. Table lookup at runtime is a simple mip-level
+interpolation with no per-callback allocation.
 
-Practical working limits for now:
+## Practical Limits
 
-- Sound design preview: 64-96 partials, 1-4 unison.
-- Dense spectral inspection: 128-182 partials, 1-2 unison.
-- 16 unison should be treated as a special effect, not the default for high partial counts.
+CPU use is driven by:
+
+| Factor | Notes |
+|--------|-------|
+| Active voices | 16-voice polyphony pool (`engine/Voice`) |
+| Rendered partial lanes | up to 64 across all tracks |
+| Unison voices | multiplies partial lanes directly |
+| Meta Oscillator morph/warp | frame interpolation per voice per partial |
+| Tone FX (`dsp/Effects`) | EQ + filter applied once per block after voice sum |
+
+Use Panic to clear held voices immediately when testing heavy unison settings.

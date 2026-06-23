@@ -1,6 +1,6 @@
 #pragma once
 
-#include "SpectralFrame.h"
+#include "model/SpectralFrame.h"
 
 #include <array>
 #include <memory>
