@@ -1,4 +1,4 @@
-#include "MotifForgeSeedPlugin.hpp"
+#include "KapibaraPlugin.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -11,10 +11,13 @@ START_NAMESPACE_DISTRHO
 namespace
 {
 constexpr float kPi = 3.14159265358979323846f;
-const char *kUserPresetPath = "presets/user_seed.mfpreset";
+const char *kUserPresetPath = "presets/user_kapibara.mfpreset";
+const char *kLegacyUserPresetPath = "presets/user_" "seed.mfpreset";
 const char *kPresetDirectory = "presets";
 const char *kWavetablePresetDirectory = "presets/wavetables";
 const char *kPresetExtension = ".mfpreset";
+const char *kPresetTag = "KapibaraPreset";
+const char *kLegacyPresetTag = "Motif" "Forge" "Seed" "Preset";
 
 float clampf(float value, float lo, float hi)
 {
@@ -37,7 +40,7 @@ std::string cleanPresetName(const char *name)
     while(!out.empty() && out.back() == ' ')
         out.pop_back();
     if(out.empty())
-        out = "user_seed";
+        out = "user_kapibara";
     if(out.size() > 64)
         out.resize(64);
     return out;
@@ -49,64 +52,64 @@ std::filesystem::path presetPathForName(const char *name)
 }
 } // namespace
 
-MotifForgeSeedPlugin::MotifForgeSeedPlugin()
+KapibaraPlugin::KapibaraPlugin()
     : Plugin(0, 0, 0)
 {
     prepareCore(48000.0);
 }
 
-const char *MotifForgeSeedPlugin::getLabel() const
+const char *KapibaraPlugin::getLabel() const
 {
-    return "motifforge_seed";
+    return "kapibara";
 }
 
-const char *MotifForgeSeedPlugin::getDescription() const
+const char *KapibaraPlugin::getDescription() const
 {
-    return "Seed-only wavetable synth built with DPF UI, NanoVG and OpenGL3.";
+    return "Standalone wavetable synth built with DPF UI, NanoVG and OpenGL3.";
 }
 
-const char *MotifForgeSeedPlugin::getMaker() const
+const char *KapibaraPlugin::getMaker() const
 {
-    return "MotifForge";
+    return "Kapibara";
 }
 
-const char *MotifForgeSeedPlugin::getHomePage() const
+const char *KapibaraPlugin::getHomePage() const
 {
-    return "https://local/motifforge-seed";
+    return "https://local/kapibara";
 }
 
-const char *MotifForgeSeedPlugin::getLicense() const
+const char *KapibaraPlugin::getLicense() const
 {
     return "Proprietary";
 }
 
-uint32_t MotifForgeSeedPlugin::getVersion() const
+uint32_t KapibaraPlugin::getVersion() const
 {
     return d_version(0, 5, 0);
 }
 
-void MotifForgeSeedPlugin::initAudioPort(bool input, uint32_t index, AudioPort &port)
+void KapibaraPlugin::initAudioPort(bool input, uint32_t index, AudioPort &port)
 {
     Plugin::initAudioPort(input, index, port);
     port.groupId = kPortGroupStereo;
 }
 
-void MotifForgeSeedPlugin::activate()
+void KapibaraPlugin::activate()
 {
     prepareCore(getSampleRate());
 }
 
-void MotifForgeSeedPlugin::deactivate()
+void KapibaraPlugin::deactivate()
 {
     core_.allNotesOff();
 }
 
-void MotifForgeSeedPlugin::sampleRateChanged(double newSampleRate)
+void KapibaraPlugin::sampleRateChanged(double newSampleRate)
 {
     prepareCore(newSampleRate);
 }
 
-void MotifForgeSeedPlugin::prepareCore(double rate)
+void KapibaraPlugin::prepareCore(double rate)
 {
     if(rate <= 0.0)
         rate = 48000.0;
@@ -116,14 +119,14 @@ void MotifForgeSeedPlugin::prepareCore(double rate)
     prepared_.store(true, std::memory_order_release);
 }
 
-void MotifForgeSeedPlugin::syncPartialCountEnabledState(synth::WavetableSeedParams &params)
+void KapibaraPlugin::syncPartialCountEnabledState(synth::WavetableSeedParams &params)
 {
     params.partialCount = std::clamp(params.partialCount, 1, synth::kMaxWavetablePartials);
     for(int i = 0; i < synth::kMaxWavetablePartials; ++i)
         params.partials[(size_t)i].enabled = i < params.partialCount;
 }
 
-void MotifForgeSeedPlugin::render(float **outputs, uint32_t frames)
+void KapibaraPlugin::render(float **outputs, uint32_t frames)
 {
     if(!prepared_.load(std::memory_order_acquire))
         prepareCore(getSampleRate());
@@ -134,7 +137,7 @@ void MotifForgeSeedPlugin::render(float **outputs, uint32_t frames)
     core_.renderBlock(outputs[0], outputs[1], static_cast<int>(frames));
 }
 
-void MotifForgeSeedPlugin::run(const float **inputs, float **outputs, uint32_t frames, const MidiEvent *midiEvents,
+void KapibaraPlugin::run(const float **inputs, float **outputs, uint32_t frames, const MidiEvent *midiEvents,
                                uint32_t midiEventCount)
 {
     for(uint32_t i = 0; i < midiEventCount; ++i)
@@ -144,7 +147,7 @@ void MotifForgeSeedPlugin::run(const float **inputs, float **outputs, uint32_t f
     render(outputs, frames);
 }
 
-void MotifForgeSeedPlugin::handleMidi(const MidiEvent &event)
+void KapibaraPlugin::handleMidi(const MidiEvent &event)
 {
     if(event.size < 1)
         return;
@@ -172,12 +175,12 @@ void MotifForgeSeedPlugin::handleMidi(const MidiEvent &event)
         core_.allNotesOff();
 }
 
-void MotifForgeSeedPlugin::updateGlobalGain(float value)
+void KapibaraPlugin::updateGlobalGain(float value)
 {
     core_.setGlobalGain(clampf(value, 0.0f, 1.0f));
 }
 
-void MotifForgeSeedPlugin::updateAdsr(float attack, float decay, float sustain, float release, float curve)
+void KapibaraPlugin::updateAdsr(float attack, float decay, float sustain, float release, float curve)
 {
     synth::AdsrParams params = core_.getGlobalAdsr();
     params.attack = clampf(attack, 0.0f, 5.0f);
@@ -188,7 +191,7 @@ void MotifForgeSeedPlugin::updateAdsr(float attack, float decay, float sustain, 
     core_.setGlobalAdsr(params);
 }
 
-void MotifForgeSeedPlugin::updateGenerator(int partialCount, float inharmonic, int freqShape, int sourceCount,
+void KapibaraPlugin::updateGenerator(int partialCount, float inharmonic, int freqShape, int sourceCount,
                                            int unisonVoices, float detune, float width, float phaseSpread)
 {
     const int nextSourceCount = synth::sanitizeGeneratorSourceCount(sourceCount);
@@ -203,7 +206,7 @@ void MotifForgeSeedPlugin::updateGenerator(int partialCount, float inharmonic, i
     core_.setGeneratorBasicParams(nextPartialCount, nextFreqShape, nextInharmonic, nextSourceCount, nextUnison);
 }
 
-void MotifForgeSeedPlugin::updateGeneratorSource(int index, const synth::GeneratorSourceParams &source)
+void KapibaraPlugin::updateGeneratorSource(int index, const synth::GeneratorSourceParams &source)
 {
     if(index < 0 || index >= 8)
         return;
@@ -221,23 +224,23 @@ void MotifForgeSeedPlugin::updateGeneratorSource(int index, const synth::Generat
     core_.setGeneratorSourceParams(index, clean);
 }
 
-uint32_t MotifForgeSeedPlugin::addSourceTrack(synth::SourceTrackType type, const char *name)
+uint32_t KapibaraPlugin::addSourceTrack(synth::SourceTrackType type, const char *name)
 {
     return core_.addSourceTrack(type, name != nullptr ? name : synth::sourceTrackTypeName(type));
 }
 
-void MotifForgeSeedPlugin::removeSourceTrack(uint32_t trackId)
+void KapibaraPlugin::removeSourceTrack(uint32_t trackId)
 {
     core_.allNotesOff();
     core_.removeSourceTrack(trackId);
 }
 
-void MotifForgeSeedPlugin::moveSourceTrack(uint32_t trackId, int newIndex)
+void KapibaraPlugin::moveSourceTrack(uint32_t trackId, int newIndex)
 {
     core_.moveSourceTrack(trackId, newIndex);
 }
 
-void MotifForgeSeedPlugin::updateSourceTrack(uint32_t trackId, const synth::SourceTrackParams &track)
+void KapibaraPlugin::updateSourceTrack(uint32_t trackId, const synth::SourceTrackParams &track)
 {
     auto clean = track;
     clean.gain = clampf(clean.gain, 0.0f, 2.0f);
@@ -261,38 +264,38 @@ void MotifForgeSeedPlugin::updateSourceTrack(uint32_t trackId, const synth::Sour
     core_.setSourceTrack(trackId, clean);
 }
 
-void MotifForgeSeedPlugin::updateSourceTrackMorphOnly(uint32_t trackId, float morph)
+void KapibaraPlugin::updateSourceTrackMorphOnly(uint32_t trackId, float morph)
 {
     core_.setSourceTrackMorphOnly(trackId, clampf(morph, 0.0f, 1.0f));
 }
 
-void MotifForgeSeedPlugin::updateSourceTracks(const std::vector<synth::SourceTrackParams> &tracks)
+void KapibaraPlugin::updateSourceTracks(const std::vector<synth::SourceTrackParams> &tracks)
 {
     core_.setSourceTracks(tracks);
 }
 
-void MotifForgeSeedPlugin::setPartialEnabled(int index, bool enabled)
+void KapibaraPlugin::setPartialEnabled(int index, bool enabled)
 {
     if(index < 0 || index >= synth::kMaxWavetablePartials)
         return;
     core_.setPartialEnabled(index, enabled);
 }
 
-void MotifForgeSeedPlugin::setPartialAmp(int index, float amp)
+void KapibaraPlugin::setPartialAmp(int index, float amp)
 {
     if(index < 0 || index >= synth::kMaxWavetablePartials)
         return;
     core_.setPartialAmp(index, clampf(amp, 0.0f, 1.0f));
 }
 
-void MotifForgeSeedPlugin::setPartialRatio(int index, float ratio)
+void KapibaraPlugin::setPartialRatio(int index, float ratio)
 {
     if(index < 0 || index >= synth::kMaxWavetablePartials)
         return;
     core_.setPartialRatio(index, clampf(ratio, 0.01f, 128.0f));
 }
 
-void MotifForgeSeedPlugin::updatePartialRuntime(int index, bool enabled, float ratio, float amp, float phase, float pan,
+void KapibaraPlugin::updatePartialRuntime(int index, bool enabled, float ratio, float amp, float phase, float pan,
                                                 float morph, int warpMode, float warpAmount)
 {
     if(index < 0 || index >= synth::kEditableMetaPartials)
@@ -303,7 +306,7 @@ void MotifForgeSeedPlugin::updatePartialRuntime(int index, bool enabled, float r
                                 cleanWarp, clampf(warpAmount, -1.0f, 1.0f));
 }
 
-void MotifForgeSeedPlugin::updatePartialSlot(int index, const synth::WavetablePartialSlot &slot)
+void KapibaraPlugin::updatePartialSlot(int index, const synth::WavetablePartialSlot &slot)
 {
     if(index < 0 || index >= synth::kEditableMetaPartials)
         return;
@@ -319,7 +322,7 @@ void MotifForgeSeedPlugin::updatePartialSlot(int index, const synth::WavetablePa
     core_.setMetaPartialSlot(index, clean);
 }
 
-bool MotifForgeSeedPlugin::loadWavetableFrame(int partialIndex, int frameIndex, const char *path)
+bool KapibaraPlugin::loadWavetableFrame(int partialIndex, int frameIndex, const char *path)
 {
     if(partialIndex < 0 || partialIndex >= synth::kEditableMetaPartials || frameIndex < 0
        || frameIndex >= synth::kMaxWavetableFrames || path == nullptr || path[0] == '\0')
@@ -328,22 +331,22 @@ bool MotifForgeSeedPlugin::loadWavetableFrame(int partialIndex, int frameIndex, 
     return core_.loadWavetableFrame(partialIndex, frameIndex, path);
 }
 
-void MotifForgeSeedPlugin::previewNoteOn(int midiNote, float velocity)
+void KapibaraPlugin::previewNoteOn(int midiNote, float velocity)
 {
     core_.noteOn(std::clamp(midiNote, 0, 127), clampf(velocity, 0.0f, 1.0f));
 }
 
-void MotifForgeSeedPlugin::previewNoteOff(int midiNote)
+void KapibaraPlugin::previewNoteOff(int midiNote)
 {
     core_.noteOff(std::clamp(midiNote, 0, 127));
 }
 
-void MotifForgeSeedPlugin::panic()
+void KapibaraPlugin::panic()
 {
     core_.allNotesOff();
 }
 
-std::vector<std::string> MotifForgeSeedPlugin::presetNames() const
+std::vector<std::string> KapibaraPlugin::presetNames() const
 {
     std::vector<std::string> names;
     std::error_code ec;
@@ -363,7 +366,7 @@ std::vector<std::string> MotifForgeSeedPlugin::presetNames() const
     return names;
 }
 
-std::vector<WavetablePresetEntry> MotifForgeSeedPlugin::wavetablePresetEntries() const
+std::vector<WavetablePresetEntry> KapibaraPlugin::wavetablePresetEntries() const
 {
     std::vector<WavetablePresetEntry> entries;
     std::error_code ec;
@@ -394,7 +397,7 @@ std::vector<WavetablePresetEntry> MotifForgeSeedPlugin::wavetablePresetEntries()
     return entries;
 }
 
-bool MotifForgeSeedPlugin::saveUserPreset(const char *name)
+bool KapibaraPlugin::saveUserPreset(const char *name)
 {
     std::error_code ec;
     std::filesystem::create_directories(kPresetDirectory, ec);
@@ -408,7 +411,7 @@ bool MotifForgeSeedPlugin::saveUserPreset(const char *name)
 
     const auto gen = core_.getGeneratorParams();
     const auto adsr = core_.getGlobalAdsr();
-    out << "MotifForgeSeedPreset 5 " << synth::kMaxWavetableHarmonics << "\n";
+    out << kPresetTag << " 5 " << synth::kMaxWavetableHarmonics << "\n";
     out << "gain " << core_.getGlobalGain() << "\n";
     out << "adsr " << adsr.attack << ' ' << adsr.decay << ' ' << adsr.sustain << ' ' << adsr.release << ' ' << adsr.curve << "\n";
     for(int i = 0; i < synth::kMaxAmpEnvs; ++i)
@@ -453,12 +456,14 @@ bool MotifForgeSeedPlugin::saveUserPreset(const char *name)
     return true;
 }
 
-bool MotifForgeSeedPlugin::loadUserPreset(const char *name)
+bool KapibaraPlugin::loadUserPreset(const char *name)
 {
     const std::string presetName = cleanPresetName(name);
     std::ifstream in(presetPathForName(presetName.c_str()));
     if(!in && name == nullptr)
         in.open(kUserPresetPath);
+    if(!in && name == nullptr)
+        in.open(kLegacyUserPresetPath);
     if(!in)
     {
         presetStatus_ = "Load failed";
@@ -469,7 +474,7 @@ bool MotifForgeSeedPlugin::loadUserPreset(const char *name)
     int version = 0;
     int harmonicCount = 16;
     in >> tag >> version;
-    if(tag != "MotifForgeSeedPreset")
+    if(tag != kPresetTag && tag != kLegacyPresetTag)
     {
         presetStatus_ = "Bad preset";
         return false;
@@ -583,7 +588,7 @@ bool MotifForgeSeedPlugin::loadUserPreset(const char *name)
     return true;
 }
 
-bool MotifForgeSeedPlugin::deleteUserPreset(const char *name)
+bool KapibaraPlugin::deleteUserPreset(const char *name)
 {
     const std::string presetName = cleanPresetName(name);
     std::error_code ec;
@@ -597,7 +602,7 @@ bool MotifForgeSeedPlugin::deleteUserPreset(const char *name)
     return true;
 }
 
-void MotifForgeSeedPlugin::resetUserPreset()
+void KapibaraPlugin::resetUserPreset()
 {
     core_.allNotesOff();
     synth::SourceGenParams gen {};
@@ -614,87 +619,87 @@ void MotifForgeSeedPlugin::resetUserPreset()
     presetStatus_ = "Default seed";
 }
 
-const char *MotifForgeSeedPlugin::presetStatus() const
+const char *KapibaraPlugin::presetStatus() const
 {
     return presetStatus_.c_str();
 }
 
-synth::SourceGenParams MotifForgeSeedPlugin::generatorParams() const
+synth::SourceGenParams KapibaraPlugin::generatorParams() const
 {
     return core_.getGeneratorParams();
 }
 
-synth::AdsrParams MotifForgeSeedPlugin::adsrParams() const
+synth::AdsrParams KapibaraPlugin::adsrParams() const
 {
     return core_.getGlobalAdsr();
 }
 
-synth::AdsrParams MotifForgeSeedPlugin::ampEnvParams(int index) const
+synth::AdsrParams KapibaraPlugin::ampEnvParams(int index) const
 {
     return core_.getAmpEnvParams(index);
 }
 
-synth::OperatorChain MotifForgeSeedPlugin::operatorChain() const
+synth::OperatorChain KapibaraPlugin::operatorChain() const
 {
     return core_.getOperatorChain();
 }
 
-synth::LfoParams MotifForgeSeedPlugin::lfoParams(int index) const
+synth::LfoParams KapibaraPlugin::lfoParams(int index) const
 {
     return core_.getLfoParams(index);
 }
 
-synth::MatrixEnvParams MotifForgeSeedPlugin::matrixEnvParams(int index) const
+synth::MatrixEnvParams KapibaraPlugin::matrixEnvParams(int index) const
 {
     return core_.getMatrixEnvParams(index);
 }
 
-synth::MatrixRule MotifForgeSeedPlugin::matrixRule(int index) const
+synth::MatrixRule KapibaraPlugin::matrixRule(int index) const
 {
     return core_.getMatrixRule(index);
 }
 
-synth::ChaosParams MotifForgeSeedPlugin::chaosParams() const
+synth::ChaosParams KapibaraPlugin::chaosParams() const
 {
     return core_.getChaosParams();
 }
 
-synth::ShapeSourceParams MotifForgeSeedPlugin::shapeSourceParams() const
+synth::ShapeSourceParams KapibaraPlugin::shapeSourceParams() const
 {
     return core_.getShapeSourceParams();
 }
 
-synth::EffectsChainParams MotifForgeSeedPlugin::effectsParams() const
+synth::EffectsChainParams KapibaraPlugin::effectsParams() const
 {
     return core_.getEffectsParams();
 }
 
-float MotifForgeSeedPlugin::globalGain() const
+float KapibaraPlugin::globalGain() const
 {
     return core_.getGlobalGain();
 }
 
-int MotifForgeSeedPlugin::activeVoiceCount() const
+int KapibaraPlugin::activeVoiceCount() const
 {
     return core_.getActiveVoiceCount();
 }
 
-float MotifForgeSeedPlugin::sourceLiveMorph(int trackIndex) const
+float KapibaraPlugin::sourceLiveMorph(int trackIndex) const
 {
     return core_.getLiveTrackMorph(trackIndex);
 }
 
-void MotifForgeSeedPlugin::updateLfo(int index, const synth::LfoParams &params)
+void KapibaraPlugin::updateLfo(int index, const synth::LfoParams &params)
 {
     core_.setLfoParams(index, params);
 }
 
-void MotifForgeSeedPlugin::updateMatrixEnv(int index, const synth::MatrixEnvParams &params)
+void KapibaraPlugin::updateMatrixEnv(int index, const synth::MatrixEnvParams &params)
 {
     core_.setMatrixEnvParams(index, params);
 }
 
-void MotifForgeSeedPlugin::updateAmpEnv(int index, const synth::AdsrParams &params)
+void KapibaraPlugin::updateAmpEnv(int index, const synth::AdsrParams &params)
 {
     synth::AdsrParams clean = params;
     clean.attack = clampf(clean.attack, 0.0f, 5.0f);
@@ -705,39 +710,39 @@ void MotifForgeSeedPlugin::updateAmpEnv(int index, const synth::AdsrParams &para
     core_.setAmpEnvParams(index, clean);
 }
 
-void MotifForgeSeedPlugin::updateMatrixRule(int index, const synth::MatrixRule &rule)
+void KapibaraPlugin::updateMatrixRule(int index, const synth::MatrixRule &rule)
 {
     core_.setMatrixRule(index, rule);
 }
 
-void MotifForgeSeedPlugin::updateChaos(const synth::ChaosParams &params)
+void KapibaraPlugin::updateChaos(const synth::ChaosParams &params)
 {
     core_.setChaosParams(params);
 }
 
-void MotifForgeSeedPlugin::updateShapeSource(const synth::ShapeSourceParams &params)
+void KapibaraPlugin::updateShapeSource(const synth::ShapeSourceParams &params)
 {
     core_.setShapeSourceParams(params);
 }
 
-void MotifForgeSeedPlugin::updateEffects(const synth::EffectsChainParams &params)
+void KapibaraPlugin::updateEffects(const synth::EffectsChainParams &params)
 {
     core_.setEffectsParams(params);
 }
 
-void MotifForgeSeedPlugin::updateOperatorChain(const synth::OperatorChain &chain)
+void KapibaraPlugin::updateOperatorChain(const synth::OperatorChain &chain)
 {
     core_.setOperatorChain(chain);
 }
 
-void MotifForgeSeedPlugin::updateSourceGroups(const std::vector<synth::SourceGroupDef> &groups)
+void KapibaraPlugin::updateSourceGroups(const std::vector<synth::SourceGroupDef> &groups)
 {
     core_.setSourceGroups(groups);
 }
 
 Plugin *createPlugin()
 {
-    return new MotifForgeSeedPlugin();
+    return new KapibaraPlugin();
 }
 
 END_NAMESPACE_DISTRHO

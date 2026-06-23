@@ -1,6 +1,6 @@
-# MotifForge Agent Guide
+# Kapibara Agent Guide
 
-This repository is MotifForge Seed, a DPF standalone wavetable instrument.
+This repository is Kapibara, a DPF standalone wavetable instrument.
 Treat the current code as the source of truth: the production app is a single
 Seed synth built with DPF, NanoVG, OpenGL3, and the existing `SynthCore` DSP.
 It is not a JUCE workstation and does not contain Motif lanes, sample lanes,
@@ -13,20 +13,20 @@ src/
 ├── model/       SpectralFrame.h, CompositionModel.h  — pure data structures
 ├── dsp/         Generators, Operators, Effects        — signal processing
 ├── engine/      MatrixEngine, Voice, SynthCore        — runtime audio engine
-└── plugin/dpf/  MotifForgeSeedPlugin.*, UI.cpp       — DPF plugin shell + NanoVG UI
+└── plugin/dpf/  KapibaraPlugin.*, UI.cpp       — DPF plugin shell + NanoVG UI
 ```
 
 ## Product Boundary
 
 ```
-DPF UI  ->  MotifForgeSeedPlugin  ->  SynthCore  ->  Voice  ->  Effects  ->  Output
+DPF UI  ->  KapibaraPlugin  ->  SynthCore  ->  Voice  ->  Effects  ->  Output
 ```
 
 ## Rules
 
 - Keep audio callback code realtime-safe: no heap allocation, file I/O, locks,
   JSON, logging, or sample analysis in `SynthCore::renderBlock()` or `Voice::render()`.
-- UI code may mutate Seed params through `MotifForgeSeedPlugin` and `SynthCore`,
+- UI code may mutate Seed params through `KapibaraPlugin` and `SynthCore`,
   but must not reach into `Voice` internals directly.
 - `src/plugin/dpf/` owns the plugin shell and NanoVG UI.
   DSP behaviour lives in `src/engine/`, `src/dsp/`, and `src/model/`.

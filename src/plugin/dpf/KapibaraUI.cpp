@@ -1,6 +1,6 @@
 #include "DistrhoUI.hpp"
 
-#include "MotifForgeSeedPlugin.hpp"
+#include "KapibaraPlugin.hpp"
 
 #include <algorithm>
 #include <array>
@@ -244,7 +244,7 @@ bool hasWavExtension(const std::string &path)
 }
 } // namespace
 
-class MotifForgeSeedUI final : public UI
+class KapibaraUI final : public UI
 {
     // ---- nested types required before inline method signatures ----
     enum class FilterAlgo : uint8_t {
@@ -301,7 +301,7 @@ class MotifForgeSeedUI final : public UI
     struct FxKnobHit { Rect rect {}; int trackId = -1; int groupIdx = -1; int insertIdx = 0; int knob = 0; };
     struct FxBtnHit  { Rect rect {}; int trackId = -1; int groupIdx = -1; int insertIdx = 0; };
   public:
-    MotifForgeSeedUI()
+    KapibaraUI()
         : UI(DISTRHO_UI_DEFAULT_WIDTH, DISTRHO_UI_DEFAULT_HEIGHT)
     {
 #ifdef DGL_NO_SHARED_RESOURCES
@@ -823,9 +823,9 @@ class MotifForgeSeedUI final : public UI
     }
 
   private:
-    MotifForgeSeedPlugin *plugin() const
+    KapibaraPlugin *plugin() const
     {
-        return static_cast<MotifForgeSeedPlugin *>(getPluginInstancePointer());
+        return static_cast<KapibaraPlugin *>(getPluginInstancePointer());
     }
 
     void pullFromPlugin()
@@ -1094,7 +1094,7 @@ class MotifForgeSeedUI final : public UI
         uiFontSize(18.0f);
         textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
         fillColor(rgba(0x9db0baff));
-        text(18.0f, 32.0f, "MotifForge Seed", nullptr);
+        text(18.0f, 32.0f, "Kapibara", nullptr);
 
         const float right = static_cast<float>(getWidth()) - 14.0f;
         aboutRect_ = { right - 88.0f, 12.0f, 88.0f, 36.0f };
@@ -4709,7 +4709,7 @@ class MotifForgeSeedUI final : public UI
                 if(auto *p = plugin())
                     p->deleteUserPreset(name);
                 selectedPresetIndex_ = -1;
-                presetNameBuffer_ = "user_seed";
+                presetNameBuffer_ = "user_kapibara";
                 pullFromPlugin();
                 return true;
             }
@@ -6581,7 +6581,7 @@ class MotifForgeSeedUI final : public UI
     bool presetNameEditing_ = false;
     bool skipNextPresetCharacterInput_ = false;
     std::string presetLabel_ = "Select preset";
-    std::string presetNameBuffer_ = "user_seed";
+    std::string presetNameBuffer_ = "user_kapibara";
     std::vector<std::string> presetNames_ {};
     int selectedPresetIndex_ = -1;
     std::vector<WavetablePresetEntry> wavetablePresets_ {};
@@ -6689,12 +6689,12 @@ class MotifForgeSeedUI final : public UI
     Rect filterCutoffKnobRect_ {}, filterResKnobRect_ {}, filterGainKnobRect_ {}, filterMixKnobRect_ {}, filterDriveKnobRect_ {};
     Rect filterEqPreviewRect_ {};
 
-    DISTRHO_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MotifForgeSeedUI)
+    DISTRHO_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(KapibaraUI)
 };
 
 UI *createUI()
 {
-    return new MotifForgeSeedUI();
+    return new KapibaraUI();
 }
 
 END_NAMESPACE_DISTRHO

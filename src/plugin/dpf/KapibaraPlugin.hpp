@@ -16,10 +16,10 @@ struct WavetablePresetEntry
     std::string path;
 };
 
-class MotifForgeSeedPlugin final : public Plugin
+class KapibaraPlugin final : public Plugin
 {
   public:
-    MotifForgeSeedPlugin();
+    KapibaraPlugin();
 
     void updateGlobalGain(float value);
     void updateAdsr(float attack, float decay, float sustain, float release, float curve);
@@ -100,7 +100,7 @@ class MotifForgeSeedPlugin final : public Plugin
     std::atomic<bool> prepared_ { false };
     mutable std::string presetStatus_ { "Select preset" };
 
-    DISTRHO_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MotifForgeSeedPlugin)
+    DISTRHO_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(KapibaraPlugin)
 };
 
 END_NAMESPACE_DISTRHO

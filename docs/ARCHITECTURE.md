@@ -1,9 +1,9 @@
-# MotifForge Seed Architecture
+# Kapibara Architecture
 
 ```text
 DPF standalone
-  -> MotifForgeSeedPlugin  (MIDI/audio bridge)
-  -> MotifForgeSeedUI      (NanoVG / OpenGL3)
+  -> KapibaraPlugin  (MIDI/audio bridge)
+  -> KapibaraUI      (NanoVG / OpenGL3)
   -> SynthCore             (orchestrator + snapshot)
        -> MatrixEngine     (LFO / ENV / matrix rules)
        -> Voice x16        (wavetable oscillators + unison)
@@ -39,23 +39,23 @@ src/
 │                             RenderSnapshot, undo stack, effects chain
 └── plugin/dpf/     DPF plugin framework bridge
     ├── DistrhoPluginInfo.h   DPF metadata, NanoVG/OpenGL3 settings
-    ├── MotifForgeSeedPlugin.*  DPF synth shell, MIDI→SynthCore bridge,
+    ├── KapibaraPlugin.*  DPF synth shell, MIDI→SynthCore bridge,
     │                           audio run(), preset save/load
-    └── MotifForgeSeedUI.cpp    NanoVG top-level UI: Source Rack, strip rack,
+    └── KapibaraUI.cpp    NanoVG top-level UI: Source Rack, strip rack,
                                 Matrix area, preset menu, bottom keyboard
 ```
 
 ## Plugin Shell
 
-`MotifForgeSeedPlugin` owns one `SynthCore` instance. It maps incoming DPF MIDI note events to `SynthCore::noteOn()` / `noteOff()`, exposes UI update methods for parameter changes, and calls `SynthCore::renderBlock()` from DPF `run()`.
+`KapibaraPlugin` owns one `SynthCore` instance. It maps incoming DPF MIDI note events to `SynthCore::noteOn()` / `noteOff()`, exposes UI update methods for parameter changes, and calls `SynthCore::renderBlock()` from DPF `run()`.
 
-`MotifForgeSeedUI` is a NanoVG single-screen UI. It draws: toolbar and preset menu, left source-track list, center type-specific editor, right strip rack, bottom Matrix area, Panic/status controls, and the bottom keyboard.
+`KapibaraUI` is a NanoVG single-screen UI. It draws: toolbar and preset menu, left source-track list, center type-specific editor, right strip rack, bottom Matrix area, Panic/status controls, and the bottom keyboard.
 
 ## Seed Model
 
 `SeedPatch` is the current sound-state boundary, defined in `model/CompositionModel.h`. Track types are `Partial Bank`, `Meta Oscillator`, `Basic Oscillator`, and `Sample / Noise`. Each track owns sound data plus gain, pan, send, mute/solo, output mode, and a reference to one of four shared Amp ADSR entries. The four drawable Matrix ENV sources form a separate modulation bank.
 
-UI edits reach `SynthCore` through `MotifForgeSeedPlugin` on the UI thread. Audio rendering reads immutable `RenderSnapshot` objects published by `SynthCore::publishSnapshotNoLock()`.
+UI edits reach `SynthCore` through `KapibaraPlugin` on the UI thread. Audio rendering reads immutable `RenderSnapshot` objects published by `SynthCore::publishSnapshotNoLock()`.
 
 ## Audio Core
 
@@ -85,4 +85,4 @@ None of these steps run inside the audio callback.
 
 ## Persistence
 
-DPF preset save/load lives in `MotifForgeSeedPlugin`. Legacy v4 preset format is readable through migration into Source Tracks; the current in-memory model is track-first.
+DPF preset save/load lives in `KapibaraPlugin`. Legacy v4 preset format is readable through migration into Source Tracks; the current in-memory model is track-first.

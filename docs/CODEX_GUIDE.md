@@ -23,7 +23,7 @@ cmake --build build --config Release
 Executable:
 
 ```text
-build/dpf/bin/motifforge_seed
+build/dpf/bin/kapibara
 ```
 
 ## Hotspots
@@ -31,8 +31,8 @@ build/dpf/bin/motifforge_seed
 | File | Role |
 |------|------|
 | `src/plugin/dpf/DistrhoPluginInfo.h` | DPF metadata, NanoVG/OpenGL3 UI setting |
-| `src/plugin/dpf/MotifForgeSeedPlugin.*` | DPF synth shell, MIDI bridge, audio `run()`, preset save/load |
-| `src/plugin/dpf/MotifForgeSeedUI.cpp` | NanoVG single-screen Seed dashboard and bottom keyboard |
+| `src/plugin/dpf/KapibaraPlugin.*` | DPF synth shell, MIDI bridge, audio `run()`, preset save/load |
+| `src/plugin/dpf/KapibaraUI.cpp` | NanoVG single-screen Seed dashboard and bottom keyboard |
 | `src/engine/SynthCore.h/.cpp` | Seed snapshot publication, voice pool, MIDI queue, undo stack |
 | `src/engine/Voice.h/.cpp` | Wavetable oscillator lanes, true unison, per-voice ADSR |
 | `src/engine/MatrixEngine.h/.cpp` | 4 LFOs, 4 ENV breakpoint curves, 16 matrix rules, chaos/key-track sources |

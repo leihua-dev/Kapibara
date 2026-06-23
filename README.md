@@ -1,6 +1,6 @@
-# MotifForge Seed
+# Kapibara
 
-MotifForge Seed is a DPF standalone additive wavetable synthesizer.
+Kapibara is a DPF standalone additive wavetable synthesizer.
 
 ```text
 DPF JACK standalone
@@ -28,8 +28,8 @@ src/
 │   └── SynthCore.h/.cpp      orchestrator, snapshot, MIDI queue, undo
 └── plugin/dpf/     plugin framework bridge
     ├── DistrhoPluginInfo.h
-    ├── MotifForgeSeedPlugin.*  DPF MIDI/audio bridge to SynthCore
-    └── MotifForgeSeedUI.cpp    NanoVG Source Rack UI and keyboard
+    ├── KapibaraPlugin.*  DPF MIDI/audio bridge to SynthCore
+    └── KapibaraUI.cpp    NanoVG Source Rack UI and keyboard
 ```
 
 ## Build
@@ -48,7 +48,7 @@ cmake --build build --config Release
 Run:
 
 ```bash
-./build/dpf/bin/motifforge_seed
+./build/dpf/bin/kapibara
 ```
 
 ## Workflow

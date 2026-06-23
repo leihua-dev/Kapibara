@@ -1,4 +1,4 @@
-MotifForgeSeedPreset 5 1024
+KapibaraPreset 5 1024
 gain 0.3
 adsr 0.005 0.35 0 0.08 0.5
 ampenv 0 0.005 0.35 1 0.08 0.5

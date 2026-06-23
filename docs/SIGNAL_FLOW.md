@@ -2,7 +2,7 @@
 
 ```text
 MIDI note
-  -> MotifForgeSeedPlugin  (DPF MIDI handler)
+  -> KapibaraPlugin  (DPF MIDI handler)
   -> SynthCore::noteOn()   (voice allocation, snapshot freeze)
   -> RenderSnapshot        (immutable read-only render state)
   -> Voice x N             (wavetable oscillators + unison + per-voice ADSR)
@@ -13,9 +13,9 @@ MIDI note
 
 ## Note Events
 
-The on-screen keyboard calls `MotifForgeSeedPlugin::previewNoteOn()` /
+The on-screen keyboard calls `KapibaraPlugin::previewNoteOn()` /
 `previewNoteOff()`, which forward to `SynthCore::noteOn()` / `noteOff()`.
-External DPF MIDI events are handled in `MotifForgeSeedPlugin::run()` and
+External DPF MIDI events are handled in `KapibaraPlugin::run()` and
 forwarded to the same lock-free MIDI queue inside `SynthCore`. Panic calls
 `SynthCore::allNotesOff()`.
 
