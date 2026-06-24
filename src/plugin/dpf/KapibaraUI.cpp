@@ -98,6 +98,27 @@ Color rgba(uint32_t packed)
                  float(packed & 0xffu) / 255.0f);
 }
 
+struct DesignTokens
+{
+    static Color appBackground()     { return rgba(0x0b1014ff); }
+    static Color panelBackground()   { return rgba(0x11181eff); }
+    static Color panelRaised()       { return rgba(0x151e24ff); }
+    static Color controlBackground() { return rgba(0x1a242bff); }
+    static Color border()            { return rgba(0x26323aff); }
+    static Color divider()           { return rgba(0x202a31ff); }
+    static Color textPrimary()       { return rgba(0xe5e9ebff); }
+    static Color textSecondary()     { return rgba(0x8d9aa2ff); }
+    static Color accentCyan()        { return rgba(0x62d7dfff); }
+    static Color accentGreen()       { return rgba(0x8bea62ff); }
+    static Color accentBlue()        { return rgba(0x4aa8e8ff); }
+
+    static constexpr float panelRadius = 8.0f;
+    static constexpr float controlRadius = 5.0f;
+    static constexpr float borderWidth = 1.0f;
+    static constexpr float knobStart = 3.0f * kPi / 4.0f;
+    static constexpr float knobSweep = 3.0f * kPi / 2.0f;
+};
+
 bool isBlackKey(int note)
 {
     const int pc = note % 12;
@@ -1076,9 +1097,11 @@ class KapibaraUI final : public UI
 
     void drawBackground()
     {
+        const float w = static_cast<float>(getWidth());
+        const float h = static_cast<float>(getHeight());
         beginPath();
-        rect(0.0f, 0.0f, static_cast<float>(getWidth()), static_cast<float>(getHeight()));
-        fillColor(rgba(0x0f1418ff));
+        rect(0.0f, 0.0f, w, h);
+        fillColor(DesignTokens::appBackground());
         fill();
     }
 
@@ -1088,13 +1111,26 @@ class KapibaraUI final : public UI
         toolbar_ = { 0.0f, 0.0f, static_cast<float>(getWidth()), 64.0f };
         beginPath();
         rect(toolbar_.x, toolbar_.y, toolbar_.w, toolbar_.h);
-        fillColor(rgba(0x171c22ff));
+        fillColor(DesignTokens::panelBackground());
+        fill();
+        beginPath();
+        rect(0.0f, toolbar_.h - 1.0f, toolbar_.w, 1.0f);
+        fillColor(DesignTokens::divider());
         fill();
 
-        uiFontSize(18.0f);
+        // Logo mark.
+        beginPath();
+        roundedRect(16.0f, 16.0f, 8.0f, 32.0f, 3.0f);
+        fillColor(DesignTokens::accentCyan());
+        fill();
+
+        uiFontSize(20.0f);
         textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-        fillColor(rgba(0x9db0baff));
-        text(18.0f, 32.0f, "Kapibara", nullptr);
+        fillColor(DesignTokens::textPrimary());
+        text(34.0f, 26.0f, "Kapibara", nullptr);
+        uiFontSize(8.5f);
+        fillColor(DesignTokens::textSecondary());
+        text(35.0f, 42.0f, "ADDITIVE  SYNTH", nullptr);
 
         const float right = static_cast<float>(getWidth()) - 14.0f;
         aboutRect_ = { right - 88.0f, 12.0f, 88.0f, 36.0f };
@@ -1115,12 +1151,12 @@ class KapibaraUI final : public UI
         drawButton(menuRect_, "MENU", false);
         drawButton(aboutRect_, "ABOUT", false);
 
-        statusRect_ = { 18.0f, 48.0f, 520.0f, 14.0f };
+        statusRect_ = { 160.0f, 50.0f, 56.0f, 14.0f };
         char status[128];
-        std::snprintf(status, sizeof(status), "%d voices | keys: ZSXDCV... / Q2W3E...", activeVoices_);
-        uiFontSize(11.0f);
+        std::snprintf(status, sizeof(status), "%d voices", activeVoices_);
+        uiFontSize(10.0f);
         textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-        fillColor(rgba(0x70828dff));
+        fillColor(rgba(0x6a7d88ff));
         text(statusRect_.x, statusRect_.y + statusRect_.h * 0.5f, status, nullptr);
 
     }
@@ -3034,6 +3070,161 @@ class KapibaraUI final : public UI
         return -1;
     }
 
+    int matrixRouteCountForTrack(const synth::SourceTrackParams &track) const
+    {
+        int count = 0;
+        for(const auto &rule : rules_)
+            if(rule.enabled && rule.targetTrackId == track.id)
+                ++count;
+        return count;
+    }
+
+    int activeModCountForTrack(const synth::SourceTrackParams &track) const
+    {
+        int count = 0;
+        for(const auto &mod : track.mods)
+            if(mod.enabled && mod.sourceTrack >= 0)
+                ++count;
+        return count;
+    }
+
+    void drawStripThumbnail(const Rect &r, const synth::SourceTrackParams &track, int trackIndex, bool selected)
+    {
+        beginPath();
+        roundedRect(r.x, r.y, r.w, r.h, DesignTokens::controlRadius);
+        fillColor(DesignTokens::controlBackground());
+        fill();
+        beginPath();
+        roundedRect(r.x + 0.5f, r.y + 0.5f, r.w - 1.0f, r.h - 1.0f, DesignTokens::controlRadius);
+        strokeColor(DesignTokens::divider());
+        strokeWidth(1.0f);
+        stroke();
+
+        const Rect plot { r.x + 5.0f, r.y + 5.0f, r.w - 10.0f, r.h - 10.0f };
+        const Color line = selected ? DesignTokens::accentGreen() : DesignTokens::accentCyan();
+        scissor(plot.x, plot.y, plot.w, plot.h);
+
+        if(track.type == synth::SourceTrackType::MetaOscillator && track.metaOsc.frameCount > 0)
+        {
+            float liveMorph = track.metaOsc.morph;
+            if(const auto *p = plugin()) liveMorph = p->sourceLiveMorph(trackIndex);
+            const int fIdx = clampi(int(liveMorph * float(track.metaOsc.frameCount - 1) + 0.5f), 0,
+                                    track.metaOsc.frameCount - 1);
+            const auto &frm = track.metaOsc.frames[(size_t)fIdx];
+            const float midY = plot.y + plot.h * 0.5f;
+            beginPath();
+            for(int sp = 0; sp < int(plot.w); ++sp)
+            {
+                const float t = float(sp) / std::max(1.0f, plot.w);
+                const float v = sampleFrameWarped(frm, t, track.metaOsc.warpMode, track.metaOsc.warpAmount);
+                const float px = plot.x + float(sp);
+                const float py = midY - v * plot.h * 0.42f;
+                if(sp == 0) moveTo(px, py); else lineTo(px, py);
+            }
+            strokeColor(line);
+            strokeWidth(1.25f);
+            stroke();
+        }
+        else if(track.type == synth::SourceTrackType::PartialBank)
+        {
+            const int count = std::max(1, track.partialBank.partialCount);
+            const float barW = std::max(1.0f, plot.w / float(count));
+            for(int i = 0; i < count; ++i)
+            {
+                const auto &p = track.partialBank.partials[(size_t)i];
+                const float h = clampf(p.amp, 0.0f, 1.0f) * plot.h;
+                beginPath();
+                roundedRect(plot.x + float(i) * barW, plot.y + plot.h - h, std::max(1.0f, barW - 1.0f), h, 1.0f);
+                fillColor(line.withAlpha(0.78f));
+                fill();
+            }
+        }
+        else
+        {
+            const float midY = plot.y + plot.h * 0.5f;
+            beginPath();
+            for(int sp = 0; sp < int(plot.w); ++sp)
+            {
+                const float t = float(sp) / std::max(1.0f, plot.w);
+                const float v = track.type == synth::SourceTrackType::BasicOscillator
+                                  ? std::sin(t * kPi * 4.0f)
+                                  : 0.55f * std::sin(t * kPi * 41.0f) * std::sin(t * kPi * 7.0f);
+                const float px = plot.x + float(sp);
+                const float py = midY - v * plot.h * 0.38f;
+                if(sp == 0) moveTo(px, py); else lineTo(px, py);
+            }
+            strokeColor(line.withAlpha(track.type == synth::SourceTrackType::BasicOscillator ? 0.85f : 0.55f));
+            strokeWidth(1.25f);
+            stroke();
+        }
+        resetScissor();
+    }
+
+    void drawModulationMatrixPreview(const Rect &r)
+    {
+        drawPlotBackground(r, 6, 5);
+        static constexpr synth::ModSource sources[] = {
+            synth::ModSource::Lfo1, synth::ModSource::Lfo2, synth::ModSource::Env1,
+            synth::ModSource::Env2, synth::ModSource::Adsr, synth::ModSource::KeyTrack
+        };
+        static constexpr synth::ModDestination dests[] = {
+            synth::ModDestination::Amp, synth::ModDestination::Freq, synth::ModDestination::MetaMorph,
+            synth::ModDestination::MetaWarp, synth::ModDestination::TrackPan
+        };
+        constexpr int sourceCount = int(sizeof(sources) / sizeof(sources[0]));
+        constexpr int destCount = int(sizeof(dests) / sizeof(dests[0]));
+        const float labelW = 52.0f;
+        const float headH = 14.0f;
+        const float cellW = (r.w - 12.0f - labelW) / float(destCount);
+        const float cellH = (r.h - 14.0f - headH) / float(sourceCount);
+
+        useUiFont();
+        uiFontSize(7.5f);
+        textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
+        fillColor(DesignTokens::textSecondary());
+        for(int d = 0; d < destCount; ++d)
+            text(r.x + 6.0f + labelW + cellW * (float(d) + 0.5f), r.y + 8.0f, destName(dests[d]), nullptr);
+
+        for(int s = 0; s < sourceCount; ++s)
+        {
+            const float cy = r.y + headH + 7.0f + cellH * (float(s) + 0.5f);
+            textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+            fillColor(DesignTokens::textSecondary());
+            text(r.x + 8.0f, cy, sourceName(sources[s]), nullptr);
+            for(int d = 0; d < destCount; ++d)
+            {
+                const Rect cell { r.x + 6.0f + labelW + cellW * float(d), r.y + headH + 7.0f + cellH * float(s),
+                                  cellW, cellH };
+                beginPath();
+                rect(cell.x, cell.y, cell.w, cell.h);
+                strokeColor(DesignTokens::divider().withAlpha(0.55f));
+                strokeWidth(1.0f);
+                stroke();
+                for(const auto &rule : rules_)
+                {
+                    if(!rule.enabled || rule.source != sources[s] || rule.dest != dests[d])
+                        continue;
+                    const float amount = clampf(std::abs(rule.depth) / modulationDepthLimit(rule.dest), 0.0f, 1.0f);
+                    const float radius = 4.0f + 5.0f * amount;
+                    beginPath();
+                    circle(cell.x + cell.w * 0.5f, cell.y + cell.h * 0.5f, radius);
+                    fillColor(DesignTokens::accentBlue().withAlpha(0.28f));
+                    fill();
+                    strokeColor(DesignTokens::accentCyan());
+                    strokeWidth(1.0f);
+                    stroke();
+                    char buf[16];
+                    std::snprintf(buf, sizeof(buf), "%.1f", double(rule.depth));
+                    uiFontSize(7.0f);
+                    textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
+                    fillColor(DesignTokens::textPrimary());
+                    text(cell.x + cell.w * 0.5f, cell.y + cell.h * 0.5f, buf, nullptr);
+                    break;
+                }
+            }
+        }
+    }
+
     void drawStripRack(const Rect &r)
     {
         drawPanel(r, rgba(0x0b1217ff), rgba(0x344852ff));
@@ -3067,11 +3258,19 @@ class KapibaraUI final : public UI
         const float gap  = 6.0f;
         const int maxVis = std::max(1, int((r.w - 28.0f + gap) / (kMinStripW + gap)));
         const int totalScroll = std::max(0, totalCols - maxVis);
-        stripScrollOffset_ = clampi(stripScrollOffset_, 0, totalScroll);
-        const int visCols = std::min(totalCols - stripScrollOffset_, maxVis);
-        const float w = visCols > 0
-            ? (r.w - 28.0f - gap * float(visCols - 1)) / float(visCols)
-            : r.w - 28.0f;
+        stripScrollF_ = clampf(stripScrollF_, 0.0f, float(totalScroll));
+        // Fixed column width sized to the visible count → scrolling pans smoothly
+        // (fractional offset) instead of jumping a whole column at a time.
+        const int shownCols = std::max(1, std::min(totalCols, maxVis));
+        const float w = (r.w - 28.0f - gap * float(shownCols - 1)) / float(shownCols);
+        const float viewX = r.x + 14.0f;
+        const float viewW = r.w - 28.0f;
+        const int firstCol = int(std::floor(stripScrollF_));
+        const float fracOff = stripScrollF_ - float(firstCol);
+        // Map a global column index to its on-screen x (may be off-viewport).
+        const auto colX = [&](int globalIdx) {
+            return viewX + (float(globalIdx - firstCol) - fracOff) * (w + gap);
+        };
 
         // ---- Clear hit rects ----
         trackGainRect_ = {}; trackPanRect_ = {}; trackSendRect_ = {};
@@ -3088,15 +3287,20 @@ class KapibaraUI final : public UI
         {
             const auto &grp = stripGroups_[(size_t)gi];
             if(grp.memberIndices.empty()) continue;
-            int firstCol = 99999, lastCol = -1;
+            float firstX = 1.0e9f;
+            float lastX = -1.0e9f;
             for(int mi : grp.memberIndices)
             {
-                const int col = mi - stripScrollOffset_;
-                if(col >= 0 && col < maxVis) { firstCol = std::min(firstCol, col); lastCol = std::max(lastCol, col); }
+                const float sx = colX(mi);
+                if(sx + w >= viewX && sx <= viewX + viewW)
+                {
+                    firstX = std::min(firstX, sx);
+                    lastX = std::max(lastX, sx);
+                }
             }
-            if(lastCol < 0 || firstCol >= 99999) continue;
-            const float bx = r.x + 14.0f + float(firstCol) * (w + gap) - 2.0f;
-            const float bw = float(lastCol - firstCol) * (w + gap) + w + 4.0f;
+            if(lastX < -1.0e8f || firstX > 1.0e8f) continue;
+            const float bx = firstX - 2.0f;
+            const float bw = (lastX - firstX) + w + 4.0f;
             beginPath();
             rect(bx, startY - 4.0f, bw, stripH + 8.0f);
             fillColor(rgba(0xc070e01aU));
@@ -3109,11 +3313,13 @@ class KapibaraUI final : public UI
         }
 
         // ---- Draw strips ----
-        for(int col = 0; col < visCols; ++col)
+        const int drawLast = std::min(totalCols, firstCol + shownCols + 2);
+        for(int globalIdx = firstCol; globalIdx < drawLast; ++globalIdx)
         {
-            const int globalIdx = col + stripScrollOffset_;
             const bool isGroup  = globalIdx >= totalTracks;
-            const float sx = r.x + 14.0f + float(col) * (w + gap);
+            const float sx = colX(globalIdx);
+            if(sx + w < viewX || sx > viewX + viewW)
+                continue;
             const Rect  s  { sx, startY, w, stripH };
 
             if(isGroup)
@@ -3181,66 +3387,63 @@ class KapibaraUI final : public UI
                 for(int mi : stripGroups_[(size_t)gi].memberIndices)
                     if(mi == globalIdx) { grpIdx = gi; break; }
 
-            const uint32_t borderCol = isPrimary  ? 0x70d77affU
-                                     : isMultiSel ? 0xe0a030ffU
-                                     : grpIdx >= 0 ? 0xc070e066U
-                                     :               0x344852ffU;
-            drawPanel(s, isPrimary ? rgba(0x17242cff) : rgba(0x101820ff), rgba(borderCol));
-
-            // ---- OSC header (mini preview + type label) ----
-            const float kOscH = std::min(58.0f, stripH * 0.22f);
-            const Rect oscHdr { s.x, s.y, s.w, kOscH };
-            drawPanel(oscHdr, rgba(0x0d1822ff), isPrimary ? rgba(0x405060ddU) : rgba(0x1e2c38ddU));
-            fontSize(7.5f);
-            fillColor(rgba(isPrimary ? 0x9eff50ffU : 0x6080a0ffU));
-            textAlign(ALIGN_LEFT | ALIGN_TOP);
-            text(oscHdr.x + 4.0f, oscHdr.y + 2.0f, synth::sourceTrackTypeName(track.type), nullptr);
-            if(track.type == synth::SourceTrackType::MetaOscillator && track.metaOsc.frameCount > 0)
+            drawPanel(s, DesignTokens::panelRaised(), DesignTokens::border());
+            if(isPrimary || isMultiSel)
             {
-                float liveMorph = track.metaOsc.morph;
-                if(const auto *p = plugin()) liveMorph = p->sourceLiveMorph(globalIdx);
-                const int fIdx = clampi(int(liveMorph * float(track.metaOsc.frameCount - 1) + 0.5f), 0, track.metaOsc.frameCount - 1);
-                const auto &frm = track.metaOsc.frames[(size_t)fIdx];
-                const Rect wr { oscHdr.x + 2.0f, oscHdr.y + 14.0f, oscHdr.w - 4.0f, kOscH - 16.0f };
-                scissor(wr.x, wr.y, wr.w, wr.h);
-                const float midY2 = wr.y + wr.h * 0.5f;
                 beginPath();
-                for(int sp = 0; sp < int(wr.w); ++sp)
-                {
-                    const float t2 = float(sp) / std::max(1.0f, wr.w);
-                    const float v  = sampleFrameWarped(frm, t2, track.metaOsc.warpMode, track.metaOsc.warpAmount);
-                    const float px2 = wr.x + float(sp);
-                    const float py2 = midY2 - v * wr.h * 0.42f;
-                    if(sp == 0) moveTo(px2, py2); else lineTo(px2, py2);
-                }
-                strokeColor(isPrimary ? rgba(0x9eff50ccU) : rgba(0x4d7780bbU));
-                strokeWidth(1.0f); stroke();
-                resetScissor();
+                roundedRect(s.x + 0.5f, s.y + 0.5f, s.w - 1.0f, s.h - 1.0f, DesignTokens::panelRadius);
+                strokeColor(isPrimary ? DesignTokens::accentGreen() : DesignTokens::accentBlue());
+                strokeWidth(1.0f);
+                stroke();
             }
 
-            // ---- Controls below OSC header ----
-            const float cy = s.y + kOscH + 4.0f;
-            drawButton({ s.x + 4.0f, cy,        s.w - 8.0f, 22.0f }, track.name.c_str(), isPrimary || isMultiSel);
-            const Rect muteR { s.x + 4.0f, cy + 26.0f, 24.0f, 22.0f };
-            const Rect soloR { s.x + s.w - 28.0f, cy + 26.0f, 24.0f, 22.0f };
+            char number[16] {};
+            std::snprintf(number, sizeof(number), "%02d", globalIdx + 1);
+            useUiFont();
+            uiFontSize(9.0f);
+            textAlign(ALIGN_LEFT | ALIGN_TOP);
+            fillColor(isPrimary ? DesignTokens::accentGreen() : DesignTokens::accentCyan());
+            text(s.x + 8.0f, s.y + 8.0f, number, nullptr);
+            fillColor(isPrimary ? DesignTokens::textPrimary() : DesignTokens::textSecondary());
+            text(s.x + 28.0f, s.y + 8.0f, track.name.c_str(), nullptr);
+
+            const Rect muteR { s.x + s.w - 43.0f, s.y + 6.0f, 16.0f, 16.0f };
+            const Rect soloR { s.x + s.w - 23.0f, s.y + 6.0f, 16.0f, 16.0f };
             stripMuteRects_[(size_t)globalIdx] = muteR;
             stripSoloRects_[(size_t)globalIdx] = soloR;
             drawButton(muteR, "M", track.mute);
             drawButton(soloR, "S", track.solo);
 
+            const Rect thumb { s.x + 8.0f, s.y + 30.0f, s.w - 16.0f, 48.0f };
+            drawStripThumbnail(thumb, track, globalIdx, isPrimary);
+
+            const int modCount = activeModCountForTrack(track);
+            const int fxCount = int(track.inserts.size());
+            const int matrixCount = matrixRouteCountForTrack(track);
+            useUiFont();
+            uiFontSize(8.0f);
+            textAlign(ALIGN_LEFT | ALIGN_TOP);
+            fillColor(DesignTokens::textSecondary());
+            std::snprintf(scratch_, sizeof(scratch_), "%d Mods  -  %d FX", modCount, fxCount);
+            text(s.x + 8.0f, s.y + 84.0f, scratch_, nullptr);
+            std::snprintf(scratch_, sizeof(scratch_), "Matrix %d", matrixCount);
+            text(s.x + 8.0f, s.y + 98.0f, scratch_, nullptr);
+
+            const float cy = s.y + 112.0f;
+
             // Group tag
             if(grpIdx >= 0)
             {
-                fontSize(7.0f); fillColor(rgba(0xc070e0ccU));
+                uiFontSize(7.0f); fillColor(DesignTokens::accentBlue());
                 textAlign(ALIGN_RIGHT | ALIGN_MIDDLE);
-                text(s.x + s.w - 5.0f, cy + 36.0f, stripGroups_[(size_t)grpIdx].name.c_str(), nullptr);
+                text(s.x + s.w - 8.0f, s.y + 98.0f, stripGroups_[(size_t)grpIdx].name.c_str(), nullptr);
             }
 
             // Route inserts (filter / distortion chain) — mixer-style, one per row
-            const float routeY0 = cy + 52.0f;
-            fontSize(7.0f); fillColor(rgba(0x6a8090ff));
+            const float routeY0 = cy;
+            uiFontSize(7.0f); fillColor(DesignTokens::textSecondary());
             textAlign(ALIGN_LEFT | ALIGN_TOP);
-            text(s.x + 4.0f, routeY0 - 9.0f, "ROUTE (drag to reorder)", nullptr);
+            text(s.x + 8.0f, routeY0 - 9.0f, "ROUTE", nullptr);
             drawInsertColumn({ s.x + 4.0f, routeY0, s.w - 8.0f, 74.0f }, track.inserts, int(track.id), -1);
 
             // MOD slots (modulation entries) — click to edit in the OSC editor
@@ -3303,7 +3506,7 @@ class KapibaraUI final : public UI
         {
             const float thumbW = std::max(16.0f, stripScrollbarRect_.w * float(maxVis) / float(totalCols));
             const float thumbX = stripScrollbarRect_.x
-                               + (stripScrollbarRect_.w - thumbW) * float(stripScrollOffset_) / float(totalScroll);
+                               + (stripScrollbarRect_.w - thumbW) * stripScrollF_ / float(totalScroll);
             beginPath();
             rect(thumbX, sbY + 2.0f, thumbW, kScrollH - 4.0f);
             fillColor(rgba(0x5080a0ccU));
@@ -3699,12 +3902,9 @@ class KapibaraUI final : public UI
         // Draggable ADSR modulation source (drag onto any knob to route)
         adsrSourceRect_ = { c1 + colW - 86.0f, r.y + 12.0f, 86.0f, 20.0f };
         drawButton(adsrSourceRect_, "ADSR src →", false);
-        const float tabW = colW / synth::kMaxAmpEnvs;
-        for(int i = 0; i < synth::kMaxAmpEnvs; ++i)
-        {
-            ampEnvTabRects_[(size_t)i] = { c1 + float(i) * tabW, r.y + 44.0f, tabW - 4.0f, 24.0f };
-            drawButton(ampEnvTabRects_[(size_t)i], buttonText("ENV%d", i + 1), selectedAmpEnv_ == i);
-        }
+        static constexpr const char *ampEnvTabs[] = { "ENV1", "ENV2", "ENV3", "ENV4" };
+        drawTabBar({ c1, r.y + 44.0f, colW, 24.0f }, ampEnvTabs, synth::kMaxAmpEnvs, selectedAmpEnv_,
+                   ampEnvTabRects_.data());
         auto &ampEnv = ampEnvs_[(size_t)selectedAmpEnv_];
         drawLabelBox({ c1, r.y + 74.0f, colW, 22.0f },
                      buttonText("Used by %d tracks", envUseCount(selectedAmpEnv_)));
@@ -3717,7 +3917,9 @@ class KapibaraUI final : public UI
         drawKnob(decayRect_,   "D", ampEnv.decay   / 5.0f, ampEnv.decay);
         drawKnob(sustainRect_, "S", ampEnv.sustain, ampEnv.sustain);
         drawKnob(releaseRect_, "R", ampEnv.release / 8.0f, ampEnv.release);
-        drawAdsrCurve({ c1, r.y + 158.0f, colW, std::max(60.0f, r.h - 166.0f) }, ampEnv);
+        const Rect matrixPreview { c1, r.y + r.h - 92.0f, colW, 84.0f };
+        drawAdsrCurve({ c1, r.y + 158.0f, colW, std::max(60.0f, matrixPreview.y - r.y - 166.0f) }, ampEnv);
+        drawModulationMatrixPreview(matrixPreview);
     }
 
     void drawMetaPartialEditor(const Rect &r)
@@ -3988,9 +4190,28 @@ class KapibaraUI final : public UI
         return v;
     }
 
+    void drawPlotBackground(const Rect &r, int columns = 6, int rows = 4)
+    {
+        drawPanel(r, DesignTokens::controlBackground(), DesignTokens::border());
+        beginPath();
+        roundedRect(r.x + 4.0f, r.y + 4.0f, r.w - 8.0f, r.h - 8.0f, DesignTokens::controlRadius);
+        fillColor(DesignTokens::appBackground().withAlpha(0.35f));
+        fill();
+        for(int i = 1; i < columns; ++i)
+        {
+            const float x = r.x + 6.0f + (r.w - 12.0f) * float(i) / float(columns);
+            strokeLine(x, r.y + 6.0f, x, r.y + r.h - 6.0f, DesignTokens::divider().withAlpha(0.65f), 1.0f);
+        }
+        for(int i = 1; i < rows; ++i)
+        {
+            const float y = r.y + 6.0f + (r.h - 12.0f) * float(i) / float(rows);
+            strokeLine(r.x + 6.0f, y, r.x + r.w - 6.0f, y, DesignTokens::divider().withAlpha(0.65f), 1.0f);
+        }
+    }
+
     void drawMeta3DWaveform(const Rect &r, const synth::WavetablePartialSlot &slot, int trackIndex = -1)
     {
-        drawPanel(r, rgba(0x080e14ff), rgba(0x1a2830ff));
+        drawPlotBackground(r, 6, 4);
         if(slot.frameCount <= 0) return;
 
         // 用调制后的实时 morph（来自音频引擎），fallback 为静态 slot.morph
@@ -4047,10 +4268,8 @@ class KapibaraUI final : public UI
             const float xR = r.x + r.w * (1.0f + xScale) * 0.5f - 4.0f;
             const float ampScale = (0.45f + 0.55f * depthT) * waveH * 0.45f;
 
-            // 线条颜色：morph 帧亮黄绿，其他暗青
-            const uint32_t lineCol = isMorph
-                ? 0x9eff50ff
-                : uint32_t(0x1a4830ff | (uint32_t(80 + int(80.0f * depthT)) << 8));
+            const Color lineCol = isMorph ? DesignTokens::accentGreen()
+                                           : DesignTokens::accentCyan().withAlpha(0.20f + 0.35f * depthT);
             const float lineW = isMorph ? 2.0f : (0.7f + 0.6f * depthT);
 
             auto &frame = slot.frames[(size_t)frameIdx];
@@ -4069,7 +4288,7 @@ class KapibaraUI final : public UI
                 lineTo(xR, yCenter);
                 lineTo(xL, yCenter);
                 closePath();
-                fillColor(rgba(0x9eff5014));
+                fillColor(DesignTokens::accentGreen().withAlpha(0.08f));
                 fill();
             }
 
@@ -4082,17 +4301,17 @@ class KapibaraUI final : public UI
                 const float py = yCenter - sampleFrameWarped(frame, t, slot.warpMode, slot.warpAmount) * ampScale;
                 if(s == 0) moveTo(px, py); else lineTo(px, py);
             }
-            strokeColor(rgba(lineCol));
+            strokeColor(lineCol);
             strokeWidth(lineW);
             stroke();
 
             // 基线（morph 帧用亮色）
             if(isMorph)
             {
-                strokeLine(xL, yCenter, xR, yCenter, rgba(0x9eff5030), 0.5f);
+                strokeLine(xL, yCenter, xR, yCenter, DesignTokens::accentGreen().withAlpha(0.18f), 0.5f);
                 // 帧号标注
-                fontSize(9.0f);
-                fillColor(rgba(0x9eff50c0));
+                uiFontSize(9.0f);
+                fillColor(DesignTokens::accentGreen());
                 textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
                 char buf[16];
                 std::snprintf(buf, sizeof(buf), "F%d", morphFrame + 1);
@@ -4104,8 +4323,9 @@ class KapibaraUI final : public UI
 
     void drawMetaWaveformEditor(const Rect &r, const synth::WavetableFrame &frame)
     {
-        drawPanel(r, rgba(0x101820ff), rgba(0x263842ff));
-        strokeLine(r.x + 6.0f, r.y + r.h * 0.5f, r.x + r.w - 6.0f, r.y + r.h * 0.5f, rgba(0x2b3f48ff), 1.0f);
+        drawPlotBackground(r, 8, 4);
+        strokeLine(r.x + 6.0f, r.y + r.h * 0.5f, r.x + r.w - 6.0f, r.y + r.h * 0.5f,
+                   DesignTokens::divider(), 1.0f);
 
         scissor(r.x + 2.0f, r.y + 2.0f, r.w - 4.0f, r.h - 4.0f);
         beginPath();
@@ -4135,8 +4355,8 @@ class KapibaraUI final : public UI
             const float py = r.y + r.h * 0.5f - v * (r.h * 0.40f);
             if(i == 0) moveTo(px, py); else lineTo(px, py);
         }
-        strokeColor(rgba(0x63d2ffff));
-        strokeWidth(1.5f);
+        strokeColor(DesignTokens::accentCyan());
+        strokeWidth(2.0f);
         stroke();
         resetScissor();
 
@@ -4149,7 +4369,7 @@ class KapibaraUI final : public UI
             const float y = r.y + r.h - 5.0f - amp * (r.h - 14.0f);
             beginPath();
             roundedRect(x, y, std::max(1.0f, barW - 2.0f), r.y + r.h - 5.0f - y, 1.0f);
-            fillColor(h == selectedMetaHarmonic_ ? rgba(0x8be87dff) : rgba(0x4d7780bb));
+            fillColor(h == selectedMetaHarmonic_ ? DesignTokens::accentGreen() : DesignTokens::accentBlue().withAlpha(0.62f));
             fill();
         }
     }
@@ -4157,7 +4377,7 @@ class KapibaraUI final : public UI
     void drawKeyboard()
     {
         keyboardRect_ = { 16.0f, static_cast<float>(getHeight()) - 86.0f, static_cast<float>(getWidth()) - 32.0f, 70.0f };
-        drawPanel(keyboardRect_, rgba(0x11181dff), rgba(0x293842ff));
+        drawPanel(keyboardRect_, DesignTokens::panelRaised(), DesignTokens::border());
 
         constexpr int first = 36;
         constexpr int keys = 61;
@@ -4170,15 +4390,21 @@ class KapibaraUI final : public UI
             const Rect r { keyboardRect_.x + i * keyW + 1.0f, keyboardRect_.y + 6.0f, keyW - 2.0f,
                            black ? keyboardRect_.h * 0.58f : keyboardRect_.h - 12.0f };
             beginPath();
-            rect(r.x, r.y, r.w, r.h);
-            fillColor(pressed ? rgba(0x67d36dff) : (black ? rgba(0x101010ff) : rgba(0xf1f4f0ff)));
+            roundedRect(r.x, r.y, r.w, r.h, black ? 2.0f : 3.0f);
+            fillColor(pressed ? DesignTokens::accentGreen()
+                              : (black ? DesignTokens::appBackground() : rgba(0xdde3e5ff)));
             fill();
+            beginPath();
+            roundedRect(r.x + 0.5f, r.y + 0.5f, r.w - 1.0f, r.h - 1.0f, black ? 2.0f : 3.0f);
+            strokeColor(black ? DesignTokens::divider() : DesignTokens::border());
+            strokeWidth(1.0f);
+            stroke();
         }
     }
 
     void drawAdsrCurve(const Rect &r)
     {
-        drawPanel(r, rgba(0x0c1115ff), rgba(0x344852ff));
+        drawPlotBackground(r, 5, 4);
         const float a = std::max(0.01f, adsr_.attack);
         const float d = std::max(0.01f, adsr_.decay);
         const float rr = std::max(0.01f, adsr_.release);
@@ -4198,14 +4424,24 @@ class KapibaraUI final : public UI
         lineTo(xD, yS);
         lineTo(xS, yS);
         lineTo(xR, y0);
-        strokeColor(rgba(0x8be87dff));
+        lineTo(x0, y0);
+        closePath();
+        fillColor(DesignTokens::accentGreen().withAlpha(0.09f));
+        fill();
+        beginPath();
+        moveTo(x0, y0);
+        lineTo(xA, y1);
+        lineTo(xD, yS);
+        lineTo(xS, yS);
+        lineTo(xR, y0);
+        strokeColor(DesignTokens::accentGreen());
         strokeWidth(2.0f);
         stroke();
     }
 
     void drawAdsrCurve(const Rect &r, const synth::AdsrParams &env)
     {
-        drawPanel(r, rgba(0x0c1115ff), rgba(0x344852ff));
+        drawPlotBackground(r, 5, 4);
         const float a = std::max(0.01f, env.attack);
         const float d = std::max(0.01f, env.decay);
         const float rr = std::max(0.01f, env.release);
@@ -4225,14 +4461,24 @@ class KapibaraUI final : public UI
         lineTo(xD, yS);
         lineTo(xS, yS);
         lineTo(xR, y0);
-        strokeColor(rgba(0x8be87dff));
+        lineTo(x0, y0);
+        closePath();
+        fillColor(DesignTokens::accentGreen().withAlpha(0.09f));
+        fill();
+        beginPath();
+        moveTo(x0, y0);
+        lineTo(xA, y1);
+        lineTo(xD, yS);
+        lineTo(xS, yS);
+        lineTo(xR, y0);
+        strokeColor(DesignTokens::accentGreen());
         strokeWidth(2.0f);
         stroke();
     }
 
     void drawMatrixEnvCurve(const Rect &r, const synth::MatrixEnvParams &env)
     {
-        drawPanel(r, rgba(0x101820ff), rgba(0x263842ff));
+        drawPlotBackground(r, 6, 4);
         beginPath();
         const int count = clampi(env.pointCount, 2, synth::kMaxMatrixEnvPoints);
         for(int s = 0; s < 80; ++s)
@@ -4243,8 +4489,21 @@ class KapibaraUI final : public UI
             const float py = r.y + r.h - 5.0f - yv * (r.h - 10.0f);
             if(s == 0) moveTo(px, py); else lineTo(px, py);
         }
-        (void)count;
-        strokeColor(rgba(0x8be87dff));
+        lineTo(r.x + r.w - 8.0f, r.y + r.h - 5.0f);
+        lineTo(r.x + 8.0f, r.y + r.h - 5.0f);
+        closePath();
+        fillColor(DesignTokens::accentGreen().withAlpha(0.08f));
+        fill();
+        beginPath();
+        for(int s = 0; s < 80; ++s)
+        {
+            const float x = float(s) / 79.0f;
+            const float yv = synth::matrixEnvBreakpointEval(env, x);
+            const float px = r.x + 8.0f + x * (r.w - 16.0f);
+            const float py = r.y + r.h - 5.0f - yv * (r.h - 10.0f);
+            if(s == 0) moveTo(px, py); else lineTo(px, py);
+        }
+        strokeColor(DesignTokens::accentGreen());
         strokeWidth(2.0f);
         stroke();
         for(int i = 0; i < count; ++i)
@@ -4254,18 +4513,27 @@ class KapibaraUI final : public UI
             const float py = r.y + r.h - 5.0f - clampf(pt.y, 0.0f, 1.0f) * (r.h - 10.0f);
             beginPath();
             circle(px, py, i == selectedEnvPoint_ ? 5.0f : 3.5f);
-            fillColor(i == selectedEnvPoint_ ? rgba(0xffd166ff) : rgba(0x63d2ffff));
+            fillColor(i == selectedEnvPoint_ ? DesignTokens::accentBlue() : DesignTokens::accentCyan());
             fill();
+            beginPath();
+            circle(px, py, i == selectedEnvPoint_ ? 5.0f : 3.5f);
+            strokeColor(DesignTokens::appBackground());
+            strokeWidth(1.0f);
+            stroke();
         }
     }
 
     void drawSectionTitle(float x, float y, const char *title)
     {
+        beginPath();
+        roundedRect(x, y + 2.0f, 2.0f, 14.0f, 1.0f);
+        fillColor(DesignTokens::accentCyan());
+        fill();
         useUiFont();
-        uiFontSize(15.0f);
+        uiFontSize(12.0f);
         textAlign(ALIGN_LEFT | ALIGN_TOP);
-        fillColor(rgba(0xc8d6dcff));
-        text(x, y, title, nullptr);
+        fillColor(DesignTokens::textPrimary());
+        text(x + 8.0f, y, title, nullptr);
     }
 
     const char *buttonText(const char *fmt, int value)
@@ -4284,57 +4552,46 @@ class KapibaraUI final : public UI
     {
         const bool tall = r.h >= r.w * 0.65f;
         const float sz   = tall ? std::min(r.w, r.h) : r.h;
-        const float rad  = sz * 0.5f - 3.5f;
+        const float rad  = std::max(6.0f, sz * 0.5f - 8.0f);
         const float cx   = tall ? r.x + r.w * 0.5f : r.x + sz * 0.5f;
         const float cy   = tall ? r.y + sz * 0.5f + 2.0f : r.y + r.h * 0.5f;
 
-        // Background circle
         beginPath();
-        circle(cx, cy, rad + 3.5f);
-        fillColor(rgba(0x12202aff));
+        circle(cx, cy, rad + 4.0f);
+        fillColor(DesignTokens::controlBackground());
         fill();
-        strokeColor(rgba(0x2a3e4aff));
-        strokeWidth(1.0f);
+        strokeColor(DesignTokens::border());
+        strokeWidth(DesignTokens::borderWidth);
         stroke();
 
-        const float kStart = kPi * 0.75f;
-        const float kEnd   = kPi * 2.25f;
-        const float kAngle = kStart + clampf(norm, 0.0f, 1.0f) * (kEnd - kStart);
-        const float sw     = rad >= 14.0f ? 3.0f : 2.0f;
+        const float kStart = DesignTokens::knobStart;
+        const float kEnd   = DesignTokens::knobStart + DesignTokens::knobSweep;
+        const float kAngle = kStart + clampf(norm, 0.0f, 1.0f) * DesignTokens::knobSweep;
 
-        // Track arc
         beginPath();
         arc(cx, cy, rad, kStart, kEnd, CCW);
-        strokeColor(rgba(0x243340ff));
-        strokeWidth(sw);
+        strokeColor(DesignTokens::divider());
+        strokeWidth(2.0f);
         stroke();
 
-        // Fill arc
         if(norm > 0.001f)
         {
             beginPath();
             arc(cx, cy, rad, kStart, kAngle, CCW);
-            strokeColor(rgba(0x63d2ffff));
-            strokeWidth(sw);
+            strokeColor(DesignTokens::accentCyan());
+            strokeWidth(2.5f);
             stroke();
         }
 
-        // Pointer line
-        const float pLen = rad * 0.60f;
+        const float p0 = rad * 0.38f;
+        const float p1 = rad * 0.70f;
         beginPath();
-        moveTo(cx, cy);
-        lineTo(cx + std::cos(kAngle) * pLen, cy + std::sin(kAngle) * pLen);
-        strokeColor(rgba(0xe8f4f8ff));
+        moveTo(cx + std::cos(kAngle) * p0, cy + std::sin(kAngle) * p0);
+        lineTo(cx + std::cos(kAngle) * p1, cy + std::sin(kAngle) * p1);
+        strokeColor(DesignTokens::textPrimary());
         strokeWidth(1.5f);
         stroke();
 
-        // Center dot
-        beginPath();
-        circle(cx, cy, rad >= 14.0f ? 2.5f : 1.5f);
-        fillColor(rgba(0xe8f4f8ff));
-        fill();
-
-        // Label and value
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%.3g", value);
         useUiFont();
@@ -4342,11 +4599,11 @@ class KapibaraUI final : public UI
         {
             uiFontSize(10.5f);
             textAlign(ALIGN_CENTER | ALIGN_TOP);
-            fillColor(rgba(0x8aaab8ff));
+            fillColor(DesignTokens::textSecondary());
             text(cx, r.y + sz + 2.0f, label, nullptr);
             uiFontSize(11.5f);
             textAlign(ALIGN_CENTER | ALIGN_TOP);
-            fillColor(rgba(0xd0e0e8ff));
+            fillColor(DesignTokens::textPrimary());
             text(cx, r.y + sz + 14.0f, buf, nullptr);
         }
         else
@@ -4354,48 +4611,116 @@ class KapibaraUI final : public UI
             const float tx = r.x + sz + 5.0f;
             uiFontSize(10.5f);
             textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-            fillColor(rgba(0x8aaab8ff));
+            fillColor(DesignTokens::textSecondary());
             text(tx, cy - 5.5f, label, nullptr);
             uiFontSize(12.0f);
-            fillColor(rgba(0xd0e0e8ff));
+            fillColor(DesignTokens::textPrimary());
             text(tx, cy + 6.0f, buf, nullptr);
         }
     }
 
     void drawSlider(const Rect &r, const char *label, float norm, float value)
     {
-        drawKnob(r, label, norm, value);
+        if(r.w < 80.0f || r.h > r.w * 0.55f)
+        {
+            drawKnob(r, label, norm, value);
+            return;
+        }
+
+        const float y = r.y + r.h * 0.5f;
+        beginPath();
+        roundedRect(r.x, y - 1.0f, r.w, 2.0f, 1.0f);
+        fillColor(DesignTokens::divider());
+        fill();
+        beginPath();
+        roundedRect(r.x, y - 1.25f, clampf(norm, 0.0f, 1.0f) * r.w, 2.5f, 1.25f);
+        fillColor(DesignTokens::accentCyan());
+        fill();
+        const float hx = r.x + clampf(norm, 0.0f, 1.0f) * r.w;
+        beginPath();
+        circle(hx, y, 4.0f);
+        fillColor(DesignTokens::accentCyan());
+        fill();
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%.3g", value);
+        useUiFont();
+        uiFontSize(10.5f);
+        textAlign(ALIGN_LEFT | ALIGN_BOTTOM);
+        fillColor(DesignTokens::textSecondary());
+        text(r.x, r.y - 2.0f, label, nullptr);
+        textAlign(ALIGN_RIGHT | ALIGN_BOTTOM);
+        fillColor(DesignTokens::textPrimary());
+        text(r.x + r.w, r.y - 2.0f, buf, nullptr);
     }
 
     void drawLabelBox(const Rect &r, const char *textValue)
     {
-        drawPanel(r, rgba(0x162027ff), rgba(0x354851ff));
+        drawPanel(r, DesignTokens::controlBackground(), DesignTokens::border());
         useUiFont();
         uiFontSize(13.0f);
         textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-        fillColor(rgba(0xd8e3e6ff));
+        fillColor(DesignTokens::textPrimary());
         text(r.x + 10.0f, r.y + r.h * 0.5f, textValue, nullptr);
     }
 
     void drawButton(const Rect &r, const char *label, bool active)
     {
-        drawPanel(r, active ? rgba(0x263840ff) : rgba(0x151d22ff), active ? rgba(0x70d77aff) : rgba(0x354851ff));
+        const float radius = std::min(DesignTokens::controlRadius, std::min(r.w, r.h) * 0.45f);
+        beginPath();
+        roundedRect(r.x, r.y, r.w, r.h, radius);
+        fillColor(active ? DesignTokens::panelRaised() : DesignTokens::controlBackground());
+        fill();
+        beginPath();
+        roundedRect(r.x + 0.5f, r.y + 0.5f, r.w - 1.0f, r.h - 1.0f, radius);
+        strokeColor(active ? DesignTokens::accentCyan() : DesignTokens::border());
+        strokeWidth(DesignTokens::borderWidth);
+        stroke();
         useUiFont();
-        uiFontSize(13.0f);
+        uiFontSize(12.0f);
         textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
-        fillColor(active ? rgba(0xf4fff4ff) : rgba(0xd5e1e6ff));
+        fillColor(active ? DesignTokens::textPrimary() : DesignTokens::textSecondary());
         text(r.x + r.w * 0.5f, r.y + r.h * 0.5f, label, nullptr);
     }
 
     void drawPanel(const Rect &r, Color fillValue, Color strokeValue)
     {
+        (void)fillValue;
+        (void)strokeValue;
+        const float radius = std::min(DesignTokens::panelRadius, std::min(r.w, r.h) * 0.45f);
         beginPath();
-        roundedRect(r.x, r.y, r.w, r.h, 6.0f);
-        fillColor(fillValue);
+        roundedRect(r.x, r.y, r.w, r.h, radius);
+        fillColor(DesignTokens::panelBackground());
         fill();
-        strokeColor(strokeValue);
-        strokeWidth(1.0f);
+        beginPath();
+        roundedRect(r.x + 0.5f, r.y + 0.5f, r.w - 1.0f, r.h - 1.0f, radius);
+        strokeColor(DesignTokens::border());
+        strokeWidth(DesignTokens::borderWidth);
         stroke();
+    }
+
+    void drawTabBar(const Rect &r, const char *const *labels, int count, int selected, Rect *rects)
+    {
+        if(count <= 0)
+            return;
+        const float tabW = r.w / float(count);
+        useUiFont();
+        uiFontSize(11.0f);
+        textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
+        for(int i = 0; i < count; ++i)
+        {
+            const Rect tab { r.x + tabW * float(i), r.y, tabW, r.h };
+            if(rects != nullptr)
+                rects[i] = tab;
+            fillColor(i == selected ? DesignTokens::textPrimary() : DesignTokens::textSecondary());
+            text(tab.x + tab.w * 0.5f, tab.y + tab.h * 0.45f, labels[i], nullptr);
+            if(i == selected)
+            {
+                beginPath();
+                roundedRect(tab.x + 8.0f, tab.y + tab.h - 2.0f, std::max(4.0f, tab.w - 16.0f), 2.0f, 1.0f);
+                fillColor(DesignTokens::accentCyan());
+                fill();
+            }
+        }
     }
 
     void strokeLine(float x1, float y1, float x2, float y2, Color color, float width)
@@ -5364,7 +5689,7 @@ class KapibaraUI final : public UI
             dragTarget_   = DragTarget::StripScroll;
             dragStartY_   = x;
             dragScrollStartX_  = x;
-            dragScrollStartVal_ = stripScrollOffset_;
+            dragScrollStartValF_ = stripScrollF_;
             return true;
         }
 
@@ -5768,9 +6093,9 @@ class KapibaraUI final : public UI
                 const int totalScroll2 = std::max(0, totalCols - maxVis2);
                 if(totalScroll2 > 0)
                 {
-                    const float pixPerStep = std::max(1.0f, sbW / float(totalScroll2));
-                    const int delta = int((x - dragScrollStartX_) / pixPerStep + 0.5f);
-                    stripScrollOffset_ = clampi(dragScrollStartVal_ + delta, 0, totalScroll2);
+                    const float usableW = std::max(1.0f, sbW - std::max(16.0f, sbW * float(maxVis2) / float(totalCols)));
+                    const float delta = ((x - dragScrollStartX_) / usableW) * float(totalScroll2);
+                    stripScrollF_ = clampf(dragScrollStartValF_ + delta, 0.0f, float(totalScroll2));
                 }
                 break;
             }
@@ -6535,7 +6860,7 @@ class KapibaraUI final : public UI
     int importFrameLimit_ = 128;
     bool shiftDown_ = false;
     std::array<bool, synth::kMaxSourceTracks> selectedStrips_ {};
-    int  stripScrollOffset_ = 0;
+    float stripScrollF_ = 0.0f;   // fractional column scroll for smooth panning
     Rect stripScrollbarRect_ {};
     std::array<Rect, synth::kMaxSourceTracks> stripMuteRects_ {};
     std::array<Rect, synth::kMaxSourceTracks> stripSoloRects_ {};
@@ -6642,6 +6967,7 @@ class KapibaraUI final : public UI
     int metaFrameScrollStart_ = 0;
     float dragScrollStartX_ = 0.0f;
     int dragScrollStartVal_ = 0;
+    float dragScrollStartValF_ = 0.0f;
     // OCT/SEM/FIN/CRS pitch 控件
     Rect metaOctRect_ {}, metaSemRect_ {}, metaFinRect_ {}, metaCrsRect_ {};
     int  dragStartOct_ = 0, dragStartSem_ = 0;
