@@ -735,6 +735,12 @@ class KapibaraUI final : public UI
         }
         if(ev.button == kMouseButtonRight)
         {
+            // Right-click a matrix grid node → clear that route.
+            if(handleMatrixGridDelete(x, y))
+            {
+                repaint();
+                return true;
+            }
             // Right-click a strip MOD slot → pick / change the modulation source
             for(const auto &hit : modHits_)
                 if(hit.rect.contains(x, y))
@@ -4630,49 +4636,21 @@ class KapibaraUI final : public UI
         drawPanel(r, rgba(0x0d151aff), rgba(0x4b6972ff));
         drawSectionTitle(r.x + 16.0f, r.y + 14.0f, "Matrix");
 
-        // Effects live in the OSC editor (per-strip insert chains), not here.
-        const float colGap = 18.0f;
-        const float colW   = (r.w - 32.0f - colGap) * 0.5f;
-        const float c0 = r.x + 16.0f;
-        const float c1 = c0 + colW + colGap;
+        static const char *const matTabs[] = { "GRID", "MODULATORS", "AMP ENV" };
+        const Rect tabBar { r.x + 16.0f, r.y + 38.0f, std::min(r.w - 32.0f, 360.0f), 22.0f };
+        drawTabBar(tabBar, matTabs, 3, matrixTab_, matrixTabRects_.data());
 
-        // -------- Column 0: LFO / Matrix ENV (with LFO curve) --------
-        for(int i = 0; i < synth::kMaxLfos; ++i)
-        {
-            lfoSelectRects_[(size_t)i] = { c0 + float(i) * (colW / synth::kMaxLfos), r.y + 44.0f, colW / synth::kMaxLfos - 4.0f, 24.0f };
-            drawButton(lfoSelectRects_[(size_t)i], buttonText("LFO%d", i + 1), selectedLfo_ == i);
-        }
-        for(int i = 0; i < synth::kMaxModEnvs; ++i)
-        {
-            envSelectRects_[(size_t)i] = { c0 + float(i) * (colW / synth::kMaxModEnvs), r.y + 72.0f, colW / synth::kMaxModEnvs - 4.0f, 24.0f };
-            drawButton(envSelectRects_[(size_t)i], buttonText("ENV%d", i + 1), selectedEnv_ == i);
-        }
-        auto &lfo = lfos_[(size_t)selectedLfo_];
-        auto &env = envs_[(size_t)selectedEnv_];
-        // LFOs/ENVs are always on now — no enable toggle. Shape spans the row.
-        lfoEnableRect_ = {};
-        lfoShapeRect_  = { c0, r.y + 100.0f, colW, 24.0f };
-        std::snprintf(scratch_, sizeof(scratch_), "Shape: %s", lfoShapeName(lfo.shape));
-        drawButton(lfoShapeRect_, scratch_, false);
-        // LFO curve preview
-        drawLfoCurve({ c0, r.y + 128.0f, colW, 72.0f }, lfo);
-        // LFO Rate / Phase / Rho as a row of standard vertical knobs (like the rest).
-        const float lfoKnobW = (colW - 16.0f) / 3.0f;
-        const float lfoKnobY = r.y + 208.0f;
-        lfoFreqRect_   = { c0,                            lfoKnobY, lfoKnobW, 48.0f };
-        lfoPhaseRect_  = { c0 + lfoKnobW + 8.0f,          lfoKnobY, lfoKnobW, 48.0f };
-        lfoRhoRect_    = { c0 + 2.0f * (lfoKnobW + 8.0f), lfoKnobY, lfoKnobW, 48.0f };
-        drawKnob(lfoFreqRect_,   "Rate",  lfo.frequencyHz / 20.0f, lfo.frequencyHz);
-        drawKnob(lfoPhaseRect_,  "Phase", lfo.phase0, lfo.phase0);
-        drawKnob(lfoRhoRect_,    "Rho",   lfo.rhoLfo, lfo.rhoLfo);
-        envEnableRect_ = {};
-        // ENV is always on — just a heading hint above its curve.
-        drawSectionTitle(c0, r.y + 266.0f, buttonText("Matrix ENV%d (drag curve)", selectedEnv_ + 1));
-        envPointARect_ = {}; envPointBRect_ = {}; envCurveARect_ = {};
-        matrixEnvCurveRect_ = { c0, r.y + 290.0f, colW, std::max(40.0f, r.h - 298.0f) };
-        drawMatrixEnvCurve(matrixEnvCurveRect_, env);
+        const Rect body { r.x + 16.0f, r.y + 72.0f, r.w - 32.0f, r.h - 84.0f };
 
-        // Clear rule/chaos/shape rects (legacy, unused in this layout)
+        // Only the active sub-view repopulates its hit rects — clear them all first.
+        matrixGridCells_.clear();
+        for(auto &rc : lfoSelectRects_) rc = {};
+        for(auto &rc : envSelectRects_) rc = {};
+        for(auto &rc : ampEnvTabRects_) rc = {};
+        lfoShapeRect_ = {}; lfoFreqRect_ = {}; lfoPhaseRect_ = {}; lfoRhoRect_ = {};
+        lfoEnableRect_ = {}; envEnableRect_ = {}; adsrSourceRect_ = {};
+        envPointARect_ = {}; envPointBRect_ = {}; envCurveARect_ = {}; matrixEnvCurveRect_ = {};
+        attackRect_ = {}; decayRect_ = {}; sustainRect_ = {}; releaseRect_ = {};
         ruleEnableRect_ = {}; ruleSourceRect_ = {}; ruleDestRect_ = {}; ruleWeightRect_ = {};
         ruleDepthRect_ = {}; ruleBandLoRect_ = {}; ruleBandHiRect_ = {};
         for(auto &rc : ruleSelectRects_) rc = {};
@@ -4680,28 +4658,242 @@ class KapibaraUI final : public UI
         chaosRateRect_ = {}; chaosAmountRect_ = {};
         shapePhaseRect_ = {}; shapeRhoRect_ = {}; shapeUpRect_ = {}; shapeDownRect_ = {};
 
-        // -------- Column 1: Amp ADSR ENV --------
-        drawSectionTitle(c1, r.y + 14.0f, "Amp ADSR (drag a tab to route)");
-        // Each Amp ADSR (ENV1-4) is individually draggable as a mod source now,
-        // so the old single "ADSR src" handle is gone.
-        adsrSourceRect_ = {};
+        if(matrixTab_ == 1)      drawMatrixModulators(body);
+        else if(matrixTab_ == 2) drawMatrixAmpEnv(body);
+        else                     drawMatrixGrid(body);
+    }
+
+    void drawMatrixModulators(const Rect &r)
+    {
+        for(int i = 0; i < synth::kMaxLfos; ++i)
+        {
+            lfoSelectRects_[(size_t)i] = { r.x + float(i) * (r.w / synth::kMaxLfos), r.y, r.w / synth::kMaxLfos - 4.0f, 24.0f };
+            drawButton(lfoSelectRects_[(size_t)i], buttonText("LFO%d", i + 1), selectedLfo_ == i);
+        }
+        for(int i = 0; i < synth::kMaxModEnvs; ++i)
+        {
+            envSelectRects_[(size_t)i] = { r.x + float(i) * (r.w / synth::kMaxModEnvs), r.y + 28.0f, r.w / synth::kMaxModEnvs - 4.0f, 24.0f };
+            drawButton(envSelectRects_[(size_t)i], buttonText("ENV%d", i + 1), selectedEnv_ == i);
+        }
+        auto &lfo = lfos_[(size_t)selectedLfo_];
+        auto &env = envs_[(size_t)selectedEnv_];
+        lfoShapeRect_ = { r.x, r.y + 56.0f, r.w, 24.0f };
+        std::snprintf(scratch_, sizeof(scratch_), "Shape: %s", lfoShapeName(lfo.shape));
+        drawButton(lfoShapeRect_, scratch_, false);
+        drawLfoCurve({ r.x, r.y + 84.0f, r.w, 70.0f }, lfo);
+        const float lfoKnobW = (r.w - 16.0f) / 3.0f;
+        const float lfoKnobY = r.y + 162.0f;
+        lfoFreqRect_  = { r.x,                            lfoKnobY, lfoKnobW, 48.0f };
+        lfoPhaseRect_ = { r.x + lfoKnobW + 8.0f,          lfoKnobY, lfoKnobW, 48.0f };
+        lfoRhoRect_   = { r.x + 2.0f * (lfoKnobW + 8.0f), lfoKnobY, lfoKnobW, 48.0f };
+        drawKnob(lfoFreqRect_,  "Rate",  lfo.frequencyHz / 20.0f, lfo.frequencyHz);
+        drawKnob(lfoPhaseRect_, "Phase", lfo.phase0, lfo.phase0);
+        drawKnob(lfoRhoRect_,   "Rho",   lfo.rhoLfo, lfo.rhoLfo);
+        drawSectionTitle(r.x, r.y + 222.0f, buttonText("Matrix ENV%d (drag curve)", selectedEnv_ + 1));
+        matrixEnvCurveRect_ = { r.x, r.y + 246.0f, r.w, std::max(40.0f, (r.y + r.h) - (r.y + 246.0f)) };
+        drawMatrixEnvCurve(matrixEnvCurveRect_, env);
+    }
+
+    void drawMatrixAmpEnv(const Rect &r)
+    {
+        drawSectionTitle(r.x, r.y, "Amp ADSR (drag a tab to route)");
         static constexpr const char *ampEnvTabs[] = { "ENV1", "ENV2", "ENV3", "ENV4" };
-        drawTabBar({ c1, r.y + 44.0f, colW, 24.0f }, ampEnvTabs, synth::kMaxAmpEnvs, selectedAmpEnv_,
-                   ampEnvTabRects_.data());
+        drawTabBar({ r.x, r.y + 28.0f, std::min(r.w, 320.0f), 24.0f }, ampEnvTabs, synth::kMaxAmpEnvs,
+                   selectedAmpEnv_, ampEnvTabRects_.data());
         auto &ampEnv = ampEnvs_[(size_t)selectedAmpEnv_];
-        drawLabelBox({ c1, r.y + 74.0f, colW, 22.0f },
+        drawLabelBox({ r.x, r.y + 58.0f, std::min(r.w, 220.0f), 22.0f },
                      buttonText("Used by %d tracks", envUseCount(selectedAmpEnv_)));
-        const float kw = (colW - 18.0f) * 0.25f;
-        attackRect_  = { c1,                      r.y + 104.0f, kw, 44.0f };
-        decayRect_   = { c1 + kw + 6.0f,          r.y + 104.0f, kw, 44.0f };
-        sustainRect_ = { c1 + (kw + 6.0f) * 2.0f, r.y + 104.0f, kw, 44.0f };
-        releaseRect_ = { c1 + (kw + 6.0f) * 3.0f, r.y + 104.0f, kw, 44.0f };
+        const float kw = (r.w - 18.0f) * 0.25f;
+        attackRect_  = { r.x,                      r.y + 92.0f, kw, 44.0f };
+        decayRect_   = { r.x + kw + 6.0f,          r.y + 92.0f, kw, 44.0f };
+        sustainRect_ = { r.x + (kw + 6.0f) * 2.0f, r.y + 92.0f, kw, 44.0f };
+        releaseRect_ = { r.x + (kw + 6.0f) * 3.0f, r.y + 92.0f, kw, 44.0f };
         drawKnob(attackRect_,  "A", ampEnv.attack  / 5.0f, ampEnv.attack);
         drawKnob(decayRect_,   "D", ampEnv.decay   / 5.0f, ampEnv.decay);
         drawKnob(sustainRect_, "S", ampEnv.sustain, ampEnv.sustain);
         drawKnob(releaseRect_, "R", ampEnv.release / 8.0f, ampEnv.release);
-        // ADSR curve fills the rest of the column (old matrix preview removed).
-        drawAdsrCurve({ c1, r.y + 158.0f, colW, std::max(60.0f, r.y + r.h - (r.y + 166.0f)) }, ampEnv);
+        drawAdsrCurve({ r.x, r.y + 146.0f, r.w, std::max(60.0f, (r.y + r.h) - (r.y + 146.0f)) }, ampEnv);
+    }
+
+    static constexpr synth::ModSource kGridSources[] = {
+        synth::ModSource::Lfo1, synth::ModSource::Lfo2, synth::ModSource::Lfo3, synth::ModSource::Lfo4,
+        synth::ModSource::Env1, synth::ModSource::Env2, synth::ModSource::Env3, synth::ModSource::Env4,
+        synth::ModSource::Velocity, synth::ModSource::KeyTrack
+    };
+    static constexpr synth::ModDestination kGridDests[] = {
+        synth::ModDestination::Amp, synth::ModDestination::Freq, synth::ModDestination::Phase,
+        synth::ModDestination::MetaMorph, synth::ModDestination::MetaWarp, synth::ModDestination::TrackPan
+    };
+
+    // Interactive modulation matrix: rows = sources, cols = destinations, a circular
+    // amount node at each routed cell. Click empty = create, drag node = depth,
+    // right-click = clear. Routes are scoped to the selected track.
+    void drawMatrixGrid(const Rect &r)
+    {
+        constexpr int nS = int(sizeof(kGridSources) / sizeof(kGridSources[0]));
+        constexpr int nD = int(sizeof(kGridDests) / sizeof(kGridDests[0]));
+        const auto *track = currentTrack();
+
+        useUiFont();
+        uiFontSize(7.5f);
+        textAlign(ALIGN_LEFT | ALIGN_TOP);
+        fillColor(DesignTokens::textSecondary());
+        text(r.x, r.y, "click = route   ·   drag node = depth   ·   right-click = clear", nullptr);
+
+        const float labelW = 52.0f;
+        const float headH = 14.0f;
+        const float gridX = r.x + labelW;
+        const float gridY = r.y + 18.0f + headH;
+        const float gridW = r.w - labelW;
+        const float gridH = (r.y + r.h) - gridY;
+        const float cellW = gridW / float(nD);
+        const float cellH = gridH / float(nS);
+
+        // Destination column headers.
+        uiFontSize(8.0f);
+        textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
+        fillColor(DesignTokens::textPrimary());
+        for(int d = 0; d < nD; ++d)
+            text(gridX + cellW * (float(d) + 0.5f), r.y + 18.0f + headH * 0.5f, destName(kGridDests[d]), nullptr);
+
+        for(int s = 0; s < nS; ++s)
+        {
+            const float rowCy = gridY + cellH * (float(s) + 0.5f);
+            uiFontSize(8.0f);
+            textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+            fillColor(DesignTokens::textSecondary());
+            text(r.x, rowCy, sourceName(kGridSources[s]), nullptr);
+            for(int d = 0; d < nD; ++d)
+            {
+                const Rect cell { gridX + cellW * float(d), gridY + cellH * float(s), cellW, cellH };
+                matrixGridCells_.push_back(MatrixCell { cell, kGridSources[s], kGridDests[d] });
+                beginPath();
+                rect(cell.x + 1.0f, cell.y + 1.0f, cell.w - 2.0f, cell.h - 2.0f);
+                strokeColor(DesignTokens::divider().withAlpha(0.5f));
+                strokeWidth(1.0f);
+                stroke();
+
+                const synth::MatrixRule *rule = nullptr;
+                if(track != nullptr)
+                    for(const auto &ru : rules_)
+                        if(ru.enabled && ru.source == kGridSources[s] && ru.dest == kGridDests[d]
+                           && ru.targetTrackId == track->id) { rule = &ru; break; }
+
+                const float ncx = cell.x + cell.w * 0.5f;
+                const float ncy = cell.y + cell.h * 0.5f;
+                if(rule != nullptr)
+                {
+                    const float nr = std::min(cell.w, cell.h) * 0.36f;
+                    const float amt = clampf(std::abs(rule->depth) / modulationDepthLimit(rule->dest), 0.0f, 1.0f);
+                    const bool pos = rule->depth >= 0.0f;
+                    const Color col = pos ? DesignTokens::accentCyan() : DesignTokens::accentGreen();
+                    beginPath();
+                    circle(ncx, ncy, nr);
+                    fillColor(col.withAlpha(0.16f));
+                    fill();
+                    strokeColor(DesignTokens::divider());
+                    strokeWidth(2.0f);
+                    stroke();
+                    lineCap(ROUND);
+                    beginPath();
+                    const float a0 = -kPi * 0.5f;
+                    arc(ncx, ncy, nr, a0, a0 + 2.0f * kPi * std::max(0.02f, amt), CW);
+                    strokeColor(col);
+                    strokeWidth(2.4f);
+                    stroke();
+                    lineCap(BUTT);
+                    char buf[12];
+                    std::snprintf(buf, sizeof(buf), "%+.1f", double(rule->depth));
+                    uiFontSize(8.0f);
+                    textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
+                    fillColor(DesignTokens::textPrimary());
+                    text(ncx, ncy, buf, nullptr);
+                }
+                else
+                {
+                    beginPath();
+                    circle(ncx, ncy, 1.6f);
+                    fillColor(DesignTokens::divider());
+                    fill();
+                }
+            }
+        }
+    }
+
+    void enableModSource(synth::ModSource src)
+    {
+        if(src >= synth::ModSource::Lfo1 && src <= synth::ModSource::Lfo4)
+        { selectedLfo_ = int(src) - int(synth::ModSource::Lfo1); lfos_[(size_t)selectedLfo_].enabled = true; }
+        else if(src >= synth::ModSource::Env1 && src <= synth::ModSource::Env4)
+        { selectedEnv_ = int(src) - int(synth::ModSource::Env1); envs_[(size_t)selectedEnv_].enabled = true; }
+    }
+
+    bool handleMatrixGridPress(float x, float y)
+    {
+        auto *track = currentTrack();
+        if(track == nullptr)
+            return false;
+        for(const auto &c : matrixGridCells_)
+        {
+            if(!c.rect.contains(x, y))
+                continue;
+            int idx = -1, freeIdx = -1;
+            for(int i = 0; i < synth::kMaxMatrixRules; ++i)
+            {
+                auto &ru = rules_[(size_t)i];
+                if(ru.enabled && ru.source == c.src && ru.dest == c.dst && ru.targetTrackId == track->id)
+                { idx = i; break; }
+                if(freeIdx < 0 && !ru.enabled)
+                    freeIdx = i;
+            }
+            if(idx < 0)
+            {
+                if(freeIdx < 0)
+                    return true;  // rule pool full
+                idx = freeIdx;
+                auto &ru = rules_[(size_t)idx];
+                ru.enabled = true;
+                ru.source = c.src;
+                ru.dest = c.dst;
+                ru.targetTrackId = track->id;
+                ru.targetSlot = 0;
+                ru.weight = synth::WeightMode::All;
+                ru.depth = defaultModulationDepth(c.dst);
+                enableModSource(c.src);
+                pushMatrix();
+            }
+            selectedRule_ = idx;
+            dragTarget_ = DragTarget::ModDepth;
+            dragStartY_ = y;
+            dragStartDepth_ = rules_[(size_t)idx].depth;
+            dragDepthLimit_ = modulationDepthLimit(rules_[(size_t)idx].dest);
+            return true;
+        }
+        return false;
+    }
+
+    bool handleMatrixGridDelete(float x, float y)
+    {
+        auto *track = currentTrack();
+        if(track == nullptr)
+            return false;
+        for(const auto &c : matrixGridCells_)
+        {
+            if(!c.rect.contains(x, y))
+                continue;
+            for(int i = 0; i < synth::kMaxMatrixRules; ++i)
+            {
+                auto &ru = rules_[(size_t)i];
+                if(ru.enabled && ru.source == c.src && ru.dest == c.dst && ru.targetTrackId == track->id)
+                {
+                    ru.enabled = false;
+                    pushMatrix();
+                    break;
+                }
+            }
+            return true;
+        }
+        return false;
     }
 
     void drawMetaPartialEditor(const Rect &r)
@@ -6211,6 +6403,17 @@ class KapibaraUI final : public UI
                 repaint();
                 return true;
             }
+        // Matrix dashboard tab switch (GRID / MODULATORS / AMP ENV).
+        for(int i = 0; i < int(matrixTabRects_.size()); ++i)
+            if(matrixTabRects_[(size_t)i].contains(x, y))
+            {
+                matrixTab_ = i;
+                repaint();
+                return true;
+            }
+        // Matrix grid node create / depth-drag.
+        if(handleMatrixGridPress(x, y))
+            return true;
         // Direct strip fader/pan/send drag takes priority over strip selection.
         if(handleStripFaderPress(x, y))
             return true;
@@ -8585,7 +8788,7 @@ class KapibaraUI final : public UI
     float dragDepthLimit_ = 1.0f;
     float dragStartLayoutRatio_ = 0.0f;
     float layoutBottomRatio_ = 0.45f;   // bottom row = strips
-    float layoutMatrixRatio_ = 0.36f;   // top-right column = matrix
+    float layoutMatrixRatio_ = 0.42f;   // top-right column = matrix
     float layoutRackRatio_   = 0.20f;
     float layoutStripRatio_  = 0.25f;
     Rect layoutVSplitHandle_ {}, layoutRackSplitHandle_ {}, layoutStripSplitHandle_ {};
@@ -8713,6 +8916,10 @@ class KapibaraUI final : public UI
     Rect partialCountRect_ {}, inharmonicModeRect_ {}, inharmonicRect_ {}, gainRect_ {}, masterMeterRect_ {};
     int editorTab_ = 0;  // 0=SOURCE 1=SHAPE 2=VOICE 3=MAPPING
     std::array<Rect, 4> editorTabRects_ {};
+    int matrixTab_ = 0;  // 0=GRID 1=MODULATORS 2=AMP ENV
+    std::array<Rect, 3> matrixTabRects_ {};
+    struct MatrixCell { Rect rect; synth::ModSource src; synth::ModDestination dst; };
+    std::vector<MatrixCell> matrixGridCells_;
     std::array<Rect, synth::kMaxWavetablePartials> partialKnobRects_ {};
     std::array<Rect, 4> sourceCountRects_ {};
     std::array<Rect, synth::kMaxSourceTracks> sourceChainRects_ {};
