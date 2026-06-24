@@ -6,10 +6,12 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <sys/stat.h>
@@ -61,6 +63,7 @@ enum class DragTarget
     MetaRatio, MetaAmp, MetaPhase, MetaPan, MetaFrameCount, MetaMorph, MetaWarpAmount,
     MetaPitchOct, MetaPitchSem, MetaPitchFin, MetaPitchCrs,
     MetaFrameScan, MetaWaveform, MetaHarmonicRatio, MetaHarmonicAmp, MetaHarmonicPhase,
+    PartialTableAmp, PartialTablePhase,
     LfoFreq, LfoPhase, LfoRho,
     EnvPointA, EnvPointB, EnvCurveA, MatrixEnvCurve, HarmonicEditor, MetaTimeEditor, MetaSpectrumEditor,
     RuleDepth, RuleBandLo, RuleBandHi,
@@ -80,6 +83,26 @@ enum class MetaEditorDomain
     Spectrum
 };
 
+enum class PresetNameEditTarget
+{
+    None,
+    Synth,
+    Wavetable
+};
+
+struct Kwt2Header
+{
+    char magic[4] {'K', 'W', 'T', '2'};
+    uint32_t frameCount = 0;
+    uint32_t binCount = 0;
+};
+
+struct Kwt2PackedBin
+{
+    uint16_t amplitude = 0;
+    int16_t phase = 0;
+};
+
 float clampf(float value, float lo, float hi)
 {
     return std::max(lo, std::min(hi, value));
@@ -96,6 +119,25 @@ Color rgba(uint32_t packed)
                  int((packed >> 16) & 0xffu),
                  int((packed >> 8) & 0xffu),
                  float(packed & 0xffu) / 255.0f);
+}
+
+// Lighten (amount>0) or darken (amount<0) a color, preserving alpha.
+Color shade(Color c, float amount)
+{
+    if(amount >= 0.0f)
+    {
+        c.red   += (1.0f - c.red)   * amount;
+        c.green += (1.0f - c.green) * amount;
+        c.blue  += (1.0f - c.blue)  * amount;
+    }
+    else
+    {
+        const float k = 1.0f + amount;
+        c.red   *= k;
+        c.green *= k;
+        c.blue  *= k;
+    }
+    return c;
 }
 
 struct DesignTokens
@@ -158,6 +200,10 @@ const char *sourceName(synth::ModSource s)
         case synth::ModSource::GeneratorSelf: return "Self";
         case synth::ModSource::Chaos: return "Chaos";
         case synth::ModSource::Shape: return "Shape";
+        case synth::ModSource::Adsr1: return "AENV1";
+        case synth::ModSource::Adsr2: return "AENV2";
+        case synth::ModSource::Adsr3: return "AENV3";
+        case synth::ModSource::Adsr4: return "AENV4";
     }
     return "Source";
 }
@@ -304,8 +350,9 @@ class KapibaraUI final : public UI
     using InsertEffect = synth::InsertEffect;
     static constexpr int InsertFilter = synth::InsertFilter, InsertDist = synth::InsertDist,
                          InsertEq = synth::InsertEq, InsertComp = synth::InsertComp,
-                         InsertDelay = synth::InsertDelay, InsertReverb = synth::InsertReverb;
-    static constexpr int kInsertTypeCount = 6; // filter,dist,eq,comp,delay,reverb (kind 1..6)
+                         InsertDelay = synth::InsertDelay, InsertReverb = synth::InsertReverb,
+                         InsertConvReverb = synth::InsertConvReverb;
+    static constexpr int kInsertTypeCount = 7; // filter,dist,eq,comp,delay,reverb,IR (kind 1..7)
     struct StripGroup {
         std::string name;
         std::vector<int> memberIndices;
@@ -330,7 +377,9 @@ class KapibaraUI final : public UI
 #else
         loadSharedResources();
 #endif
-        setGeometryConstraints(1040, 820, true);
+        // Lock to a fixed 11:7 aspect ratio (matches the default 1320x840). The
+        // min size must share that ratio or the window jumps ratio on resize.
+        setGeometryConstraints(1100, 700, true);
         getWindow().setIgnoringKeyRepeat(true);
         computerKeys_.fill(false);
         pressedKeycodeNotes_.fill(-1);
@@ -341,6 +390,17 @@ class KapibaraUI final : public UI
   protected:
     void onNanoDisplay() override
     {
+        metaFramesShown_ = false; // set true by any frame strip drawn this frame
+        updateLetterbox();
+        // Fill the whole real window with the letterbox border colour.
+        beginPath();
+        rect(0.0f, 0.0f, realW_, realH_);
+        fillColor(rgba(0x05070aff));
+        fill();
+        // Draw the fixed-aspect UI inside the centered letterbox region.
+        save();
+        translate(lbX_, lbY_);
+        scale(uiRenderScale_, uiRenderScale_);
         drawBackground();
         drawToolbar();
         drawCurrentPage();
@@ -358,6 +418,7 @@ class KapibaraUI final : public UI
         drawModSourceMenu();
         drawWavetableImportMenu();
         drawInsertDragGhost();
+        restore();
     }
 
     // Floating label that follows the cursor while reordering a strip insert.
@@ -378,7 +439,30 @@ class KapibaraUI final : public UI
     void onResize(const ResizeEvent &ev) override
     {
         UI::onResize(ev);
+        realW_ = float(ev.size.getWidth());
+        realH_ = float(ev.size.getHeight());
+        updateLetterbox();
         repaint();
+    }
+
+    // Layout is authored in a FIXED logical canvas (1320x840). The whole UI is then
+    // uniformly scaled to fill the real window, so fonts and controls grow together
+    // instead of the panels stretching while text/knobs stay tiny.
+    static constexpr float kCanvasW = 1320.0f;
+    static constexpr float kCanvasH = 900.0f;
+    static constexpr float kUiAspect = kCanvasW / kCanvasH;
+    float uiW() const { return kCanvasW; }
+    float uiH() const { return kCanvasH; }
+    void updateLetterbox()
+    {
+        const float rw = realW_ > 1.0f ? realW_ : float(DISTRHO_UI_DEFAULT_WIDTH);
+        const float rh = realH_ > 1.0f ? realH_ : float(DISTRHO_UI_DEFAULT_HEIGHT);
+        // Largest uniform scale that keeps the 11:7 canvas inside the window.
+        uiRenderScale_ = std::min(rw / kCanvasW, rh / kCanvasH);
+        lbW_ = kCanvasW * uiRenderScale_;
+        lbH_ = kCanvasH * uiRenderScale_;
+        lbX_ = (rw - lbW_) * 0.5f;
+        lbY_ = (rh - lbH_) * 0.5f;
     }
 
     // 周期性刷新，驱动 LFO / 失真曲线的时变动画与实时波形预览
@@ -436,13 +520,14 @@ class KapibaraUI final : public UI
                 return true;
             if(ev.key == kKeyEnter)
             {
-                presetNameEditing_ = false;
+                commitPresetNameEdit();
                 repaint();
                 return true;
             }
             if(ev.key == kKeyEscape)
             {
                 presetNameEditing_ = false;
+                presetNameEditTarget_ = PresetNameEditTarget::None;
                 repaint();
                 return true;
             }
@@ -462,18 +547,44 @@ class KapibaraUI final : public UI
             }
             return true;
         }
-
-        if(ev.press && harmonicEditorOpen_ && (ev.mod & kModifierControl) && ev.key == 'a')
+        if(ev.press && ev.key == kKeyEnter)
         {
-            auto *track = currentTrack();
-            const int fc = track ? track->metaOsc.frameCount : 0;
-            for(int i = 0; i < synth::kMaxWavetableFrames; ++i)
-                metaFrameSelected_[(size_t)i] = i < fc;
-            metaFrameRangeAnchor_ = fc > 0 ? 0 : -1;
+            if(presetMenuOpen_)
+            {
+                beginSynthPresetRename();
+                repaint();
+                return true;
+            }
+            if(wavetablePresetMenuOpen_)
+            {
+                beginWavetablePresetRename();
+                repaint();
+                return true;
+            }
+            if(modeMenuOpen_ && modeMenuKind_ == InsertConvReverb)
+            {
+                commitModeMenuSelection();
+                repaint();
+                return true;
+            }
+        }
+
+        // Control is held? Match 'a'/'A' and the control-code (Ctrl+A -> 0x01).
+        const bool ctrlHeld = (ev.mod & kModifierControl) != 0;
+        const auto ctrlKey = [&](char base) {
+            const uint b = uint(base);
+            return ev.key == b || ev.key == uint(base - 'a' + 'A') || ev.key == uint(base - 'a' + 1);
+        };
+        // Ctrl+A selects all frames; Ctrl+click defines a range (mouse) — both in the
+        // meta wavetable editor / wherever a frame strip is visible.
+        const bool metaFrameCtx = harmonicEditorOpen_ || metaFramesShown_;
+        if(ev.press && metaFrameCtx && ctrlHeld && ctrlKey('a'))
+        {
+            selectAllMetaFrames();
             repaint();
             return true;
         }
-        if(ev.press && harmonicEditorOpen_ && (ev.mod & kModifierControl) && ev.key == 'z')
+        if(ev.press && metaFrameCtx && ctrlHeld && ctrlKey('z'))
         {
             if(undoMeta())
                 repaint();
@@ -494,6 +605,11 @@ class KapibaraUI final : public UI
             repaint();
             return true;
         }
+
+        // Disable the computer-keyboard MIDI piano while the meta wavetable editor is
+        // open, so letter keys (and Ctrl combos) drive editing, not notes.
+        if(harmonicEditorOpen_)
+            return true;
 
         const int note = noteForComputerKey(ev.key);
         if(note < 0)
@@ -564,8 +680,8 @@ class KapibaraUI final : public UI
 
     bool onMouse(const MouseEvent &ev) override
     {
-        const float x = static_cast<float>(ev.pos.getX());
-        const float y = static_cast<float>(ev.pos.getY());
+        const float x = (static_cast<float>(ev.pos.getX()) - lbX_) / uiRenderScale_;
+        const float y = (static_cast<float>(ev.pos.getY()) - lbY_) / uiRenderScale_;
 
         if(!ev.press)
         {
@@ -578,7 +694,7 @@ class KapibaraUI final : public UI
             if(modRouteDragActive_)
             {
                 if(modRouteDragMoved_)
-                    finishModRouteDrag(static_cast<float>(ev.pos.getX()), static_cast<float>(ev.pos.getY()));
+                    finishModRouteDrag(x, y);
                 modRouteDragActive_ = false;
                 modRouteDragMoved_ = false;
                 modRouteHover_ = {};
@@ -591,13 +707,27 @@ class KapibaraUI final : public UI
                 metaEditorDirty_ = false;
                 pushCurrentTrack();
             }
+            // Env-curve edits are published once on release (drag stays smooth — the
+            // per-motion full-snapshot publish was the source of the lag).
+            if(dragTarget_ == DragTarget::MatrixEnvCurve && matrixEnvDirty_)
+            {
+                matrixEnvDirty_ = false;
+                pushEnvOnly();
+            }
+            // Flush the exact final value. During drag, PartialBank Partials and
+            // Inharmonic are already pushed at UI-frame cadence for live notes.
+            if(deferTrackPush_) { deferTrackPush_ = false; pushCurrentTrackDuringRealtimeDrag(true); }
+            if(deferGenPush_)   { deferGenPush_ = false; pushGeneratorDuringRealtimeDrag(true); }
             dragTarget_ = DragTarget::None;
+            dragTrackIndex_ = -1;
             prevTimeEditX_ = -1.0f;
             prevTimeEditY_ = -1.0f;
             return true;
         }
 
-        if(ev.button == kMouseButtonRight && harmonicEditorOpen_)
+        if(ev.button == kMouseButtonRight && harmonicEditorOpen_
+           && currentTrack() != nullptr
+           && currentTrack()->type == synth::SourceTrackType::MetaOscillator)
         {
             openMetaProcessContextMenu(x, y);
             repaint();
@@ -621,8 +751,8 @@ class KapibaraUI final : public UI
                    && stripRouteRuleIndices_[(size_t)slot] >= 0)
                 {
                     routeContextRuleIndex_ = stripRouteRuleIndices_[(size_t)slot];
-                    routeContextX_ = clampf(x, 4.0f, std::max(4.0f, float(getWidth())  - 208.0f));
-                    routeContextY_ = clampf(y, 4.0f, std::max(4.0f, float(getHeight()) - 90.0f));
+                    routeContextX_ = clampf(x, 4.0f, std::max(4.0f, float(uiW())  - 208.0f));
+                    routeContextY_ = clampf(y, 4.0f, std::max(4.0f, float(uiH()) - 90.0f));
                     routeContextMenuOpen_ = true;
                     repaint();
                     return true;
@@ -634,8 +764,8 @@ class KapibaraUI final : public UI
                 if(stripGroupBusRects_[gi].contains(x, y))
                 {
                     groupContextTargetGroup_ = int(gi);
-                    stripGroupContextX_ = clampf(x, 4.0f, std::max(4.0f, float(getWidth())  - 220.0f));
-                    stripGroupContextY_ = clampf(y, 4.0f, std::max(4.0f, float(getHeight()) - 100.0f));
+                    stripGroupContextX_ = clampf(x, 4.0f, std::max(4.0f, float(uiW())  - 220.0f));
+                    stripGroupContextY_ = clampf(y, 4.0f, std::max(4.0f, float(uiH()) - 100.0f));
                     stripGroupContextMenuOpen_ = true;
                     repaint();
                     return true;
@@ -653,8 +783,8 @@ class KapibaraUI final : public UI
                         selectedTrack_ = int(i);
                     }
                     groupContextTargetGroup_ = -1;
-                    stripGroupContextX_ = clampf(x, 4.0f, std::max(4.0f, float(getWidth())  - 220.0f));
-                    stripGroupContextY_ = clampf(y, 4.0f, std::max(4.0f, float(getHeight()) - 100.0f));
+                    stripGroupContextX_ = clampf(x, 4.0f, std::max(4.0f, float(uiW())  - 220.0f));
+                    stripGroupContextY_ = clampf(y, 4.0f, std::max(4.0f, float(uiH()) - 100.0f));
                     stripGroupContextMenuOpen_ = true;
                     repaint();
                     return true;
@@ -665,8 +795,16 @@ class KapibaraUI final : public UI
         if(ev.button != 1)
             return false;
 
+        // Modifier state from the event mask (cleared every press, never sticky).
         ctrlDown_  = (ev.mod & kModifierControl) != 0;
         shiftDown_ = (ev.mod & kModifierShift) != 0;
+
+        currentClickIsDouble_ = (ev.time - lastClickTime_) < 400u
+                                && std::abs(x - lastClickX_) < 8.0f
+                                && std::abs(y - lastClickY_) < 8.0f;
+        lastClickTime_ = ev.time;
+        lastClickX_ = x;
+        lastClickY_ = y;
 
         if(handleModDepthPress(x, y))
         {
@@ -724,13 +862,7 @@ class KapibaraUI final : public UI
         }
 
         // 双击重置到默认值
-        const bool isDblClick = (ev.time - lastClickTime_) < 400u
-                                && std::abs(x - lastClickX_) < 8.0f
-                                && std::abs(y - lastClickY_) < 8.0f;
-        lastClickTime_ = ev.time;
-        lastClickX_ = x;
-        lastClickY_ = y;
-        if(isDblClick && handleDoubleClickReset(x, y)) { repaint(); return true; }
+        if(currentClickIsDouble_ && handleDoubleClickReset(x, y)) { repaint(); return true; }
 
         if(handleToolbarClick(x, y) || handlePageClick(x, y) || handleKeyboardPress(x, y))
         {
@@ -743,8 +875,8 @@ class KapibaraUI final : public UI
 
     bool onMotion(const MotionEvent &ev) override
     {
-        const float x = static_cast<float>(ev.pos.getX());
-        const float y = static_cast<float>(ev.pos.getY());
+        const float x = (static_cast<float>(ev.pos.getX()) - lbX_) / uiRenderScale_;
+        const float y = (static_cast<float>(ev.pos.getY()) - lbY_) / uiRenderScale_;
 
         if(insertPending_)
         {
@@ -792,7 +924,17 @@ class KapibaraUI final : public UI
     void uiFileBrowserSelected(const char *filename) override
     {
         if(filename == nullptr || filename[0] == '\0')
+        {
+            fileBrowserSaving_ = false;
             return;
+        }
+        if(fileBrowserSaving_)
+        {
+            fileBrowserSaving_ = false;
+            saveWavetableToFile(filename);
+            repaint();
+            return;
+        }
         loadPathBuffer_ = filename;
         commitWavetableLoad();
         repaint();
@@ -921,6 +1063,46 @@ class KapibaraUI final : public UI
             return;
         if(auto *p = plugin())
             p->updateSourceTrack(track->id, *track);
+    }
+
+    uint64_t uiNowMs() const
+    {
+        using clock = std::chrono::steady_clock;
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            clock::now().time_since_epoch()).count());
+    }
+
+    bool realtimeDragPushDue(uint64_t &lastPushMs, bool force)
+    {
+        const uint64_t now = uiNowMs();
+        if(!force && lastPushMs != 0u && now - lastPushMs < kRealtimeDragPushIntervalMs)
+            return false;
+        lastPushMs = now;
+        return true;
+    }
+
+    void pushCurrentTrackDuringRealtimeDrag(bool force = false)
+    {
+        if(!realtimeDragPushDue(lastTrackRealtimeDragPushMs_, force))
+            return;
+        pushCurrentTrack();
+    }
+
+    void pushGeneratorDuringRealtimeDrag(bool force = false)
+    {
+        if(!realtimeDragPushDue(lastGenRealtimeDragPushMs_, force))
+            return;
+        pushGenerator();
+    }
+
+    // Track currently being drag-edited from the strip rack (gain/pan/send), or the
+    // selected track as a fallback.
+    synth::SourceTrackParams *dragTrack()
+    {
+        const int ti = dragTrackIndex_ >= 0 ? dragTrackIndex_ : selectedTrack_;
+        if(ti >= 0 && ti < int(generator_.tracks.size()))
+            return &generator_.tracks[(size_t)ti];
+        return nullptr;
     }
 
     void pushCurrentTrackMorphOnly()
@@ -1095,10 +1277,44 @@ class KapibaraUI final : public UI
         fontSize(size * uiScale_);
     }
 
+    // Approximate master output level from the per-source live levels, scaled by
+    // the master gain — good enough to drive the toolbar meter.
+    float masterLevel()
+    {
+        float m = 0.0f;
+        if(const auto *p = plugin())
+            for(int i = 0; i < int(generator_.tracks.size()); ++i)
+                m += p->sourceLiveLevel(i);
+        return clampf(m * gain_, 0.0f, 1.0f);
+    }
+
+    void drawMasterMeter(const Rect &r)
+    {
+        beginPath();
+        roundedRect(r.x, r.y, r.w, r.h, 3.0f);
+        fillColor(DesignTokens::controlBackground());
+        fill();
+        const float lvl = masterLevel();
+        const float fillW = clampf(lvl, 0.0f, 1.0f) * (r.w - 2.0f);
+        if(fillW > 1.0f)
+        {
+            beginPath();
+            roundedRect(r.x + 1.0f, r.y + 1.0f, fillW, r.h - 2.0f, 2.0f);
+            fillPaint(linearGradient(r.x, r.y, r.x + r.w, r.y,
+                                     DesignTokens::accentGreen(), rgba(0xff5a4effU)));
+            fill();
+        }
+        beginPath();
+        roundedRect(r.x + 0.5f, r.y + 0.5f, r.w - 1.0f, r.h - 1.0f, 3.0f);
+        strokeColor(DesignTokens::border());
+        strokeWidth(1.0f);
+        stroke();
+    }
+
     void drawBackground()
     {
-        const float w = static_cast<float>(getWidth());
-        const float h = static_cast<float>(getHeight());
+        const float w = static_cast<float>(uiW());
+        const float h = static_cast<float>(uiH());
         beginPath();
         rect(0.0f, 0.0f, w, h);
         fillColor(DesignTokens::appBackground());
@@ -1108,7 +1324,7 @@ class KapibaraUI final : public UI
     void drawToolbar()
     {
         useUiFont();
-        toolbar_ = { 0.0f, 0.0f, static_cast<float>(getWidth()), 64.0f };
+        toolbar_ = { 0.0f, 0.0f, static_cast<float>(uiW()), 64.0f };
         beginPath();
         rect(toolbar_.x, toolbar_.y, toolbar_.w, toolbar_.h);
         fillColor(DesignTokens::panelBackground());
@@ -1132,14 +1348,18 @@ class KapibaraUI final : public UI
         fillColor(DesignTokens::textSecondary());
         text(35.0f, 42.0f, "ADDITIVE  SYNTH", nullptr);
 
-        const float right = static_cast<float>(getWidth()) - 14.0f;
-        aboutRect_ = { right - 88.0f, 12.0f, 88.0f, 36.0f };
-        menuRect_ = { aboutRect_.x - 96.0f, 12.0f, 88.0f, 36.0f };
-        panicRect_ = { menuRect_.x - 82.0f, 12.0f, 74.0f, 36.0f };
-        const Rect abRect { panicRect_.x - 112.0f, 12.0f, 104.0f, 36.0f };
+        const float edge = static_cast<float>(uiW()) - 14.0f;
+        // ---- Master section (far right): output knob + horizontal level meter ----
+        gainRect_        = { edge - 96.0f, 12.0f, 96.0f, 40.0f };
+        masterMeterRect_ = { gainRect_.x - 66.0f, 27.0f, 60.0f, 9.0f };
+        const float right = masterMeterRect_.x - 16.0f;
+        aboutRect_ = { right - 78.0f, 12.0f, 78.0f, 36.0f };
+        menuRect_ = { aboutRect_.x - 86.0f, 12.0f, 78.0f, 36.0f };
+        panicRect_ = { menuRect_.x - 76.0f, 12.0f, 68.0f, 36.0f };
+        const Rect abRect { panicRect_.x - 102.0f, 12.0f, 94.0f, 36.0f };
         presetPrevRect_ = { 220.0f, 14.0f, 38.0f, 34.0f };
         presetNextRect_ = { abRect.x - 48.0f, 14.0f, 38.0f, 34.0f };
-        presetSelectRect_ = { 264.0f, 8.0f, std::max(220.0f, presetNextRect_.x - 272.0f), 46.0f };
+        presetSelectRect_ = { 264.0f, 8.0f, std::max(180.0f, presetNextRect_.x - 272.0f), 46.0f };
         presetSaveRect_ = {};
         presetLoadRect_ = {};
 
@@ -1150,6 +1370,14 @@ class KapibaraUI final : public UI
         drawButton(panicRect_, "Panic", false);
         drawButton(menuRect_, "MENU", false);
         drawButton(aboutRect_, "ABOUT", false);
+
+        // "MASTER" caption above the meter, then the meter and the output dial.
+        uiFontSize(7.5f);
+        textAlign(ALIGN_LEFT | ALIGN_TOP);
+        fillColor(DesignTokens::textSecondary());
+        text(masterMeterRect_.x, masterMeterRect_.y - 11.0f, "MASTER", nullptr);
+        drawMasterMeter(masterMeterRect_);
+        drawKnob(gainRect_, "Master", gain_, gain_);
 
         statusRect_ = { 160.0f, 50.0f, 56.0f, 14.0f };
         char status[128];
@@ -1172,11 +1400,18 @@ class KapibaraUI final : public UI
         presetSearchRect_ = { r.x + 16.0f, r.y + 16.0f, r.w - 256.0f, 34.0f };
         presetMenuNewRect_ = { r.x + r.w - 224.0f, r.y + 16.0f, 60.0f, 44.0f };
         presetMenuSaveRect_ = { r.x + r.w - 156.0f, r.y + 16.0f, 140.0f, 44.0f };
-        presetMenuLoadRect_ = { r.x + r.w - 156.0f, r.y + 72.0f, 140.0f, 44.0f };
-        presetMenuDeleteRect_ = { r.x + r.w - 156.0f, r.y + 128.0f, 140.0f, 44.0f };
-        presetMenuResetRect_ = { r.x + r.w - 156.0f, r.y + 184.0f, 140.0f, 44.0f };
-        presetListRect_ = { r.x + 16.0f, r.y + 62.0f, r.w - 188.0f, 156.0f };
-        const std::string nameText = presetNameEditing_ ? ("> " + presetNameBuffer_) : (presetNameBuffer_.empty() ? "Name..." : presetNameBuffer_);
+        presetMenuLoadRect_ = {};
+        presetMenuDeleteRect_ = { r.x + r.w - 156.0f, r.y + 72.0f, 140.0f, 44.0f };
+        presetMenuResetRect_ = { r.x + r.w - 156.0f, r.y + 128.0f, 140.0f, 44.0f };
+        presetListRect_ = { r.x + 16.0f, r.y + 62.0f, r.w - 188.0f, 188.0f };
+        std::string synthNameText = "Name...";
+        if(presetNameEditing_ && presetNameEditTarget_ == PresetNameEditTarget::Synth)
+            synthNameText = "> " + presetNameBuffer_;
+        else if(selectedPresetIndex_ >= 0 && selectedPresetIndex_ < int(presetNames_.size()))
+            synthNameText = presetNames_[(size_t)selectedPresetIndex_];
+        else if(!presetLabel_.empty())
+            synthNameText = presetLabel_;
+        const std::string nameText = synthNameText;
         drawLabelBox(presetSearchRect_, nameText.c_str());
         drawPanel(presetListRect_, rgba(0x20252dff), rgba(0x39404dff));
         for(auto &row : presetRowRects_)
@@ -1196,10 +1431,10 @@ class KapibaraUI final : public UI
             drawLabelBox({ presetListRect_.x + 8.0f, presetListRect_.y + 8.0f, presetListRect_.w - 16.0f, 24.0f },
                          "No user presets");
         drawButton(presetMenuNewRect_, "NEW", presetNameEditing_ && presetNameBuffer_.empty());
-        drawButton(presetMenuSaveRect_, "SAVE AS", false);
-        drawButton(presetMenuLoadRect_, "LOAD", false);
+        drawButton(presetMenuSaveRect_, presetNameEditing_ && presetNameEditTarget_ == PresetNameEditTarget::Synth ? "SAVE NAME" : "SAVE AS", false);
         drawButton(presetMenuDeleteRect_, "DELETE", false);
         drawButton(presetMenuResetRect_, "RESET", false);
+        drawLabelBox({ r.x + r.w - 156.0f, r.y + 184.0f, 140.0f, 44.0f }, "Double-click loads");
         drawLabelBox({ r.x + 16.0f, r.y + 282.0f, 88.0f, 22.0f }, "All");
         drawLabelBox({ r.x + 108.0f, r.y + 282.0f, 104.0f, 22.0f }, "User");
         drawLabelBox({ r.x + 216.0f, r.y + 282.0f, 122.0f, 22.0f }, "Favourites");
@@ -1210,8 +1445,8 @@ class KapibaraUI final : public UI
         if(!wavetablePresetMenuOpen_)
             return;
 
-        const float menuWidth = std::min(520.0f, float(getWidth()) - 24.0f);
-        const float menuX = clampf(metaWavetableNameRect_.x, 12.0f, float(getWidth()) - menuWidth - 12.0f);
+        const float menuWidth = std::min(520.0f, float(uiW()) - 24.0f);
+        const float menuX = clampf(metaWavetableNameRect_.x, 12.0f, float(uiW()) - menuWidth - 12.0f);
         const Rect panel { menuX, metaWavetableNameRect_.y + metaWavetableNameRect_.h + 6.0f,
                            menuWidth, 316.0f };
         wavetablePresetPanelRect_ = panel;
@@ -1249,13 +1484,22 @@ class KapibaraUI final : public UI
         if(visible == 0)
             drawLabelBox({ wavetablePresetListRect_.x + 8.0f, wavetablePresetListRect_.y + 8.0f,
                            wavetablePresetListRect_.w - 16.0f, 24.0f },
-                         "No WAV files in presets/wavetables");
+                         "No wavetable files in presets/wavetables");
 
-        wavetablePresetLoadRect_ = { panel.x + 16.0f, panel.y + 266.0f, 112.0f, 34.0f };
-        wavetablePresetImportRect_ = { panel.x + 136.0f, panel.y + 266.0f, 132.0f, 34.0f };
-        wavetablePresetRefreshRect_ = { panel.x + 276.0f, panel.y + 266.0f, 104.0f, 34.0f };
-        wavetablePresetCloseRect_ = { panel.x + panel.w - 96.0f, panel.y + 266.0f, 80.0f, 34.0f };
-        drawButton(wavetablePresetLoadRect_, "LOAD", false);
+        const float by = panel.y + 266.0f;
+        wavetablePresetLoadRect_ = {};
+        wavetablePresetNameRect_ = { panel.x + 16.0f, by, 160.0f, 34.0f };
+        wavetablePresetSaveRect_ = { panel.x + 184.0f, by, 78.0f, 34.0f };
+        wavetablePresetImportRect_ = { panel.x + 270.0f, by, 108.0f, 34.0f };
+        wavetablePresetRefreshRect_ = { panel.x + 386.0f, by, 92.0f, 34.0f };
+        wavetablePresetCloseRect_ = { panel.x + panel.w - 90.0f, by, 74.0f, 34.0f };
+        std::string wtNameText = wavetablePresetLabel_.empty() ? "wavetable" : wavetablePresetLabel_;
+        if(presetNameEditing_ && presetNameEditTarget_ == PresetNameEditTarget::Wavetable)
+            wtNameText = "> " + presetNameBuffer_;
+        else if(selectedWavetablePresetIndex_ >= 0 && selectedWavetablePresetIndex_ < int(wavetablePresets_.size()))
+            wtNameText = wavetablePresets_[(size_t)selectedWavetablePresetIndex_].name;
+        drawLabelBox(wavetablePresetNameRect_, wtNameText.c_str());
+        drawButton(wavetablePresetSaveRect_, presetNameEditing_ && presetNameEditTarget_ == PresetNameEditTarget::Wavetable ? "SAVE" : "RENAME", false);
         drawButton(wavetablePresetImportRect_, "IMPORT WAV", false);
         drawButton(wavetablePresetRefreshRect_, "REFRESH", false);
         drawButton(wavetablePresetCloseRect_, "CLOSE", false);
@@ -1274,7 +1518,9 @@ class KapibaraUI final : public UI
     bool loadWavetablePreset(int index)
     {
         auto *track = currentTrack();
-        if(track == nullptr || track->type != synth::SourceTrackType::MetaOscillator
+        if(track == nullptr
+           || (track->type != synth::SourceTrackType::MetaOscillator
+               && track->type != synth::SourceTrackType::PartialBank)
            || index < 0 || index >= int(wavetablePresets_.size()))
             return false;
         selectedWavetablePresetIndex_ = index;
@@ -1284,6 +1530,7 @@ class KapibaraUI final : public UI
         if(!commitWavetableLoad())
             return false;
         wavetablePresetLabel_ = wavetablePresets_[(size_t)index].name;
+        presetNameBuffer_ = wavetablePresetLabel_;
         return true;
     }
 
@@ -1315,13 +1562,25 @@ class KapibaraUI final : public UI
             if(wavetablePresetRowRects_[(size_t)i].contains(x, y))
             {
                 selectedWavetablePresetIndex_ = presetIndex;
+                presetNameBuffer_ = wavetablePresets_[(size_t)presetIndex].name;
+                presetNameEditing_ = false;
+                presetNameEditTarget_ = PresetNameEditTarget::None;
+                if(currentClickIsDouble_ && loadWavetablePreset(selectedWavetablePresetIndex_))
+                    wavetablePresetMenuOpen_ = false;
                 return true;
             }
         }
-        if(wavetablePresetLoadRect_.contains(x, y))
+        if(wavetablePresetNameRect_.contains(x, y))
         {
-            if(loadWavetablePreset(selectedWavetablePresetIndex_))
-                wavetablePresetMenuOpen_ = false;
+            beginWavetablePresetRename();
+            return true;
+        }
+        if(wavetablePresetSaveRect_.contains(x, y))
+        {
+            if(presetNameEditing_ && presetNameEditTarget_ == PresetNameEditTarget::Wavetable)
+                commitPresetNameEdit();
+            else
+                beginWavetablePresetRename();
             return true;
         }
         if(wavetablePresetImportRect_.contains(x, y))
@@ -1376,7 +1635,7 @@ class KapibaraUI final : public UI
     {
         if(!wavetableImportMenuOpen_)
             return;
-        const Rect r { (float(getWidth()) - 440.0f) * 0.5f, (float(getHeight()) - 410.0f) * 0.5f,
+        const Rect r { (float(uiW()) - 440.0f) * 0.5f, (float(uiH()) - 410.0f) * 0.5f,
                        440.0f, 410.0f };
         wavetableImportPanelRect_ = r;
         drawPanel(r, rgba(0x10171df8), rgba(0x5b7380ff));
@@ -1563,7 +1822,7 @@ class KapibaraUI final : public UI
         else if(trackId >= 0) pushTrackById(uint32_t(trackId));
     }
 
-    static bool fxHasMode(int kind) { return kind == InsertFilter || kind == InsertDist; }
+    static bool fxHasMode(int kind) { return kind == InsertFilter || kind == InsertDist || kind == InsertDelay || kind == InsertConvReverb; }
 
     static const char *fxKnobName(int kind, int i)
     {
@@ -1573,8 +1832,10 @@ class KapibaraUI final : public UI
         static const char *C[4]={"Thr","Ratio","Atk","Makeup"};
         static const char *L[4]={"Time","FB","Mix","Tone"};
         static const char *R[4]={"Size","Decay","Mix","Damp"};
+        static const char *V[4]={"Mix","Gain","PreDly","-"};
         switch(kind){case InsertFilter:return F[i];case InsertDist:return D[i];case InsertEq:return E[i];
-                     case InsertComp:return C[i];case InsertDelay:return L[i];default:return R[i];}
+                     case InsertComp:return C[i];case InsertDelay:return L[i];case InsertConvReverb:return V[i];
+                     case InsertReverb:return R[i];default:return R[i];}
     }
     // normalized 0..1 for knob i of an insert
     static float fxKnobNorm(const InsertEffect &e, int i)
@@ -1585,6 +1846,7 @@ class KapibaraUI final : public UI
             case InsertEq:{const auto&q=e.eq;switch(i){case 0:return (q.lowDb+18.f)/36.f;case 1:return (q.midDb+18.f)/36.f;case 2:return (q.highDb+18.f)/36.f;default:return std::log10(std::max(80.f,q.midHz)/80.f)/std::log10(8000.f/80.f);}}
             case InsertComp:{const auto&c=e.comp;switch(i){case 0:return (c.threshDb+48.f)/48.f;case 1:return (c.ratio-1.f)/19.f;case 2:return c.attackMs/100.f;default:return c.makeupDb/24.f;}}
             case InsertDelay:{const auto&l=e.delay;switch(i){case 0:return clampf(l.timeMs/1000.f,0,1);case 1:return l.feedback/0.95f;case 2:return l.mix;default:return l.tone;}}
+            case InsertConvReverb:{const auto&v=e.conv;switch(i){case 0:return v.mix;case 1:return v.gain*0.5f;case 2:return v.predelayMs/200.f;default:return 0.f;}}
             default:{const auto&r=e.reverb;switch(i){case 0:return r.size;case 1:return r.decay/0.92f;case 2:return r.mix;default:return r.damp;}}
         }
     }
@@ -1596,6 +1858,7 @@ class KapibaraUI final : public UI
             case InsertEq:{const auto&q=e.eq;switch(i){case 0:return q.lowDb;case 1:return q.midDb;case 2:return q.highDb;default:return q.midHz;}}
             case InsertComp:{const auto&c=e.comp;switch(i){case 0:return c.threshDb;case 1:return c.ratio;case 2:return c.attackMs;default:return c.makeupDb;}}
             case InsertDelay:{const auto&l=e.delay;switch(i){case 0:return l.timeMs;case 1:return l.feedback;case 2:return l.mix;default:return l.tone;}}
+            case InsertConvReverb:{const auto&v=e.conv;switch(i){case 0:return v.mix;case 1:return v.gain;case 2:return v.predelayMs;default:return 0.f;}}
             default:{const auto&r=e.reverb;switch(i){case 0:return r.size;case 1:return r.decay;case 2:return r.mix;default:return r.damp;}}
         }
     }
@@ -1608,6 +1871,7 @@ class KapibaraUI final : public UI
             case InsertEq:{auto&q=e.eq;switch(i){case 0:q.lowDb=n*36.f-18.f;break;case 1:q.midDb=n*36.f-18.f;break;case 2:q.highDb=n*36.f-18.f;break;default:q.midHz=80.f*std::pow(8000.f/80.f,n);break;}break;}
             case InsertComp:{auto&c=e.comp;switch(i){case 0:c.threshDb=n*48.f-48.f;break;case 1:c.ratio=1.f+n*19.f;break;case 2:c.attackMs=n*100.f;break;default:c.makeupDb=n*24.f;break;}break;}
             case InsertDelay:{auto&l=e.delay;switch(i){case 0:l.timeMs=n*1000.f;break;case 1:l.feedback=n*0.95f;break;case 2:l.mix=n;break;default:l.tone=n;break;}break;}
+            case InsertConvReverb:{auto&v=e.conv;switch(i){case 0:v.mix=n;break;case 1:v.gain=n*2.f;break;case 2:v.predelayMs=n*200.f;break;default:break;}break;}
             default:{auto&r=e.reverb;switch(i){case 0:r.size=n;break;case 1:r.decay=n*0.92f;break;case 2:r.mix=n;break;default:r.damp=n;break;}break;}
         }
     }
@@ -1617,15 +1881,15 @@ class KapibaraUI final : public UI
     {
         insertMenuTrackId_ = trackId;
         insertMenuGroup_   = groupIdx;
-        insertMenuX_ = clampf(x, 4.0f, std::max(4.0f, float(getWidth())  - 130.0f));
-        insertMenuY_ = clampf(y, 4.0f, std::max(4.0f, float(getHeight()) - 160.0f));
+        insertMenuX_ = clampf(x, 4.0f, std::max(4.0f, float(uiW())  - 130.0f));
+        insertMenuY_ = clampf(y, 4.0f, std::max(4.0f, float(uiH()) - 160.0f));
         insertMenuOpen_ = true;
     }
 
     static const char *insertTypeName(int kind)
     {
-        static const char *n[7] = { "", "Filter", "Distortion", "EQ", "Compressor", "Delay", "Reverb" };
-        return (kind >= 1 && kind <= 6) ? n[kind] : "";
+        static const char *n[8] = { "", "Filter", "Distortion", "EQ", "Compressor", "Delay", "Reverb", "IR Reverb" };
+        return (kind >= 1 && kind <= 7) ? n[kind] : "";
     }
 
     void drawInsertMenu()
@@ -1666,12 +1930,52 @@ class KapibaraUI final : public UI
     }
 
     // ---- Filter/dist algorithm picker for a specific insert ----
+    int fxModeCount(int kind) const
+    {
+        if(kind == InsertFilter) return kFilterAlgoCount;
+        if(kind == InsertDist)   return kDistAlgoCount;
+        if(kind == InsertDelay)  return 2; // Stereo / PingPong
+        if(kind == InsertConvReverb) return int(irFiles_.size());
+        return 0;
+    }
+    const char *fxModeName(int kind, int i)
+    {
+        if(kind == InsertFilter) return kFilterAlgoNames[i];
+        if(kind == InsertDist)   return kDistAlgoNames[i];
+        if(kind == InsertDelay)  { static const char *D[2] = { "Stereo", "PingPong" }; return D[i]; }
+        if(kind == InsertConvReverb) return (i >= 0 && i < int(irFiles_.size())) ? irFiles_[(size_t)i].first.c_str() : "";
+        return "";
+    }
+    static const char *fxModeTitle(int kind)
+    {
+        if(kind == InsertFilter) return "Filter mode";
+        if(kind == InsertDist)   return "Dist mode";
+        if(kind == InsertDelay)  return "Delay mode";
+        if(kind == InsertConvReverb) return "Impulse (presets/irs)";
+        return "Mode";
+    }
+    int fxCurrentMode(const InsertEffect &ins, int kind)
+    {
+        if(kind == InsertFilter) return int(ins.filter.algo);
+        if(kind == InsertDist)   return int(ins.dist.algo);
+        if(kind == InsertDelay)  return ins.delay.pingpong ? 1 : 0;
+        if(kind == InsertConvReverb)
+            for(int i = 0; i < int(irFiles_.size()); ++i)
+                if(irFiles_[(size_t)i].first == ins.conv.irName) return i;
+        return 0;
+    }
+
     void openModeMenu(int trackId, int groupIdx, int insertIdx, int kind, float x, float y)
     {
         modeMenuTrackId_ = trackId; modeMenuGroup_ = groupIdx; modeMenuInsertIdx_ = insertIdx; modeMenuKind_ = kind;
-        const int rows = kind == InsertFilter ? kFilterAlgoCount : kDistAlgoCount;
-        modeMenuX_ = clampf(x, 4.0f, std::max(4.0f, float(getWidth()) - 130.0f));
-        modeMenuY_ = clampf(y, 4.0f, std::max(4.0f, float(getHeight()) - (28.0f + float(rows) * 18.0f)));
+        if(kind == InsertConvReverb) refreshIrFiles();
+        modeMenuSelectedIndex_ = 0;
+        if(auto *chain = insertChainFor(trackId, groupIdx);
+           chain != nullptr && insertIdx >= 0 && insertIdx < int(chain->size()))
+            modeMenuSelectedIndex_ = fxCurrentMode((*chain)[(size_t)insertIdx], kind);
+        const int rows = std::min(fxModeCount(kind), int(modeMenuRects_.size()));
+        modeMenuX_ = clampf(x, 4.0f, std::max(4.0f, float(uiW()) - 130.0f));
+        modeMenuY_ = clampf(y, 4.0f, std::max(4.0f, float(uiH()) - (28.0f + float(rows) * 18.0f)));
         modeMenuOpen_ = true;
     }
 
@@ -1681,40 +1985,63 @@ class KapibaraUI final : public UI
             return;
         auto *chain = insertChainFor(modeMenuTrackId_, modeMenuGroup_);
         if(chain == nullptr || modeMenuInsertIdx_ < 0 || modeMenuInsertIdx_ >= int(chain->size())) { modeMenuOpen_ = false; return; }
-        const int rows = modeMenuKind_ == InsertFilter ? kFilterAlgoCount : kDistAlgoCount;
+        const int rows = std::min(fxModeCount(modeMenuKind_), int(modeMenuRects_.size()));
         constexpr float rowH = 18.0f;
         const float menuW = 122.0f;
         const Rect panel { modeMenuX_, modeMenuY_, menuW, 22.0f + rowH * float(rows) };
         drawPanel(panel, rgba(0x10171df8), rgba(0x5b7380ff));
         fontSize(9.0f); fillColor(rgba(0xc8d6dcff)); textAlign(ALIGN_LEFT | ALIGN_TOP);
-        text(panel.x + 8.0f, panel.y + 5.0f, modeMenuKind_ == InsertFilter ? "Filter mode" : "Dist mode", nullptr);
+        text(panel.x + 8.0f, panel.y + 5.0f, fxModeTitle(modeMenuKind_), nullptr);
         const auto &ins = (*chain)[(size_t)modeMenuInsertIdx_];
-        const int cur = modeMenuKind_ == InsertFilter ? int(ins.filter.algo) : int(ins.dist.algo);
+        const int cur = fxCurrentMode(ins, modeMenuKind_);
+        modeMenuSelectedIndex_ = clampi(modeMenuSelectedIndex_, 0, std::max(0, rows - 1));
         for(int i = 0; i < rows; ++i)
         {
             modeMenuRects_[(size_t)i] = { panel.x + 6.0f, panel.y + 20.0f + float(i) * rowH, menuW - 12.0f, rowH - 2.0f };
-            drawButton(modeMenuRects_[(size_t)i], modeMenuKind_ == InsertFilter ? kFilterAlgoNames[i] : kDistAlgoNames[i], cur == i);
+            drawButton(modeMenuRects_[(size_t)i], fxModeName(modeMenuKind_, i), cur == i || modeMenuSelectedIndex_ == i);
         }
+    }
+
+    void commitModeMenuSelection()
+    {
+        auto *chain = insertChainFor(modeMenuTrackId_, modeMenuGroup_);
+        if(chain == nullptr || modeMenuInsertIdx_ < 0 || modeMenuInsertIdx_ >= int(chain->size()))
+        {
+            modeMenuOpen_ = false;
+            return;
+        }
+        const int rows = std::min(fxModeCount(modeMenuKind_), int(modeMenuRects_.size()));
+        const int i = clampi(modeMenuSelectedIndex_, 0, std::max(0, rows - 1));
+        auto &ins = (*chain)[(size_t)modeMenuInsertIdx_];
+        if(modeMenuKind_ == InsertFilter)     ins.filter.algo = static_cast<synth::InsertFilterAlgo>(i);
+        else if(modeMenuKind_ == InsertDist)  ins.dist.algo = static_cast<synth::InsertDistAlgo>(i);
+        else if(modeMenuKind_ == InsertDelay) ins.delay.pingpong = (i == 1);
+        else if(modeMenuKind_ == InsertConvReverb && i < int(irFiles_.size()))
+            loadImpulseIntoInsert(ins, irFiles_[(size_t)i].first, irFiles_[(size_t)i].second);
+        commitChainChange(modeMenuTrackId_, modeMenuGroup_);
+        modeMenuOpen_ = false;
     }
 
     bool handleModeMenuClick(float x, float y)
     {
         if(!modeMenuOpen_)
             return false;
-        modeMenuOpen_ = false;
         auto *chain = insertChainFor(modeMenuTrackId_, modeMenuGroup_);
         if(chain == nullptr || modeMenuInsertIdx_ < 0 || modeMenuInsertIdx_ >= int(chain->size()))
+        {
+            modeMenuOpen_ = false;
             return true;
-        const int rows = modeMenuKind_ == InsertFilter ? kFilterAlgoCount : kDistAlgoCount;
+        }
+        const int rows = std::min(fxModeCount(modeMenuKind_), int(modeMenuRects_.size()));
         for(int i = 0; i < rows; ++i)
             if(modeMenuRects_[(size_t)i].contains(x, y))
             {
-                auto &ins = (*chain)[(size_t)modeMenuInsertIdx_];
-                if(modeMenuKind_ == InsertFilter) ins.filter.algo = static_cast<synth::InsertFilterAlgo>(i);
-                else                              ins.dist.algo = static_cast<synth::InsertDistAlgo>(i);
-                commitChainChange(modeMenuTrackId_, modeMenuGroup_);
+                modeMenuSelectedIndex_ = i;
+                if(currentClickIsDouble_)
+                    commitModeMenuSelection();
                 return true;
             }
+        modeMenuOpen_ = false;
         return true;
     }
 
@@ -1868,8 +2195,8 @@ class KapibaraUI final : public UI
 
         constexpr float menuWidth = 224.0f;
         constexpr float menuHeight = 230.0f;
-        metaProcessContextX_ = clampf(x, 4.0f, std::max(4.0f, float(getWidth()) - menuWidth - 4.0f));
-        metaProcessContextY_ = clampf(y, 4.0f, std::max(4.0f, float(getHeight()) - menuHeight - 4.0f));
+        metaProcessContextX_ = clampf(x, 4.0f, std::max(4.0f, float(uiW()) - menuWidth - 4.0f));
+        metaProcessContextY_ = clampf(y, 4.0f, std::max(4.0f, float(uiH()) - menuHeight - 4.0f));
         metaProcessContextMenuOpen_ = true;
     }
 
@@ -1944,11 +2271,137 @@ class KapibaraUI final : public UI
         return true;
     }
 
+    void drawPartialTableEditor(synth::SourceTrackParams &track)
+    {
+        auto &seed = track.partialBank;
+        seed.frameCount = clampi(seed.frameCount, 1, synth::kMaxWavetableFrames);
+        selectedMetaFrame_ = clampi(selectedMetaFrame_, 0, std::max(0, seed.frameCount - 1));
+        selectedPartialIndex_ = clampi(selectedPartialIndex_, 0, synth::kMaxWavetablePartials - 1);
+        selectedMetaHarmonic_ = selectedPartialIndex_;
+        ensurePartialBankFrameDefaults(seed, selectedMetaFrame_);
+        auto &frame = seed.frames[(size_t)selectedMetaFrame_];
+        auto &h = frame.harmonics[(size_t)selectedPartialIndex_];
+
+        const Rect r { 42.0f, 92.0f, static_cast<float>(uiW()) - 84.0f,
+                       static_cast<float>(uiH()) - 190.0f };
+        harmonicEditorPanelRect_ = r;
+        drawPanel(r, rgba(0x0b1117f7), rgba(0x4a6470ff));
+        drawSectionTitle(r.x + 18.0f, r.y + 16.0f, "Partial Table Editor");
+        harmonicEditorCloseRect_ = { r.x + r.w - 86.0f, r.y + 14.0f, 68.0f, 28.0f };
+        drawButton(harmonicEditorCloseRect_, "Close", false);
+
+        const float toolY = r.y + 50.0f;
+        metaEditorImportRect_ = { r.x + 18.0f, toolY, 88.0f, 24.0f };
+        metaEditorAddRect_ = { r.x + 112.0f, toolY, 52.0f, 24.0f };
+        metaEditorDuplicateRect_ = { r.x + 170.0f, toolY, 70.0f, 24.0f };
+        metaEditorDeleteRect_ = { r.x + 246.0f, toolY, 64.0f, 24.0f };
+        metaEditorLeftRect_ = { r.x + 316.0f, toolY, 36.0f, 24.0f };
+        metaEditorRightRect_ = { r.x + 358.0f, toolY, 36.0f, 24.0f };
+        drawButton(metaEditorImportRect_, "Import KWT", false);
+        drawButton(metaEditorAddRect_, "Add", false);
+        drawButton(metaEditorDuplicateRect_, "Duplicate", false);
+        drawButton(metaEditorDeleteRect_, "Delete", false);
+        drawButton(metaEditorLeftRect_, "<", false);
+        drawButton(metaEditorRightRect_, ">", false);
+        fontSize(8.0f);
+        fillColor(rgba(0x6a8090ff));
+        textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+        text(r.x + 404.0f, toolY + 12.0f, "Ctrl+click=range  Ctrl+A=all  drag phase/level bars", nullptr);
+
+        synth::WavetablePartialSlot frameStripSlot;
+        frameStripSlot.frameCount = seed.frameCount;
+        frameStripSlot.morph = seed.morph;
+        frameStripSlot.frames = seed.frames;
+        metaEditorFrameStripRect_ = { r.x + 18.0f, r.y + 82.0f, r.w - 36.0f, 48.0f };
+        drawMetaFrameStrip(metaEditorFrameStripRect_, frameStripSlot);
+        metaFrameScrollRect_ = { r.x + 18.0f, r.y + 134.0f, r.w - 36.0f, 12.0f };
+        drawFrameScrollbar(metaFrameScrollRect_, frameStripSlot);
+
+        char title[176];
+        std::snprintf(title, sizeof(title), "Frame %03d/%03d  Partial %02d  Level %.3g  Phase %.3g  %s",
+                      selectedMetaFrame_ + 1, seed.frameCount, selectedPartialIndex_ + 1,
+                      h.amp, h.phase, metaEditorStatus_.c_str());
+        drawLabelBox({ r.x + 18.0f, r.y + 150.0f, r.w - 36.0f, 26.0f }, title);
+
+        const float totalDispH = r.h - 230.0f;
+        const float phaseH = std::max(42.0f, totalDispH * 0.36f);
+        const float ampH = std::max(72.0f, totalDispH - phaseH - 8.0f);
+        const float dispY = r.y + 180.0f;
+
+        harmonicEditorPhaseRect_ = { r.x + 18.0f, dispY, r.w - 36.0f, phaseH };
+        drawPanel(harmonicEditorPhaseRect_, rgba(0x0d1620ff), rgba(0x1e3040ff));
+        {
+            const Rect &pr = harmonicEditorPhaseRect_;
+            const float barW = pr.w / float(synth::kMaxWavetablePartials);
+            const float midY = pr.y + pr.h * 0.5f;
+            strokeLine(pr.x + 2.0f, midY, pr.x + pr.w - 2.0f, midY, rgba(0x2b3f48ff), 0.8f);
+            scissor(pr.x + 2.0f, pr.y + 2.0f, pr.w - 4.0f, pr.h - 4.0f);
+            for(int i = 0; i < synth::kMaxWavetablePartials; ++i)
+            {
+                const float ph = frame.harmonics[(size_t)i].phase;
+                const float norm = clampf(ph / kPi, -1.0f, 1.0f);
+                const float bx = pr.x + float(i) * barW + 0.5f;
+                const float bw = std::max(1.0f, barW - 1.0f);
+                const float bh = norm * (pr.h * 0.44f);
+                const float by = bh >= 0.0f ? midY - bh : midY;
+                beginPath();
+                rect(bx, by, bw, std::abs(bh));
+                fillColor(i == selectedPartialIndex_ ? rgba(0xffa23add) : rgba(0x7f68b0aa));
+                fill();
+            }
+            resetScissor();
+            fontSize(8.0f);
+            fillColor(rgba(0x6080a0ff));
+            textAlign(ALIGN_LEFT | ALIGN_TOP);
+            text(pr.x + 4.0f, pr.y + 2.0f, "PHASE PER PARTIAL", nullptr);
+        }
+
+        harmonicEditorSpectrumRect_ = { r.x + 18.0f, dispY + phaseH + 8.0f, r.w - 36.0f, ampH };
+        harmonicEditorBarsRect_ = harmonicEditorSpectrumRect_;
+        drawPanel(harmonicEditorSpectrumRect_, rgba(0x101820ff), rgba(0x263842ff));
+        {
+            const Rect &sr = harmonicEditorSpectrumRect_;
+            const float barW = sr.w / float(synth::kMaxWavetablePartials);
+            scissor(sr.x + 2.0f, sr.y + 2.0f, sr.w - 4.0f, sr.h - 4.0f);
+            for(int i = 0; i < synth::kMaxWavetablePartials; ++i)
+            {
+                const auto &hm = frame.harmonics[(size_t)i];
+                const float amp = clampf(hm.amp, 0.0f, 1.0f);
+                const float bx = sr.x + float(i) * barW;
+                const float bh = amp * (sr.h - 12.0f);
+                beginPath();
+                rect(bx + 0.5f, sr.y + sr.h - 6.0f - bh, std::max(1.0f, barW - 1.0f), bh);
+                fillColor(i == selectedPartialIndex_ ? rgba(0x8be87dff) : rgba(0x4d8a80dd));
+                fill();
+            }
+            resetScissor();
+            fontSize(8.0f);
+            fillColor(rgba(0x6080a0ff));
+            textAlign(ALIGN_LEFT | ALIGN_TOP);
+            text(sr.x + 4.0f, sr.y + 2.0f, "PARTIAL LEVEL RATIO", nullptr);
+        }
+
+        const float sliderY = r.y + r.h - 50.0f;
+        const float third = (r.w - 52.0f) / 3.0f;
+        metaHarmonicRatioRect_ = { r.x + 18.0f, sliderY, third, 24.0f };
+        metaHarmonicAmpRect_ = { metaHarmonicRatioRect_.x + third + 8.0f, sliderY, third, 24.0f };
+        metaHarmonicPhaseRect_ = { metaHarmonicAmpRect_.x + third + 8.0f, sliderY, third, 24.0f };
+        drawSlider(metaHarmonicRatioRect_, "Partial", float(selectedPartialIndex_) / float(synth::kMaxWavetablePartials - 1),
+                   float(selectedPartialIndex_ + 1));
+        drawSlider(metaHarmonicAmpRect_, "Level", h.amp, h.amp);
+        drawSlider(metaHarmonicPhaseRect_, "Phase", (h.phase + kPi) / (2.0f * kPi), h.phase);
+    }
+
     void drawHarmonicEditor()
     {
         if(!harmonicEditorOpen_)
             return;
         auto *track = currentTrack();
+        if(track != nullptr && track->type == synth::SourceTrackType::PartialBank)
+        {
+            drawPartialTableEditor(*track);
+            return;
+        }
         if(track == nullptr || track->type != synth::SourceTrackType::MetaOscillator)
         {
             harmonicEditorOpen_ = false;
@@ -1956,8 +2409,8 @@ class KapibaraUI final : public UI
             return;
         }
 
-        const Rect r { 42.0f, 92.0f, static_cast<float>(getWidth()) - 84.0f,
-                       static_cast<float>(getHeight()) - 190.0f };
+        const Rect r { 42.0f, 92.0f, static_cast<float>(uiW()) - 84.0f,
+                       static_cast<float>(uiH()) - 190.0f };
         harmonicEditorPanelRect_ = r;
         drawPanel(r, rgba(0x0b1117f7), rgba(0x4a6470ff));
         drawSectionTitle(r.x + 18.0f, r.y + 16.0f, "Meta Wavetable Editor");
@@ -1979,12 +2432,16 @@ class KapibaraUI final : public UI
         metaEditorDeleteRect_ = { r.x + 246.0f, toolY, toolW, 24.0f };
         metaEditorLeftRect_ = { r.x + 316.0f, toolY, 36.0f, 24.0f };
         metaEditorRightRect_ = { r.x + 358.0f, toolY, 36.0f, 24.0f };
+        metaSelAllRect_ = {};
         drawButton(metaEditorImportRect_, "Import WAV", false);
         drawButton(metaEditorAddRect_, "Add", false);
         drawButton(metaEditorDuplicateRect_, "Duplicate", false);
         drawButton(metaEditorDeleteRect_, "Delete", false);
         drawButton(metaEditorLeftRect_, "<", false);
         drawButton(metaEditorRightRect_, ">", false);
+        // Selection hint: Ctrl+click = range, Ctrl+A = all.
+        fontSize(8.0f); fillColor(rgba(0x6a8090ff)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+        text(r.x + 404.0f, toolY + 12.0f, "Ctrl+click=range  Ctrl+A=all", nullptr);
 
         // Frame strip (48 px tall — room for mini waveform preview)
         metaEditorFrameStripRect_ = { r.x + 18.0f, r.y + 82.0f, r.w - 36.0f, 48.0f };
@@ -2105,54 +2562,33 @@ class KapibaraUI final : public UI
 
     void drawCurrentPage()
     {
-        const Rect page { 16.0f, 82.0f, static_cast<float>(getWidth()) - 32.0f,
-                          static_cast<float>(getHeight()) - 184.0f };
+        const Rect page { 16.0f, 82.0f, static_cast<float>(uiW()) - 32.0f,
+                          static_cast<float>(uiH()) - 184.0f };
         drawPanel(page, rgba(0x10171bff), rgba(0x293842ff));
 
+        // Layout: editor (top-left) + matrix (top-right narrow column), strips along
+        // the full-width bottom row. Matrix gets the tall top column so its env
+        // editors stop overflowing; strips get the full width so they aren't cramped.
         const float gap     = 14.0f;
         const float bottomH = clampf(page.h * layoutBottomRatio_, 200.0f, page.h - 160.0f);
         const float topH    = page.h - bottomH - gap * 2.0f;
-        const float stripW  = clampf(page.w * layoutStripRatio_, 240.0f, page.w * 0.65f);
+        const float matrixW = clampf(page.w * layoutMatrixRatio_, 340.0f, page.w * 0.5f);
 
-        const Rect strip  { page.x + page.w - gap - stripW, page.y + gap, stripW, topH };
+        const Rect matrix { page.x + page.w - gap - matrixW, page.y + gap, matrixW, topH };
         const Rect editor { page.x + gap, page.y + gap,
-                            std::max(200.0f, strip.x - page.x - gap * 2.0f), topH };
-        const Rect matrix { page.x + gap, strip.y + strip.h + gap * 2.0f,
+                            std::max(200.0f, matrix.x - page.x - gap * 2.0f), topH };
+        const Rect strip  { page.x + gap, page.y + topH + gap * 2.0f,
                             page.w - gap * 2.0f, bottomH - gap };
 
         drawTrackEditor(editor);
-        drawStripRack(strip);
         drawMatrixDashboard(matrix);
+        drawStripRack(strip);
 
-        // ---- Divider handles ----
-        constexpr float kDivW = 6.0f;
-        // Horizontal divider: between top panels and matrix
-        const float hDivY = strip.y + strip.h + gap * 0.5f;
-        layoutVSplitHandle_     = { page.x + gap, hDivY, page.w - gap * 2.0f, gap };
+        // Layout is fixed (no draggable splitters) — the whole canvas scales as a
+        // unit, so per-panel resize handles are unnecessary.
+        layoutVSplitHandle_     = {};
         layoutRackSplitHandle_  = {};
-        // Vertical divider: between editor and strip rack
-        const float svDivX = strip.x - gap * 0.5f - kDivW * 0.5f;
-        layoutStripSplitHandle_ = { svDivX, page.y + gap, kDivW, topH };
-
-        const auto drawDivHandle = [&](const Rect &r, bool horiz) {
-            beginPath();
-            rect(r.x, r.y, r.w, r.h);
-            fillColor(rgba(0x3a5060a0));
-            fill();
-            const int dots = horiz ? 5 : 3;
-            const float step = horiz ? r.w / float(dots + 1) : r.h / float(dots + 1);
-            fillColor(rgba(0x6a9ab0cc));
-            for(int i = 1; i <= dots; ++i)
-            {
-                const float cx = horiz ? r.x + step * float(i) : r.x + r.w * 0.5f;
-                const float cy = horiz ? r.y + r.h * 0.5f      : r.y + step * float(i);
-                beginPath();
-                circle(cx, cy, 2.0f);
-                fill();
-            }
-        };
-        drawDivHandle(layoutVSplitHandle_,     true);
-        drawDivHandle(layoutStripSplitHandle_, false);
+        layoutStripSplitHandle_ = {};
     }
 
     void drawSourceRack(const Rect &r)
@@ -2295,6 +2731,8 @@ class KapibaraUI final : public UI
             return rgba(0x55c9ffff);
         if(source >= synth::ModSource::Env1 && source <= synth::ModSource::Env4)
             return rgba(0xffa84fff);
+        if(source >= synth::ModSource::Adsr1 && source <= synth::ModSource::Adsr4)
+            return rgba(0x6ee7a0ff);
         return rgba(0xb68cffff);
     }
 
@@ -2422,6 +2860,10 @@ class KapibaraUI final : public UI
             selectedEnv_ = int(modRouteSource_) - int(synth::ModSource::Env1);
             envs_[(size_t)selectedEnv_].enabled = true;
         }
+        else if(modRouteSource_ >= synth::ModSource::Adsr1 && modRouteSource_ <= synth::ModSource::Adsr4)
+        {
+            selectedAmpEnv_ = int(modRouteSource_) - int(synth::ModSource::Adsr1);
+        }
         pushMatrix();
     }
 
@@ -2485,13 +2927,22 @@ class KapibaraUI final : public UI
             }
         }
 
+        // Highlight routed/dragging sources with a colored BORDER only, so the
+        // button label underneath stays visible (no opaque overlay).
+        const auto highlightSource = [&](const Rect &rc, Color col) {
+            beginPath();
+            roundedRect(rc.x + 1.0f, rc.y + 1.0f, rc.w - 2.0f, rc.h - 2.0f, 6.0f);
+            strokeColor(col);
+            strokeWidth(2.0f);
+            stroke();
+        };
         for(int i = 0; i < synth::kMaxLfos; ++i)
         {
             const auto source = static_cast<synth::ModSource>(int(synth::ModSource::Lfo1) + i);
             const bool routed = std::any_of(rules_.begin(), rules_.end(),
                                             [source](const auto &r) { return r.enabled && r.source == source; });
             if(routed || (modRouteDragActive_ && modRouteSource_ == source))
-                drawPanel(lfoSelectRects_[(size_t)i], rgba(0x17384a70), modulationSourceColor(source));
+                highlightSource(lfoSelectRects_[(size_t)i], modulationSourceColor(source));
         }
         for(int i = 0; i < synth::kMaxModEnvs; ++i)
         {
@@ -2499,7 +2950,7 @@ class KapibaraUI final : public UI
             const bool routed = std::any_of(rules_.begin(), rules_.end(),
                                             [source](const auto &r) { return r.enabled && r.source == source; });
             if(routed || (modRouteDragActive_ && modRouteSource_ == source))
-                drawPanel(envSelectRects_[(size_t)i], rgba(0x4a301770), modulationSourceColor(source));
+                highlightSource(envSelectRects_[(size_t)i], modulationSourceColor(source));
         }
         if(modRouteDragActive_ && modRouteDragMoved_)
         {
@@ -2508,7 +2959,7 @@ class KapibaraUI final : public UI
                        modRouteSourceRect_.y + modRouteSourceRect_.h * 0.5f,
                        modRouteMouseX_, modRouteMouseY_, color, 2.5f);
             if(modRouteHover_.valid)
-                drawPanel(modRouteHover_.rect, rgba(0x17384a70), color);
+                highlightSource(modRouteHover_.rect, color);
         }
     }
 
@@ -2572,19 +3023,127 @@ class KapibaraUI final : public UI
         if(fxHasMode(e.kind))
         {
             const Rect modeR { p.x + 5.0f, p.y + 18.0f, p.w - 10.0f, 16.0f };
-            const char *algo = e.kind == InsertFilter ? kFilterAlgoNames[int(e.filter.algo)]
-                                                       : kDistAlgoNames[int(e.dist.algo)];
+            const char *algo = e.kind == InsertConvReverb
+                                   ? (e.conv.irName.empty() ? "Load IR..." : e.conv.irName.c_str())
+                                   : fxModeName(e.kind, fxCurrentMode(e, e.kind));
             drawButton(modeR, algo, false);
             fxModeHits_.push_back(FxBtnHit { modeR, trackId, groupIdx, insertIdx });
             knobsY = p.y + 38.0f;
         }
         const float kw = (p.w - 12.0f) * 0.25f;
+        const float knobH = 44.0f;
         for(int i = 0; i < 4; ++i)
         {
-            const Rect kr { p.x + 4.0f + float(i) * (kw + 1.0f), knobsY, kw, std::min(46.0f, p.y + p.h - knobsY - 4.0f) };
+            const Rect kr { p.x + 4.0f + float(i) * (kw + 1.0f), knobsY, kw, knobH };
             drawKnob(kr, fxKnobName(e.kind, i), fxKnobNorm(e, i), fxKnobDisp(e, i));
             fxKnobHits_.push_back(FxKnobHit { kr, trackId, groupIdx, insertIdx, i });
         }
+        // Response/transfer graph below the knobs (filter / eq / dist / comp).
+        const float graphTop = knobsY + knobH + 6.0f;
+        const float graphBot = p.y + p.h - 5.0f;
+        if(fxHasGraph(e.kind) && graphBot - graphTop > 22.0f)
+            drawInsertGraph({ p.x + 5.0f, graphTop, p.w - 10.0f, graphBot - graphTop }, e);
+    }
+
+    static bool fxHasGraph(int kind)
+    {
+        return kind == InsertFilter || kind == InsertEq || kind == InsertDist || kind == InsertComp;
+    }
+
+    // Magnitude (linear) of a biquad cascade at digital frequency w.
+    static float biquadMagnitude(const synth::BiquadCoeffs &c, float w)
+    {
+        const float cw = std::cos(w), sw = std::sin(w);
+        const float c2 = std::cos(2.0f * w), s2 = std::sin(2.0f * w);
+        const float nRe = c.b0 + c.b1 * cw + c.b2 * c2;
+        const float nIm = -(c.b1 * sw + c.b2 * s2);
+        const float dRe = 1.0f + c.a1 * cw + c.a2 * c2;
+        const float dIm = -(c.a1 * sw + c.a2 * s2);
+        const float den = std::sqrt(dRe * dRe + dIm * dIm);
+        const float num = std::sqrt(nRe * nRe + nIm * nIm);
+        const float m = den > 1e-9f ? num / den : 0.0f;
+        return std::pow(m, float(std::max(1, c.stages)));
+    }
+
+    void drawInsertGraph(const Rect &g, const InsertEffect &e)
+    {
+        // Backing panel + center line.
+        beginPath();
+        roundedRect(g.x, g.y, g.w, g.h, 3.0f);
+        fillColor(rgba(0x0a0f13ff));
+        fill();
+        strokeColor(DesignTokens::divider());
+        strokeWidth(1.0f);
+        stroke();
+        scissor(g.x + 1.0f, g.y + 1.0f, g.w - 2.0f, g.h - 2.0f);
+        const float midY = g.y + g.h * 0.5f;
+        strokeLine(g.x + 1.0f, midY, g.x + g.w - 1.0f, midY, DesignTokens::divider(), 1.0f);
+
+        const Color line = DesignTokens::accentCyan();
+        const int steps = std::max(8, int(g.w));
+        const double sr = 48000.0;
+
+        if(e.kind == InsertFilter || e.kind == InsertEq)
+        {
+            // Log-frequency magnitude response, +/-24 dB window.
+            synth::BiquadCoeffs eqc[3];
+            int nb = 1;
+            synth::BiquadCoeffs single;
+            if(e.kind == InsertFilter) { single = synth::designInsertBiquad(e.filter, sr); }
+            else { synth::designEqBiquads(e.eq, sr, eqc); nb = 3; }
+            const float fLo = 20.0f, fHi = 20000.0f;
+            const float logLo = std::log10(fLo), logHi = std::log10(fHi);
+            beginPath();
+            for(int i = 0; i <= steps; ++i)
+            {
+                const float t = float(i) / float(steps);
+                const float f = std::pow(10.0f, logLo + t * (logHi - logLo));
+                const float w = 2.0f * kPi * f / float(sr);
+                float mag = 1.0f;
+                if(e.kind == InsertFilter) mag = biquadMagnitude(single, w);
+                else for(int b = 0; b < nb; ++b) mag *= biquadMagnitude(eqc[b], w);
+                const float db = 20.0f * std::log10(std::max(1e-4f, mag));
+                const float yn = clampf((db + 24.0f) / 48.0f, 0.0f, 1.0f);
+                const float px = g.x + t * g.w;
+                const float py = g.y + g.h - yn * g.h;
+                if(i == 0) moveTo(px, py); else lineTo(px, py);
+            }
+            strokeColor(line); strokeWidth(1.4f); stroke();
+        }
+        else if(e.kind == InsertDist)
+        {
+            // Input/output transfer curve over x in [-1, 1].
+            beginPath();
+            for(int i = 0; i <= steps; ++i)
+            {
+                const float xin = -1.0f + 2.0f * float(i) / float(steps);
+                float yo = synth::distShape(e.dist.algo, xin, e.dist.drive, e.dist.bias) * e.dist.outGain;
+                yo = clampf(yo, -1.2f, 1.2f) / 1.2f;
+                const float px = g.x + (xin * 0.5f + 0.5f) * g.w;
+                const float py = midY - yo * (g.h * 0.5f - 2.0f);
+                if(i == 0) moveTo(px, py); else lineTo(px, py);
+            }
+            strokeColor(line); strokeWidth(1.4f); stroke();
+        }
+        else if(e.kind == InsertComp)
+        {
+            // Static compression curve: input dB (-60..0) -> output dB.
+            const float thr = e.comp.threshDb;
+            const float ratio = std::max(1.0f, e.comp.ratio);
+            const float makeup = e.comp.makeupDb;
+            beginPath();
+            for(int i = 0; i <= steps; ++i)
+            {
+                const float inDb = -60.0f + 60.0f * float(i) / float(steps);
+                float outDb = inDb <= thr ? inDb : thr + (inDb - thr) / ratio;
+                outDb += makeup;
+                const float px = g.x + (inDb + 60.0f) / 60.0f * g.w;
+                const float py = g.y + g.h - clampf((outDb + 60.0f) / 60.0f, 0.0f, 1.0f) * g.h;
+                if(i == 0) moveTo(px, py); else lineTo(px, py);
+            }
+            strokeColor(line); strokeWidth(1.4f); stroke();
+        }
+        resetScissor();
     }
 
     bool handleRouteFxClick(float x, float y)
@@ -2722,8 +3281,8 @@ class KapibaraUI final : public UI
         modSourceMenuTrackId_ = trackId;
         modSourceMenuSlot_ = slot;
         const int rows = int(generator_.tracks.size()) + 1;  // remove + tracks
-        modSourceMenuX_ = clampf(x, 4.0f, std::max(4.0f, float(getWidth()) - 150.0f));
-        modSourceMenuY_ = clampf(y, 4.0f, std::max(4.0f, float(getHeight()) - (26.0f + float(rows) * 18.0f)));
+        modSourceMenuX_ = clampf(x, 4.0f, std::max(4.0f, float(uiW()) - 150.0f));
+        modSourceMenuY_ = clampf(y, 4.0f, std::max(4.0f, float(uiH()) - (26.0f + float(rows) * 18.0f)));
         modSourceMenuOpen_ = true;
     }
 
@@ -2859,63 +3418,65 @@ class KapibaraUI final : public UI
         if(track == nullptr)
             return;
         drawSectionTitle(r.x + 16.0f, r.y + 14.0f, track->name.c_str());
-        drawLabelBox({ r.x + 16.0f, r.y + 42.0f, 170.0f, 24.0f }, synth::sourceTrackTypeName(track->type));
+        // Track type / ADSR-route / Duplicate live in the strip now, not here.
         trackOutputModeRect_ = {};  // output mode 选择从 UI 移除，默认 AudioAndMod
         track->outputMode = synth::SourceTrackOutputMode::AudioAndMod;
         track->ampEnvIndex = clampi(track->ampEnvIndex, 0, synth::kMaxAmpEnvs - 1);
-        ampEnvSelectRect_ = { r.x + 196.0f, r.y + 42.0f, 112.0f, 24.0f };
-        duplicateEnvRect_ = { r.x + 318.0f, r.y + 42.0f, 96.0f, 24.0f };
-        drawButton(ampEnvSelectRect_, buttonText("ADSR ENV %d", track->ampEnvIndex + 1), selectedAmpEnv_ == track->ampEnvIndex);
-        drawButton(duplicateEnvRect_, "Duplicate", false);
+        ampEnvSelectRect_ = {};
+        duplicateEnvRect_ = {};
 
-        const float uniY = r.y + 76.0f;
-        const float uniKw = 46.0f;
-        unisonVoicesRect_ = { r.x + 16.0f,                       uniY, uniKw, uniKw };
-        unisonDetuneRect_ = { r.x + 16.0f + (uniKw + 8.0f),     uniY, uniKw, uniKw };
-        unisonWidthRect_  = { r.x + 16.0f + (uniKw + 8.0f) * 2, uniY, uniKw, uniKw };
-        unisonPhaseRect_  = { r.x + 16.0f + (uniKw + 8.0f) * 3, uniY, uniKw, uniKw };
-        drawKnob(unisonVoicesRect_, "Unison",  float(track->unison.voices - 1) / 15.0f, float(track->unison.voices));
-        drawKnob(unisonDetuneRect_, "Detune",  track->unison.detuneCents / 80.0f,        track->unison.detuneCents);
-        drawKnob(unisonWidthRect_,  "Width",   track->unison.widthStereo,                track->unison.widthStereo);
-        drawKnob(unisonPhaseRect_,  "Rnd Ph",  track->unison.phaseSpread,                track->unison.phaseSpread);
+        // ---- Tabs: SOURCE / SHAPE / VOICE / MAPPING ----
+        static const char *const editorTabs[] = { "SOURCE", "SHAPE", "VOICE", "MAPPING" };
+        const Rect tabBar { r.x + 16.0f, r.y + 42.0f, std::min(r.w - 32.0f, 420.0f), 24.0f };
+        drawTabBar(tabBar, editorTabs, 4, editorTab_, editorTabRects_.data());
 
-        // Reserve the lower portion: routed-effect editor (if any) at the bottom,
-        // and a modulation editor strip above it.
-        const bool hasFx = trackHasRoutedFx(*track);
-        const bool hasMod = trackHasAnyMod(*track);  // only show MOD editor once a source is routed
-        const float fxH = hasFx ? std::min(230.0f, std::max(130.0f, (r.h - 152.0f) * 0.36f)) : 0.0f;
-        const float modH = hasMod ? 104.0f : 0.0f;
-        const Rect body { r.x + 16.0f, r.y + 136.0f, r.w - 32.0f, r.h - 152.0f - fxH - modH };
-        if(track->type == synth::SourceTrackType::PartialBank)
-            drawPartialBankTrackEditor(body, *track);
-        else if(track->type == synth::SourceTrackType::MetaOscillator)
-            drawMetaTrackEditor(body, *track);
-        else if(track->type == synth::SourceTrackType::BasicOscillator)
-            drawBasicTrackEditor(body, *track);
-        else
-            drawNoiseTrackEditor(body, *track);
+        // Only the active tab repopulates its hit rects — clear them all first so a
+        // hidden tab's stale controls can't catch clicks.
+        unisonVoicesRect_ = unisonDetuneRect_ = unisonWidthRect_ = unisonPhaseRect_ = {};
+        modSrcRects_.fill({}); modTypeRects_.fill({}); modDepthRects_.fill({}); modDeleteRects_.fill({});
+        fxKnobHits_.clear(); fxBypassHits_.clear(); fxDeleteHits_.clear(); fxModeHits_.clear();
+        routeFxChainTrackId_ = -1;
+        routeFxChainGroup_ = -1;
 
-        if(hasMod)
+        const Rect content { r.x + 16.0f, r.y + 80.0f, r.w - 32.0f, r.h - 92.0f };
+        switch(editorTab_)
         {
-            const Rect modRegion { r.x + 16.0f, r.y + r.h - fxH - modH, r.w - 32.0f, modH - 6.0f };
-            drawModEditor(modRegion, *track);
+            case 1:  // SHAPE — routed insert FX chain (filter / dist / eq / delay …)
+                drawRouteFxEditor(content, &track->inserts, int(track->id), -1);
+                break;
+            case 2:  // VOICE — unison / voicing
+                drawVoiceTab(content, *track);
+                break;
+            case 3:  // MAPPING — per-source modulation routing
+                drawModEditor(content, *track);
+                break;
+            default: // SOURCE — oscillator / source body
+                if(track->type == synth::SourceTrackType::PartialBank)
+                    drawPartialBankTrackEditor(content, *track);
+                else if(track->type == synth::SourceTrackType::MetaOscillator)
+                    drawMetaTrackEditor(content, *track);
+                else if(track->type == synth::SourceTrackType::BasicOscillator)
+                    drawBasicTrackEditor(content, *track);
+                else
+                    drawNoiseTrackEditor(content, *track);
+                break;
         }
-        else
-        {
-            modSrcRects_.fill({}); modTypeRects_.fill({}); modDepthRects_.fill({}); modDeleteRects_.fill({});
-        }
+    }
 
-        if(hasFx)
-        {
-            const Rect fx { r.x + 16.0f, r.y + r.h - fxH - 4.0f, r.w - 32.0f, fxH - 8.0f };
-            drawRouteFxEditor(fx, &track->inserts, int(track->id), -1);
-        }
-        else
-        {
-            fxKnobHits_.clear(); fxBypassHits_.clear(); fxDeleteHits_.clear(); fxModeHits_.clear();
-            routeFxChainTrackId_ = -1;
-            routeFxChainGroup_ = -1;
-        }
+    void drawVoiceTab(const Rect &r, synth::SourceTrackParams &track)
+    {
+        drawSectionTitle(r.x, r.y, "Unison / Voicing");
+        const float kw = 78.0f;
+        const float gap = 22.0f;
+        const float ky = r.y + 44.0f;
+        unisonVoicesRect_ = { r.x,                    ky, kw, kw };
+        unisonDetuneRect_ = { r.x + (kw + gap),       ky, kw, kw };
+        unisonWidthRect_  = { r.x + (kw + gap) * 2.0f, ky, kw, kw };
+        unisonPhaseRect_  = { r.x + (kw + gap) * 3.0f, ky, kw, kw };
+        drawKnob(unisonVoicesRect_, "Voices", float(track.unison.voices - 1) / 15.0f, float(track.unison.voices));
+        drawKnob(unisonDetuneRect_, "Detune", track.unison.detuneCents / 80.0f, track.unison.detuneCents);
+        drawKnob(unisonWidthRect_,  "Width",  track.unison.widthStereo, track.unison.widthStereo);
+        drawKnob(unisonPhaseRect_,  "Rnd Ph", track.unison.phaseSpread, track.unison.phaseSpread);
     }
 
     void clearTrackEditorRects()
@@ -3086,6 +3647,90 @@ class KapibaraUI final : public UI
             if(mod.enabled && mod.sourceTrack >= 0)
                 ++count;
         return count;
+    }
+
+    // Vertical mixer-style fader. norm 0..1 maps bottom->top.
+    void drawFader(const Rect &r, float norm, const char *label, float value, bool active)
+    {
+        norm = clampf(norm, 0.0f, 1.0f);
+        const float cx = r.x + r.w * 0.5f;
+        const float top = r.y + 6.0f;
+        const float bot = r.y + r.h - 16.0f;
+        const float span = std::max(1.0f, bot - top);
+        // Groove.
+        beginPath();
+        roundedRect(cx - 2.5f, top, 5.0f, span, 2.5f);
+        fillColor(DesignTokens::controlBackground());
+        fill();
+        strokeColor(DesignTokens::divider());
+        strokeWidth(1.0f);
+        stroke();
+        // Filled portion below the handle.
+        const float hy = bot - norm * span;
+        beginPath();
+        roundedRect(cx - 2.5f, hy, 5.0f, bot - hy, 2.5f);
+        fillColor(active ? DesignTokens::accentGreen() : DesignTokens::accentCyan());
+        fill();
+        // Handle.
+        beginPath();
+        roundedRect(cx - 9.0f, hy - 5.0f, 18.0f, 10.0f, 3.0f);
+        fillPaint(linearGradient(cx, hy - 5.0f, cx, hy + 5.0f,
+                                 shade(DesignTokens::panelRaised(), 0.22f),
+                                 shade(DesignTokens::panelRaised(), -0.12f)));
+        fill();
+        strokeColor(active ? DesignTokens::accentGreen() : DesignTokens::border());
+        strokeWidth(1.0f);
+        stroke();
+        // Label + value.
+        char buf[24];
+        std::snprintf(buf, sizeof(buf), "%.2f", value);
+        useUiFont();
+        uiFontSize(7.5f);
+        textAlign(ALIGN_CENTER | ALIGN_TOP);
+        fillColor(DesignTokens::textSecondary());
+        text(cx, r.y + r.h - 11.0f, label, nullptr);
+    }
+
+    // Vertical peak level meter (green->yellow->red bottom to top).
+    void drawLevelMeter(const Rect &r, float level)
+    {
+        beginPath();
+        roundedRect(r.x, r.y, r.w, r.h, 2.0f);
+        fillColor(rgba(0x0a0f13ff));
+        fill();
+        strokeColor(DesignTokens::divider());
+        strokeWidth(1.0f);
+        stroke();
+        const float v = clampf(level, 0.0f, 1.2f) / 1.2f;
+        const float fillH = v * (r.h - 2.0f);
+        if(fillH > 0.5f)
+        {
+            const float fy = r.y + r.h - 1.0f - fillH;
+            beginPath();
+            roundedRect(r.x + 1.0f, fy, r.w - 2.0f, fillH, 1.5f);
+            fillPaint(linearGradient(r.x, r.y + r.h, r.x, r.y,
+                                     rgba(0x4fe0a0ff), rgba(0xff5a4fff)));
+            fill();
+        }
+    }
+
+    // dB tick scale drawn just right of a vertical level meter (0/-6/-12/-24 dB).
+    void drawMeterScale(const Rect &meter)
+    {
+        struct Tick { const char *label; float amp; };
+        static const Tick ticks[] = { { "0", 1.0f }, { "-6", 0.5f }, { "-12", 0.25f }, { "-24", 0.063f } };
+        const float tx = meter.x + meter.w + 2.0f;
+        useUiFont();
+        uiFontSize(6.5f);
+        textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+        for(const auto &t : ticks)
+        {
+            const float yn = clampf(t.amp / 1.2f, 0.0f, 1.0f);
+            const float ty = meter.y + meter.h - 1.0f - yn * (meter.h - 2.0f);
+            strokeLine(meter.x + meter.w, ty, tx + 1.0f, ty, DesignTokens::divider(), 1.0f);
+            fillColor(DesignTokens::textSecondary());
+            text(tx + 3.0f, ty, t.label, nullptr);
+        }
     }
 
     void drawStripThumbnail(const Rect &r, const synth::SourceTrackParams &track, int trackIndex, bool selected)
@@ -3274,9 +3919,13 @@ class KapibaraUI final : public UI
 
         // ---- Clear hit rects ----
         trackGainRect_ = {}; trackPanRect_ = {}; trackSendRect_ = {};
+        stripEnvRect_ = {}; stripDupRect_ = {};
         stripRouteRects_.fill({}); stripRouteRuleIndices_.fill(-1);
         for(auto &rr : stripRects_) rr = {};
         for(auto &rr : stripGroupBusRects_) rr = {};
+        for(auto &rr : stripGainRects_) rr = {};
+        for(auto &rr : stripPanRects_) rr = {};
+        for(auto &rr : stripSendRects_) rr = {};
         for(auto &rr : stripMuteRects_) rr = {};
         for(auto &rr : stripSoloRects_) rr = {};
         insertHits_.clear();
@@ -3405,7 +4054,10 @@ class KapibaraUI final : public UI
             fillColor(isPrimary ? DesignTokens::accentGreen() : DesignTokens::accentCyan());
             text(s.x + 8.0f, s.y + 8.0f, number, nullptr);
             fillColor(isPrimary ? DesignTokens::textPrimary() : DesignTokens::textSecondary());
+            // Clip the name so a long track name can't run under the M/S buttons.
+            scissor(s.x + 28.0f, s.y + 4.0f, std::max(10.0f, s.w - 28.0f - 50.0f), 18.0f);
             text(s.x + 28.0f, s.y + 8.0f, track.name.c_str(), nullptr);
+            resetScissor();
 
             const Rect muteR { s.x + s.w - 43.0f, s.y + 6.0f, 16.0f, 16.0f };
             const Rect soloR { s.x + s.w - 23.0f, s.y + 6.0f, 16.0f, 16.0f };
@@ -3414,55 +4066,77 @@ class KapibaraUI final : public UI
             drawButton(muteR, "M", track.mute);
             drawButton(soloR, "S", track.solo);
 
-            const Rect thumb { s.x + 8.0f, s.y + 30.0f, s.w - 16.0f, 48.0f };
-            drawStripThumbnail(thumb, track, globalIdx, isPrimary);
-
             const int modCount = activeModCountForTrack(track);
             const int fxCount = int(track.inserts.size());
             const int matrixCount = matrixRouteCountForTrack(track);
-            useUiFont();
-            uiFontSize(8.0f);
-            textAlign(ALIGN_LEFT | ALIGN_TOP);
-            fillColor(DesignTokens::textSecondary());
-            std::snprintf(scratch_, sizeof(scratch_), "%d Mods  -  %d FX", modCount, fxCount);
-            text(s.x + 8.0f, s.y + 84.0f, scratch_, nullptr);
-            std::snprintf(scratch_, sizeof(scratch_), "Matrix %d", matrixCount);
-            text(s.x + 8.0f, s.y + 98.0f, scratch_, nullptr);
 
-            const float cy = s.y + 112.0f;
-
-            // Group tag
+            // Group tag (top-right, left of the M/S buttons)
             if(grpIdx >= 0)
             {
                 uiFontSize(7.0f); fillColor(DesignTokens::accentBlue());
                 textAlign(ALIGN_RIGHT | ALIGN_MIDDLE);
-                text(s.x + s.w - 8.0f, s.y + 98.0f, stripGroups_[(size_t)grpIdx].name.c_str(), nullptr);
+                text(s.x + s.w - 50.0f, s.y + 14.0f, stripGroups_[(size_t)grpIdx].name.c_str(), nullptr);
             }
 
-            // Route inserts (filter / distortion chain) — mixer-style, one per row
-            const float routeY0 = cy;
-            uiFontSize(7.0f); fillColor(DesignTokens::textSecondary());
+            // ===== Horizontal channel: wide-and-short strip along the bottom row =====
+            //  LEFT  zone : waveform thumbnail, info line, GAIN fader + meter, Pan, Send
+            //  RIGHT zone : ROUTE / MOD / MATRIX / ADSR / UNI stacked compactly
+            const float contentY = s.y + 28.0f;
+            const float leftW = s.w * 0.44f;
+
+            const Rect thumb { s.x + 8.0f, contentY, leftW - 16.0f, 46.0f };
+            drawStripThumbnail(thumb, track, globalIdx, isPrimary);
+            useUiFont();
+            uiFontSize(8.0f);
             textAlign(ALIGN_LEFT | ALIGN_TOP);
-            text(s.x + 8.0f, routeY0 - 9.0f, "ROUTE", nullptr);
-            drawInsertColumn({ s.x + 4.0f, routeY0, s.w - 8.0f, 74.0f }, track.inserts, int(track.id), -1);
+            fillColor(DesignTokens::textSecondary());
+            std::snprintf(scratch_, sizeof(scratch_), "%d Mods  %d FX  Mtx %d", modCount, fxCount, matrixCount);
+            text(s.x + 8.0f, contentY + 50.0f, scratch_, nullptr);
 
-            // MOD slots (modulation entries) — click to edit in the OSC editor
-            const float modY = routeY0 + 80.0f;
-            fontSize(7.0f); fillColor(rgba(0x6a8090ff)); textAlign(ALIGN_LEFT | ALIGN_TOP);
-            text(s.x + 4.0f, modY - 9.0f, "MOD", nullptr);
-            drawModColumn({ s.x + 4.0f, modY, s.w - 8.0f, 56.0f }, track, int(track.id));
+            float level = 0.0f;
+            if(const auto *p = plugin()) level = p->sourceLiveLevel(globalIdx);
+            const float rowY = contentY + 66.0f;
+            const float rowH = std::max(46.0f, (s.y + s.h - 8.0f) - rowY);
+            const Rect faderR { s.x + 8.0f, rowY, 22.0f, rowH };
+            drawFader(faderR, track.gain * 0.5f, "GAIN", track.gain, isPrimary);
+            const Rect meterR { s.x + 32.0f, rowY, 8.0f, rowH - 14.0f };
+            drawLevelMeter(meterR, level);
+            const float pkw = 40.0f;
+            const Rect panR  { s.x + 46.0f,         rowY + 2.0f, pkw, 40.0f };
+            const Rect sendR { s.x + 46.0f + pkw,   rowY + 2.0f, pkw, 40.0f };
+            drawKnob(panR,  "Pan",  (track.pan + 1.0f) * 0.5f, track.pan);
+            drawKnob(sendR, "Send", track.send, track.send);
+            stripGainRects_[(size_t)globalIdx] = faderR;
+            stripPanRects_[(size_t)globalIdx]  = panR;
+            stripSendRects_[(size_t)globalIdx] = sendR;
+            if(isPrimary) { trackGainRect_ = faderR; trackPanRect_ = panR; trackSendRect_ = sendR; }
 
-            // MATRIX routes that target this track (created from the matrix dashboard)
-            const float mtxY = modY + 60.0f;
+            // ---- RIGHT zone ----
+            const float rx = s.x + leftW + 6.0f;
+            const float rw = (s.x + s.w - 8.0f) - rx;
+            const float kStripRow = 16.0f;
+            float ry = contentY;
+            uiFontSize(7.0f); fillColor(DesignTokens::textSecondary()); textAlign(ALIGN_LEFT | ALIGN_TOP);
+            text(rx, ry, "ROUTE", nullptr);
+            const float insH = float(std::min(fxCount + 1, 3)) * kStripRow;
+            drawInsertColumn({ rx, ry + 10.0f, rw, insH }, track.inserts, int(track.id), -1);
+            ry += 10.0f + insH + 6.0f;
+
             fontSize(7.0f); fillColor(rgba(0x6a8090ff)); textAlign(ALIGN_LEFT | ALIGN_TOP);
-            text(s.x + 4.0f, mtxY - 9.0f, "MATRIX", nullptr);
+            text(rx, ry, "MOD", nullptr);
+            const float modRegH = float(std::min(modCount + 1, 3)) * kStripRow;
+            drawModColumn({ rx, ry + 10.0f, rw, modRegH }, track, int(track.id));
+            ry += 10.0f + modRegH + 6.0f;
+
+            fontSize(7.0f); fillColor(rgba(0x6a8090ff)); textAlign(ALIGN_LEFT | ALIGN_TOP);
+            text(rx, ry, "MATRIX", nullptr);
             int mrow = 0;
-            for(int ri = 0; ri < synth::kMaxMatrixRules && mrow < 2; ++ri)
+            for(int ri = 0; ri < synth::kMaxMatrixRules && mrow < 1; ++ri)
             {
                 const auto &rule = rules_[(size_t)ri];
                 if(!rule.enabled || rule.targetTrackId != track.id)
                     continue;
-                const Rect rr { s.x + 4.0f, mtxY + float(mrow) * 20.0f, s.w - 8.0f, 18.0f };
+                const Rect rr { rx, ry + 10.0f, rw, 16.0f };
                 const bool isEff = synth::insertModParamForDest(rule.dest) >= 0;
                 if(isEff)
                     std::snprintf(scratch_, sizeof(scratch_), "%s>%s%d %+.1f",
@@ -3471,7 +4145,7 @@ class KapibaraUI final : public UI
                     std::snprintf(scratch_, sizeof(scratch_), "%s>%s %+.1f",
                                   sourceName(rule.source), destName(rule.dest), double(rule.depth));
                 drawLabelBox(rr, scratch_);
-                if(isPrimary)  // only the focused strip registers right-click delete targets
+                if(isPrimary)
                 {
                     stripRouteRects_[(size_t)mrow] = rr;
                     stripRouteRuleIndices_[(size_t)mrow] = ri;
@@ -3479,23 +4153,17 @@ class KapibaraUI final : public UI
                 ++mrow;
             }
             if(mrow == 0)
-                drawLabelBox({ s.x + 4.0f, mtxY, s.w - 8.0f, 18.0f }, "no matrix");
+                drawLabelBox({ rx, ry + 10.0f, rw, 16.0f }, "no matrix");
+            ry += 10.0f + 16.0f + 8.0f;
 
-            drawLabelBox({ s.x + 4.0f, mtxY + 44.0f, s.w - 8.0f, 18.0f },
-                         buttonText("ENV%d", clampi(track.ampEnvIndex, 0, synth::kMaxAmpEnvs - 1) + 1));
-            drawLabelBox({ s.x + 4.0f, mtxY + 64.0f, s.w - 8.0f, 18.0f },
-                         buttonText("UNI×%d", clampi(track.unison.voices, 1, 16)));
-
-            // Gain / Pan / Send (selected strip only, at bottom)
-            if(isPrimary)
-            {
-                trackGainRect_ = { s.x + 4.0f, s.y + s.h - 82.0f, s.w - 8.0f, 22.0f };
-                trackPanRect_  = { s.x + 4.0f, s.y + s.h - 56.0f, s.w - 8.0f, 22.0f };
-                trackSendRect_ = { s.x + 4.0f, s.y + s.h - 30.0f, s.w - 8.0f, 22.0f };
-                drawSlider(trackGainRect_, "Gain", track.gain * 0.5f, track.gain);
-                drawSlider(trackPanRect_,  "Pan",  (track.pan + 1.0f) * 0.5f, track.pan);
-                drawSlider(trackSendRect_, "Send", track.send, track.send);
-            }
+            const Rect envR { rx, ry, rw * 0.58f, 18.0f };
+            const Rect dupR { envR.x + envR.w + 4.0f, ry, rw * 0.42f - 4.0f, 18.0f };
+            drawButton(envR, buttonText("ADSR%d", clampi(track.ampEnvIndex, 0, synth::kMaxAmpEnvs - 1) + 1),
+                       selectedAmpEnv_ == clampi(track.ampEnvIndex, 0, synth::kMaxAmpEnvs - 1));
+            drawButton(dupR, "Dup", false);
+            if(isPrimary) { stripEnvRect_ = envR; stripDupRect_ = dupR; }
+            ry += 22.0f;
+            drawLabelBox({ rx, ry, rw, 18.0f }, buttonText("UNI×%d", clampi(track.unison.voices, 1, 16)));
         }
 
         // ---- Horizontal scrollbar ----
@@ -3514,37 +4182,127 @@ class KapibaraUI final : public UI
         }
     }
 
+    void drawPartialBankLayerPreview(const Rect &r, synth::WavetableSeedParams &seed)
+    {
+        drawPlotBackground(r, 8, 4);
+        seed.frameCount = clampi(seed.frameCount, 1, synth::kMaxWavetableFrames);
+        const int morphFrame = partialBankMorphFrameIndex(seed);
+        constexpr int kMaxShow = 18;
+        const int stride = std::max(1, seed.frameCount / kMaxShow);
+        std::vector<int> frames;
+        frames.reserve(kMaxShow + 1);
+        for(int f = 0; f < seed.frameCount; f += stride)
+            frames.push_back(f);
+        if(std::find(frames.begin(), frames.end(), morphFrame) == frames.end())
+            frames.push_back(morphFrame);
+        std::sort(frames.begin(), frames.end());
+
+        const float plotX = r.x + 12.0f;
+        const float plotW = r.w - 24.0f;
+        const float baseY = r.y + r.h - 16.0f;
+        const float depthY = std::min(r.h * 0.38f, float(frames.size()) * 5.0f);
+        const float barW = plotW / float(synth::kMaxWavetablePartials);
+        scissor(r.x + 2.0f, r.y + 2.0f, r.w - 4.0f, r.h - 4.0f);
+        for(size_t di = 0; di < frames.size(); ++di)
+        {
+            const int frameIndex = frames[di];
+            ensurePartialBankFrameDefaults(seed, frameIndex);
+            const auto &frame = seed.frames[(size_t)frameIndex];
+            const float depthT = frames.size() > 1 ? float(di) / float(frames.size() - 1) : 1.0f;
+            const float y0 = baseY - depthY * (1.0f - depthT);
+            const float height = (r.h - depthY - 28.0f) * (0.50f + depthT * 0.50f);
+            const float alpha = frameIndex == morphFrame ? 0.95f : 0.18f + 0.35f * depthT;
+            const Color col = frameIndex == morphFrame
+                                  ? DesignTokens::accentGreen()
+                                  : DesignTokens::accentCyan().withAlpha(alpha);
+            strokeLine(plotX, y0, plotX + plotW, y0, DesignTokens::divider().withAlpha(0.35f), 0.6f);
+            for(int i = 0; i < synth::kMaxWavetablePartials; ++i)
+            {
+                const float amp = clampf(frame.harmonics[(size_t)i].amp, 0.0f, 1.0f);
+                if(amp <= 0.001f)
+                    continue;
+                const float x = plotX + float(i) * barW;
+                const float bh = amp * height;
+                beginPath();
+                rect(x + 0.5f, y0 - bh, std::max(1.0f, barW - 1.0f), bh);
+                fillColor(col);
+                fill();
+            }
+            if(frameIndex == morphFrame)
+            {
+                uiFontSize(9.0f);
+                fillColor(DesignTokens::accentGreen());
+                textAlign(ALIGN_LEFT | ALIGN_TOP);
+                text(r.x + 8.0f, y0 - height - 10.0f, buttonText("F%d", frameIndex + 1), nullptr);
+            }
+        }
+        resetScissor();
+
+        uiFontSize(10.0f);
+        fillColor(rgba(0x7f9aabff));
+        textAlign(ALIGN_LEFT | ALIGN_TOP);
+        text(r.x + 8.0f, r.y + 6.0f, "PARTIAL TABLE PREVIEW  amp/phase loaded per frame", nullptr);
+    }
+
     void drawPartialBankTrackEditor(const Rect &r, synth::SourceTrackParams &track)
     {
         auto &seed = track.partialBank;
-        partialCountRect_ = { r.x, r.y, 220.0f, 24.0f };
-        inharmonicModeRect_ = { r.x + 230.0f, r.y, 120.0f, 24.0f };
-        inharmonicRect_ = { r.x + 360.0f, r.y, 180.0f, 24.0f };
-        drawSlider(partialCountRect_, "Partials", float(seed.partialCount - 1) / 63.0f, float(seed.partialCount));
-        drawButton(inharmonicModeRect_, freqShapeName(seed.freqShape), seed.freqShape != synth::FreqShape::Harmonic);
-        drawSlider(inharmonicRect_, "Inharmonic", seed.inharmonicAmount, seed.inharmonicAmount);
+        seed.frameCount = clampi(seed.frameCount, 1, synth::kMaxWavetableFrames);
+        selectedMetaFrame_ = clampi(selectedMetaFrame_, 0, std::max(0, seed.frameCount - 1));
+        ensurePartialBankFrameDefaults(seed, selectedMetaFrame_);
+        for(auto &rect : partialKnobRects_)
+            rect = {};
 
-        const Rect spectrum { r.x, r.y + 40.0f, r.w, std::min(170.0f, r.h * 0.42f) };
-        drawPanel(spectrum, rgba(0x101820ff), rgba(0x263842ff));
-        const float barW = (spectrum.w - 16.0f) / float(synth::kMaxWavetablePartials);
-        for(int i = 0; i < synth::kMaxWavetablePartials; ++i)
-        {
-            const auto &p = seed.partials[(size_t)i];
-            const float amp = i < seed.partialCount && p.enabled ? clampf(p.amp, 0.0f, 1.0f) : 0.0f;
-            const float h = amp * (spectrum.h - 22.0f);
-            beginPath();
-            rect(spectrum.x + 8.0f + float(i) * barW, spectrum.y + spectrum.h - 10.0f - h,
-                 std::max(1.0f, barW - 2.0f), h);
-            fillColor(i == selectedPartialIndex_ ? rgba(0x8be87dff) : rgba(0x8c5dffcc));
-            fill();
-        }
+        metaWavetableNameRect_ = { r.x, r.y, std::max(120.0f, r.w - 66.0f), 28.0f };
+        metaWavetablePrevRect_ = { r.x + r.w - 60.0f, r.y, 28.0f, 28.0f };
+        metaWavetableNextRect_ = { r.x + r.w - 28.0f, r.y, 28.0f, 28.0f };
+        const char *tableTitle = wavetablePresetLabel_.empty() ? "Select Table" : wavetablePresetLabel_.c_str();
+        drawDropdown(metaWavetableNameRect_, tableTitle, wavetablePresetMenuOpen_);
+        drawButton(metaWavetablePrevRect_, "<", false);
+        drawButton(metaWavetableNextRect_, ">", false);
+
+        const float topY = r.y + 40.0f;
+        const float knobW = std::min(86.0f, std::max(58.0f, (r.w - 170.0f) / 4.0f));
+        partialCountRect_ = { r.x, topY, knobW, 54.0f };
+        inharmonicModeRect_ = { r.x + knobW + 8.0f, topY + 10.0f, 104.0f, 30.0f };
+        inharmonicRect_ = { inharmonicModeRect_.x + inharmonicModeRect_.w + 8.0f, topY, knobW, 54.0f };
+        metaFrameCountRect_ = {};
+        metaMorphRect_ = { inharmonicRect_.x + knobW + 8.0f, topY, knobW, 54.0f };
+        metaHarmonicEditRect_ = { metaMorphRect_.x + knobW + 10.0f, topY + 12.0f,
+                                  std::max(76.0f, r.x + r.w - (metaMorphRect_.x + knobW + 10.0f)), 30.0f };
+        drawKnob(partialCountRect_, "Partials", float(seed.partialCount - 1) / 63.0f, float(seed.partialCount));
+        drawButton(inharmonicModeRect_, freqShapeName(seed.freqShape), seed.freqShape != synth::FreqShape::Harmonic);
+        drawKnob(inharmonicRect_, "Harmonize", seed.inharmonicAmount, seed.inharmonicAmount);
+        drawKnob(metaMorphRect_, "Morph", seed.morph, seed.morph);
+        drawButton(metaHarmonicEditRect_, "Edit Table", harmonicEditorOpen_);
+
+        metaFrameStripRect_ = {};
+        metaFrameScrollRect_ = {};
+        // Pin the pitch row to the panel bottom and let the spectrum grow to fill
+        // all the space above it, so the panel has no dead zone at large heights.
+        const float pitchRowH = 30.0f;
+        const float editY = r.y + r.h - pitchRowH;
+        const float spectrumTop = topY + 66.0f;
+        const float spectrumH = std::max(120.0f, editY - 12.0f - spectrumTop);
+        const Rect spectrum { r.x, spectrumTop, r.w, spectrumH };
         partialSpectrumRect_ = spectrum;
+        drawPartialBankLayerPreview(spectrum, seed);
+
         selectedPartialIndex_ = clampi(selectedPartialIndex_, 0, std::max(0, seed.partialCount - 1));
-        auto &slot = seed.partials[(size_t)selectedPartialIndex_];
-        partialAmpRect_ = { r.x, spectrum.y + spectrum.h + 12.0f, r.w * 0.5f - 6.0f, 24.0f };
-        partialRatioRect_ = { r.x + r.w * 0.5f + 6.0f, spectrum.y + spectrum.h + 12.0f, r.w * 0.5f - 6.0f, 24.0f };
-        drawSlider(partialAmpRect_, buttonText("P%d Amp", selectedPartialIndex_ + 1), slot.amp, slot.amp);
-        drawSlider(partialRatioRect_, "Ratio", std::min(1.0f, slot.ratio / 64.0f), slot.ratio);
+        partialAmpRect_ = {};
+        partialRatioRect_ = {};
+        const auto &groupPitch = seed.partials[0];
+        const float pitchX = r.x;
+        const float pitchGap = 6.0f;
+        const float pitchW = std::min(96.0f, std::max(64.0f, (r.w - pitchGap * 3.0f) * 0.25f));
+        metaOctRect_ = { pitchX, editY, pitchW, 30.0f };
+        metaSemRect_ = { metaOctRect_.x + pitchW + pitchGap, editY, pitchW, 30.0f };
+        metaFinRect_ = { metaSemRect_.x + pitchW + pitchGap, editY, pitchW, 30.0f };
+        metaCrsRect_ = { metaFinRect_.x + pitchW + pitchGap, editY, pitchW, 30.0f };
+        drawPitchControl(metaOctRect_, "OCT", groupPitch.pitchOct, false);
+        drawPitchControl(metaSemRect_, "SEM", groupPitch.pitchSem, false);
+        drawPitchControl(metaFinRect_, "FIN", int(std::round(groupPitch.pitchFin)), false);
+        drawPitchControl(metaCrsRect_, "CRS", int(std::round(groupPitch.pitchCrs)), false);
     }
 
     void drawMetaTrackEditor(const Rect &r, synth::SourceTrackParams &track)
@@ -3554,8 +4312,8 @@ class KapibaraUI final : public UI
         metaWavetablePrevRect_ = { r.x + r.w - 60.0f, r.y, 28.0f, 28.0f };
         metaWavetableNextRect_ = { r.x + r.w - 28.0f, r.y, 28.0f, 28.0f };
         metaWavetableNameRect_ = { r.x, r.y, std::max(80.0f, r.w - 66.0f), 28.0f };
-        const std::string wavetableTitle = (wavetablePresetLabel_.empty() ? "Select Wavetable" : wavetablePresetLabel_) + "  v";
-        drawButton(metaWavetableNameRect_, wavetableTitle.c_str(), wavetablePresetMenuOpen_);
+        const char *wavetableTitle = wavetablePresetLabel_.empty() ? "Select Wavetable" : wavetablePresetLabel_.c_str();
+        drawDropdown(metaWavetableNameRect_, wavetableTitle, wavetablePresetMenuOpen_);
         drawButton(metaWavetablePrevRect_, "<", false);
         drawButton(metaWavetableNextRect_, ">", false);
 
@@ -3571,11 +4329,15 @@ class KapibaraUI final : public UI
         drawPitchControl(metaFinRect_, "FIN", int(slot.pitchFin), false);
         drawPitchControlF(metaCrsRect_, "CRS", slot.pitchCrs);
 
-        const float waveformHeight = clampf(r.h - 104.0f, 28.0f, 150.0f);
-        metaWaveformRect_ = { r.x, r.y + 62.0f, r.w, waveformHeight };
+        // Anchor the bottom control row to the panel bottom and let the spectrum/
+        // waveform display grow to fill everything between the pitch row and the
+        // knobs, so the panel never leaves a dead zone at large heights.
+        const float controlRowH = 36.0f;
+        const float controlY = r.y + r.h - controlRowH;
+        const float waveformTop = r.y + 62.0f;
+        const float waveformHeight = std::max(60.0f, controlY - 8.0f - waveformTop);
+        metaWaveformRect_ = { r.x, waveformTop, r.w, waveformHeight };
         drawMeta3DWaveform(metaWaveformRect_, slot, selectedTrack_);
-
-        const float controlY = metaWaveformRect_.y + metaWaveformRect_.h + 6.0f;
         const float controlGap = 5.0f;
         const float controlW = (r.w - controlGap * 4.0f) / 5.0f;
         metaFrameCountRect_ = {};  // Frames 控件从主界面移除
@@ -3604,6 +4366,14 @@ class KapibaraUI final : public UI
         drawButton(basicShapeRect_, synth::basicOscillatorShapeName(track.basicShape), false);
         drawSlider(basicPulseRect_, "Pulse Width", track.pulseWidth, track.pulseWidth);
         drawSlider(basicSubRect_, "Sub Level", track.subLevel, track.subLevel);
+        // Large waveform preview fills the rest of the panel (no dead space).
+        const float previewTop = r.y + 104.0f;
+        const float previewH = (r.y + r.h) - previewTop;
+        if(previewH > 70.0f)
+        {
+            drawSectionTitle(r.x, previewTop - 18.0f, "Waveform");
+            drawStripThumbnail({ r.x, previewTop, r.w, previewH }, track, selectedTrack_, false);
+        }
     }
 
     void drawNoiseTrackEditor(const Rect &r, synth::SourceTrackParams &track)
@@ -3613,6 +4383,14 @@ class KapibaraUI final : public UI
         drawButton(noiseModeRect_, synth::sampleNoiseModeName(track.sampleNoiseMode), false);
         drawSlider(noiseColorRect_, "Noise Color", track.noiseColor, track.noiseColor);
         drawLabelBox({ r.x, r.y + 70.0f, 260.0f, 24.0f }, "File/Capture unavailable in v1");
+        // Large waveform preview fills the rest of the panel (no dead space).
+        const float previewTop = r.y + 122.0f;
+        const float previewH = (r.y + r.h) - previewTop;
+        if(previewH > 70.0f)
+        {
+            drawSectionTitle(r.x, previewTop - 18.0f, "Signal");
+            drawStripThumbnail({ r.x, previewTop, r.w, previewH }, track, selectedTrack_, false);
+        }
     }
 
     int envUseCount(int envIndex) const
@@ -3871,20 +4649,25 @@ class KapibaraUI final : public UI
         }
         auto &lfo = lfos_[(size_t)selectedLfo_];
         auto &env = envs_[(size_t)selectedEnv_];
-        lfoEnableRect_ = { c0, r.y + 100.0f, colW * 0.48f - 4.0f, 24.0f };
-        lfoShapeRect_  = { c0 + colW * 0.52f, r.y + 100.0f, colW * 0.48f - 4.0f, 24.0f };
-        drawButton(lfoEnableRect_, lfo.enabled ? "LFO On"  : "LFO Off",  lfo.enabled);
-        drawButton(lfoShapeRect_,  lfoShapeName(lfo.shape), false);
+        // LFOs/ENVs are always on now — no enable toggle. Shape spans the row.
+        lfoEnableRect_ = {};
+        lfoShapeRect_  = { c0, r.y + 100.0f, colW, 24.0f };
+        std::snprintf(scratch_, sizeof(scratch_), "Shape: %s", lfoShapeName(lfo.shape));
+        drawButton(lfoShapeRect_, scratch_, false);
         // LFO curve preview
         drawLfoCurve({ c0, r.y + 128.0f, colW, 72.0f }, lfo);
-        lfoFreqRect_   = { c0, r.y + 208.0f, colW * 0.5f - 4.0f, 22.0f };
-        lfoPhaseRect_  = { c0 + colW * 0.5f + 4.0f, r.y + 208.0f, colW * 0.5f - 4.0f, 22.0f };
-        lfoRhoRect_    = { c0, r.y + 234.0f, colW, 22.0f };
-        drawSlider(lfoFreqRect_,   "LFO Rate",  lfo.frequencyHz / 20.0f, lfo.frequencyHz);
-        drawSlider(lfoPhaseRect_,  "LFO Phase", lfo.phase0, lfo.phase0);
-        drawSlider(lfoRhoRect_,    "LFO Rho",   lfo.rhoLfo, lfo.rhoLfo);
-        envEnableRect_ = { c0, r.y + 262.0f, colW, 24.0f };
-        drawButton(envEnableRect_, env.enabled ? "ENV On (drag curve)" : "ENV Off", env.enabled);
+        // LFO Rate / Phase / Rho as a row of standard vertical knobs (like the rest).
+        const float lfoKnobW = (colW - 16.0f) / 3.0f;
+        const float lfoKnobY = r.y + 208.0f;
+        lfoFreqRect_   = { c0,                            lfoKnobY, lfoKnobW, 48.0f };
+        lfoPhaseRect_  = { c0 + lfoKnobW + 8.0f,          lfoKnobY, lfoKnobW, 48.0f };
+        lfoRhoRect_    = { c0 + 2.0f * (lfoKnobW + 8.0f), lfoKnobY, lfoKnobW, 48.0f };
+        drawKnob(lfoFreqRect_,   "Rate",  lfo.frequencyHz / 20.0f, lfo.frequencyHz);
+        drawKnob(lfoPhaseRect_,  "Phase", lfo.phase0, lfo.phase0);
+        drawKnob(lfoRhoRect_,    "Rho",   lfo.rhoLfo, lfo.rhoLfo);
+        envEnableRect_ = {};
+        // ENV is always on — just a heading hint above its curve.
+        drawSectionTitle(c0, r.y + 266.0f, buttonText("Matrix ENV%d (drag curve)", selectedEnv_ + 1));
         envPointARect_ = {}; envPointBRect_ = {}; envCurveARect_ = {};
         matrixEnvCurveRect_ = { c0, r.y + 290.0f, colW, std::max(40.0f, r.h - 298.0f) };
         drawMatrixEnvCurve(matrixEnvCurveRect_, env);
@@ -3898,10 +4681,10 @@ class KapibaraUI final : public UI
         shapePhaseRect_ = {}; shapeRhoRect_ = {}; shapeUpRect_ = {}; shapeDownRect_ = {};
 
         // -------- Column 1: Amp ADSR ENV --------
-        drawSectionTitle(c1, r.y + 14.0f, "Amp ADSR");
-        // Draggable ADSR modulation source (drag onto any knob to route)
-        adsrSourceRect_ = { c1 + colW - 86.0f, r.y + 12.0f, 86.0f, 20.0f };
-        drawButton(adsrSourceRect_, "ADSR src →", false);
+        drawSectionTitle(c1, r.y + 14.0f, "Amp ADSR (drag a tab to route)");
+        // Each Amp ADSR (ENV1-4) is individually draggable as a mod source now,
+        // so the old single "ADSR src" handle is gone.
+        adsrSourceRect_ = {};
         static constexpr const char *ampEnvTabs[] = { "ENV1", "ENV2", "ENV3", "ENV4" };
         drawTabBar({ c1, r.y + 44.0f, colW, 24.0f }, ampEnvTabs, synth::kMaxAmpEnvs, selectedAmpEnv_,
                    ampEnvTabRects_.data());
@@ -3917,9 +4700,8 @@ class KapibaraUI final : public UI
         drawKnob(decayRect_,   "D", ampEnv.decay   / 5.0f, ampEnv.decay);
         drawKnob(sustainRect_, "S", ampEnv.sustain, ampEnv.sustain);
         drawKnob(releaseRect_, "R", ampEnv.release / 8.0f, ampEnv.release);
-        const Rect matrixPreview { c1, r.y + r.h - 92.0f, colW, 84.0f };
-        drawAdsrCurve({ c1, r.y + 158.0f, colW, std::max(60.0f, matrixPreview.y - r.y - 166.0f) }, ampEnv);
-        drawModulationMatrixPreview(matrixPreview);
+        // ADSR curve fills the rest of the column (old matrix preview removed).
+        drawAdsrCurve({ c1, r.y + 158.0f, colW, std::max(60.0f, r.y + r.h - (r.y + 166.0f)) }, ampEnv);
     }
 
     void drawMetaPartialEditor(const Rect &r)
@@ -3955,13 +4737,16 @@ class KapibaraUI final : public UI
         drawButton(metaWarpModeRect_, warpModeName(slot.warpMode), false);
         drawButton(metaFrameButtonRect_, buttonText("Frame %d", selectedMetaFrame_ + 1), false);
 
-        metaLoadRect_ = { r.x, r.y + 82.0f, 70.0f, 20.0f };
-        const float presetW = std::min(46.0f, std::max(34.0f, (r.w - 322.0f) / 5.0f));
+        metaLoadRect_ = { r.x, r.y + 82.0f, 44.0f, 20.0f };
+        metaSaveRect_ = { r.x + 48.0f, r.y + 82.0f, 44.0f, 20.0f };
+        const float presetBase = 96.0f;
+        const float presetW = std::min(46.0f, std::max(32.0f, (r.w - presetBase - 84.0f) / 5.0f));
         for(int i = 0; i < 5; ++i)
-            metaFramePresetRects_[(size_t)i] = { r.x + 78.0f + float(i) * (presetW + 5.0f), r.y + 82.0f, presetW, 20.0f };
-        metaLoadPathRect_ = { r.x + 78.0f + 5.0f * (presetW + 5.0f), r.y + 82.0f,
-                              std::max(80.0f, r.w - 78.0f - 5.0f * (presetW + 5.0f)), 20.0f };
+            metaFramePresetRects_[(size_t)i] = { r.x + presetBase + float(i) * (presetW + 5.0f), r.y + 82.0f, presetW, 20.0f };
+        metaLoadPathRect_ = { r.x + presetBase + 5.0f * (presetW + 5.0f), r.y + 82.0f,
+                              std::max(60.0f, r.w - presetBase - 5.0f * (presetW + 5.0f)), 20.0f };
         drawButton(metaLoadRect_, "Load", loadPathEditing_);
+        drawButton(metaSaveRect_, "Save", false);
         drawButton(metaFramePresetRects_[0], "Sin", false);
         drawButton(metaFramePresetRects_[1], "Saw", false);
         drawButton(metaFramePresetRects_[2], "Sqr", false);
@@ -4020,8 +4805,75 @@ class KapibaraUI final : public UI
         fill();
     }
 
+    // Shared frame-selection logic (single, or ctrl/shift range) for every frame strip.
+    // Is morph being modulated (matrix rule targeting this track's MetaMorph)?
+    bool morphIsModulated(const synth::SourceTrackParams &t) const
+    {
+        for(const auto &r : rules_)
+            if(r.enabled && r.targetTrackId == t.id && r.dest == synth::ModDestination::MetaMorph)
+                return true;
+        return false;
+    }
+
+    // Frame click. Ctrl/Shift held: extend a range from the anchor. Plain click:
+    // single-select + (if morph isn't modulated) auto-jump morph to that frame.
+    void selectMetaFrameAt(int frameIndex, int frameCount)
+    {
+        if(frameIndex < 0 || frameIndex >= frameCount)
+            return;
+        if(ctrlDown_ || shiftDown_)
+        {
+            if(metaFrameRangeAnchor_ < 0 || metaFrameRangeAnchor_ >= frameCount)
+            {
+                metaFrameRangeAnchor_ = frameIndex;
+                metaFrameSelected_.fill(false);
+                metaFrameSelected_[(size_t)frameIndex] = true;
+                selectedMetaFrame_ = frameIndex;
+                return;
+            }
+            const int a = std::min(metaFrameRangeAnchor_, frameIndex);
+            const int b = std::max(metaFrameRangeAnchor_, frameIndex);
+            metaFrameSelected_.fill(false);
+            for(int i = a; i <= b; ++i)
+                metaFrameSelected_[(size_t)i] = true;
+            selectedMetaFrame_ = frameIndex;
+            return;
+        }
+        // Plain single select.
+        metaFrameSelected_.fill(false);
+        metaFrameSelected_[(size_t)frameIndex] = true;
+        selectedMetaFrame_ = frameIndex;
+        metaFrameRangeAnchor_ = frameIndex;
+        if(auto *track = currentTrack();
+           track != nullptr && track->type == synth::SourceTrackType::MetaOscillator
+           && frameCount >= 2 && !morphIsModulated(*track))
+        {
+            track->metaOsc.morph = float(frameIndex) / float(frameCount - 1);
+            pushCurrentTrack();
+        }
+        else if(auto *track = currentTrack();
+                track != nullptr && track->type == synth::SourceTrackType::PartialBank
+                && frameCount >= 2)
+        {
+            track->partialBank.morph = float(frameIndex) / float(frameCount - 1);
+            pushCurrentTrack();
+        }
+    }
+
+    void selectAllMetaFrames()
+    {
+        auto *track = currentTrack();
+        const int fc = track && track->type == synth::SourceTrackType::PartialBank
+                           ? track->partialBank.frameCount
+                           : (track ? track->metaOsc.frameCount : 0);
+        for(int i = 0; i < synth::kMaxWavetableFrames; ++i)
+            metaFrameSelected_[(size_t)i] = i < fc;
+        metaFrameRangeAnchor_ = fc > 0 ? 0 : -1;
+    }
+
     void drawMetaFrameStrip(const Rect &r, const synth::WavetablePartialSlot &slot)
     {
+        metaFramesShown_ = true; // a clickable frame strip is on screen this frame
         metaFrameScrollStart_ = clampi(metaFrameScrollStart_, 0,
                                        std::max(0, slot.frameCount - synth::kVisibleWavetableFrames));
         metaFramePageStart_ = metaFrameScrollStart_;
@@ -4035,12 +4887,21 @@ class KapibaraUI final : public UI
             metaFrameRects_[(size_t)local] = btn;
             const bool active = frameIndex < slot.frameCount;
             const bool multiSel = active && (size_t)frameIndex < metaFrameSelected_.size() && metaFrameSelected_[(size_t)frameIndex];
-            const bool selected = frameIndex == selectedMetaFrame_;
+            const bool focused = frameIndex == selectedMetaFrame_;
+            const bool selected = multiSel || focused;
 
-            // Button background + border; multi-selected frames get cyan accent
-            const uint32_t bgCol  = selected ? 0x263840ff : (multiSel ? 0x1a3028ff : 0x151d22ff);
-            const uint32_t brdCol = selected ? 0x70d77aff : (multiSel ? 0x3ec87aff : 0x354851ff);
+            // Selection is a real multi-frame set; every selected frame gets the
+            // same bright treatment, while the focused edit frame gets an extra cap.
+            const uint32_t bgCol  = selected ? 0x263840ff : 0x151d22ff;
+            const uint32_t brdCol = selected ? 0x70d77aff : 0x354851ff;
             drawPanel(btn, rgba(bgCol), rgba(brdCol));
+            if(selected && active)
+            {
+                beginPath();
+                roundedRect(btn.x + 3.0f, btn.y + 3.0f, btn.w - 6.0f, 3.0f, 1.5f);
+                fillColor(rgba(0x8df7aaff));
+                fill();
+            }
 
             // Mini waveform preview in upper area
             if(active)
@@ -4376,7 +5237,7 @@ class KapibaraUI final : public UI
 
     void drawKeyboard()
     {
-        keyboardRect_ = { 16.0f, static_cast<float>(getHeight()) - 86.0f, static_cast<float>(getWidth()) - 32.0f, 70.0f };
+        keyboardRect_ = { 16.0f, static_cast<float>(uiH()) - 86.0f, static_cast<float>(uiW()) - 32.0f, 70.0f };
         drawPanel(keyboardRect_, DesignTokens::panelRaised(), DesignTokens::border());
 
         constexpr int first = 36;
@@ -4556,9 +5417,12 @@ class KapibaraUI final : public UI
         const float cx   = tall ? r.x + r.w * 0.5f : r.x + sz * 0.5f;
         const float cy   = tall ? r.y + sz * 0.5f + 2.0f : r.y + r.h * 0.5f;
 
+        // Knob body: soft vertical gradient + rim gives a touch of depth.
         beginPath();
         circle(cx, cy, rad + 4.0f);
-        fillColor(DesignTokens::controlBackground());
+        fillPaint(linearGradient(cx, cy - rad - 4.0f, cx, cy + rad + 4.0f,
+                                 shade(DesignTokens::controlBackground(), 0.20f),
+                                 shade(DesignTokens::controlBackground(), -0.16f)));
         fill();
         strokeColor(DesignTokens::border());
         strokeWidth(DesignTokens::borderWidth);
@@ -4568,29 +5432,44 @@ class KapibaraUI final : public UI
         const float kEnd   = DesignTokens::knobStart + DesignTokens::knobSweep;
         const float kAngle = kStart + clampf(norm, 0.0f, 1.0f) * DesignTokens::knobSweep;
 
+        lineCap(ROUND);
+        // Unfilled track.
         beginPath();
         arc(cx, cy, rad, kStart, kEnd, CCW);
         strokeColor(DesignTokens::divider());
-        strokeWidth(2.0f);
+        strokeWidth(2.5f);
         stroke();
-
+        // Filled value arc with a faint outer glow.
         if(norm > 0.001f)
         {
             beginPath();
             arc(cx, cy, rad, kStart, kAngle, CCW);
+            strokeColor(DesignTokens::accentCyan().withAlpha(0.22f));
+            strokeWidth(6.0f);
+            stroke();
+            beginPath();
+            arc(cx, cy, rad, kStart, kAngle, CCW);
             strokeColor(DesignTokens::accentCyan());
-            strokeWidth(2.5f);
+            strokeWidth(2.75f);
             stroke();
         }
 
-        const float p0 = rad * 0.38f;
-        const float p1 = rad * 0.70f;
+        // Pointer with a bright tip dot.
+        const float ax = std::cos(kAngle);
+        const float ay = std::sin(kAngle);
+        const float p0 = rad * 0.30f;
+        const float p1 = rad * 0.68f;
         beginPath();
-        moveTo(cx + std::cos(kAngle) * p0, cy + std::sin(kAngle) * p0);
-        lineTo(cx + std::cos(kAngle) * p1, cy + std::sin(kAngle) * p1);
+        moveTo(cx + ax * p0, cy + ay * p0);
+        lineTo(cx + ax * p1, cy + ay * p1);
         strokeColor(DesignTokens::textPrimary());
-        strokeWidth(1.5f);
+        strokeWidth(1.75f);
         stroke();
+        lineCap(BUTT);
+        beginPath();
+        circle(cx + ax * p1, cy + ay * p1, 1.7f);
+        fillColor(DesignTokens::accentCyan());
+        fill();
 
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%.3g", value);
@@ -4682,18 +5561,62 @@ class KapibaraUI final : public UI
         text(r.x + r.w * 0.5f, r.y + r.h * 0.5f, label, nullptr);
     }
 
-    void drawPanel(const Rect &r, Color fillValue, Color strokeValue)
+    // Wide selector control: left-aligned label + a chevron pinned to the right
+    // edge, so a full-width dropdown no longer looks like an empty stretched bar.
+    void drawDropdown(const Rect &r, const char *label, bool open)
     {
-        (void)fillValue;
-        (void)strokeValue;
-        const float radius = std::min(DesignTokens::panelRadius, std::min(r.w, r.h) * 0.45f);
+        const float radius = std::min(DesignTokens::controlRadius, std::min(r.w, r.h) * 0.45f);
         beginPath();
         roundedRect(r.x, r.y, r.w, r.h, radius);
-        fillColor(DesignTokens::panelBackground());
+        fillColor(open ? DesignTokens::panelRaised() : DesignTokens::controlBackground());
         fill();
         beginPath();
         roundedRect(r.x + 0.5f, r.y + 0.5f, r.w - 1.0f, r.h - 1.0f, radius);
-        strokeColor(DesignTokens::border());
+        strokeColor(open ? DesignTokens::accentCyan() : DesignTokens::border());
+        strokeWidth(DesignTokens::borderWidth);
+        stroke();
+        useUiFont();
+        uiFontSize(12.0f);
+        textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+        fillColor(open ? DesignTokens::textPrimary() : DesignTokens::textSecondary());
+        scissor(r.x + 10.0f, r.y, std::max(10.0f, r.w - 32.0f), r.h);
+        text(r.x + 10.0f, r.y + r.h * 0.5f + 0.5f, label, nullptr);
+        resetScissor();
+        const float chx = r.x + r.w - 15.0f;
+        const float chy = r.y + r.h * 0.5f;
+        beginPath();
+        moveTo(chx - 4.0f, chy - 2.0f);
+        lineTo(chx, chy + 3.0f);
+        lineTo(chx + 4.0f, chy - 2.0f);
+        strokeColor(open ? DesignTokens::accentCyan() : DesignTokens::textSecondary());
+        strokeWidth(1.5f);
+        lineCap(ROUND);
+        stroke();
+        lineCap(BUTT);
+    }
+
+    void drawPanel(const Rect &r, Color fillValue, Color strokeValue)
+    {
+        const float radius = std::min(DesignTokens::panelRadius, std::min(r.w, r.h) * 0.45f);
+        // Honour the caller's fill/stroke so panels keep a readable depth hierarchy
+        // (page < rack < strip < control) and per-context accents (group purple etc).
+        beginPath();
+        roundedRect(r.x, r.y, r.w, r.h, radius);
+        fillColor(fillValue);
+        fill();
+        // 1px brighter line along the top edge for a subtle raised look.
+        if(r.h > 8.0f && r.w > radius * 2.0f + 4.0f)
+        {
+            beginPath();
+            moveTo(r.x + radius, r.y + 1.0f);
+            lineTo(r.x + r.w - radius, r.y + 1.0f);
+            strokeColor(shade(fillValue, 0.16f));
+            strokeWidth(1.0f);
+            stroke();
+        }
+        beginPath();
+        roundedRect(r.x + 0.5f, r.y + 0.5f, r.w - 1.0f, r.h - 1.0f, radius);
+        strokeColor(strokeValue);
         strokeWidth(DesignTokens::borderWidth);
         stroke();
     }
@@ -4740,6 +5663,144 @@ class KapibaraUI final : public UI
         if(!ok || presetNameBuffer_.size() >= 64)
             return;
         presetNameBuffer_.push_back(ch);
+    }
+
+    static std::string trimPresetName(std::string s)
+    {
+        while(!s.empty() && std::isspace(static_cast<unsigned char>(s.front())))
+            s.erase(s.begin());
+        while(!s.empty() && std::isspace(static_cast<unsigned char>(s.back())))
+            s.pop_back();
+        return s;
+    }
+
+    static std::string safeFileStem(std::string s, const char *fallback)
+    {
+        s = trimPresetName(std::move(s));
+        std::string out;
+        for(char ch : s)
+        {
+            const bool ok = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')
+                            || ch == '_' || ch == '-' || ch == ' ';
+            if(ok)
+                out.push_back(ch);
+        }
+        return out.empty() ? std::string(fallback) : out;
+    }
+
+    void beginSynthPresetRename()
+    {
+        if(selectedPresetIndex_ >= 0 && selectedPresetIndex_ < int(presetNames_.size()))
+            presetNameBuffer_ = presetNames_[(size_t)selectedPresetIndex_];
+        else if(presetNameBuffer_.empty())
+            presetNameBuffer_ = "user_kapibara";
+        presetNameEditing_ = true;
+        presetNameEditTarget_ = PresetNameEditTarget::Synth;
+        skipNextPresetCharacterInput_ = false;
+    }
+
+    void beginWavetablePresetRename()
+    {
+        if(selectedWavetablePresetIndex_ >= 0 && selectedWavetablePresetIndex_ < int(wavetablePresets_.size()))
+            presetNameBuffer_ = wavetablePresets_[(size_t)selectedWavetablePresetIndex_].name;
+        else if(!wavetablePresetLabel_.empty() && wavetablePresetLabel_ != "Select Wavetable")
+            presetNameBuffer_ = wavetablePresetLabel_;
+        else
+            presetNameBuffer_ = "wavetable";
+        presetNameEditing_ = true;
+        presetNameEditTarget_ = PresetNameEditTarget::Wavetable;
+        skipNextPresetCharacterInput_ = false;
+    }
+
+    void commitPresetNameEdit()
+    {
+        const auto target = presetNameEditTarget_;
+        presetNameEditing_ = false;
+        presetNameEditTarget_ = PresetNameEditTarget::None;
+        skipNextPresetCharacterInput_ = false;
+        const std::string clean = safeFileStem(presetNameBuffer_, target == PresetNameEditTarget::Wavetable ? "wavetable" : "user_kapibara");
+        presetNameBuffer_ = clean;
+        if(target == PresetNameEditTarget::Synth)
+        {
+            releaseAllUiNotes();
+            if(auto *p = plugin())
+                p->saveUserPreset(clean.c_str());
+            pullFromPlugin();
+            for(int i = 0; i < int(presetNames_.size()); ++i)
+                if(presetNames_[(size_t)i] == clean)
+                    selectedPresetIndex_ = i;
+            presetLabel_ = clean;
+        }
+        else if(target == PresetNameEditTarget::Wavetable)
+        {
+            saveOrRenameWavetablePreset(clean);
+        }
+    }
+
+    static void ensurePartialBankFrameDefaults(synth::WavetableSeedParams &seed, int frameIndex)
+    {
+        seed.frameCount = clampi(seed.frameCount, 1, synth::kMaxWavetableFrames);
+        frameIndex = clampi(frameIndex, 0, seed.frameCount - 1);
+        auto &frame = seed.frames[(size_t)frameIndex];
+        for(int i = 0; i < synth::kMaxWavetablePartials; ++i)
+        {
+            auto &h = frame.harmonics[(size_t)i];
+            if(h.ratio <= 0.0f)
+                h.ratio = float(i + 1);
+            // If the frame has never been written, mirror the legacy partial
+            // amp/phase once so old presets still sound the same.
+            if(std::abs(h.amp) <= 1.0e-8f && std::abs(h.phase) <= 1.0e-8f && seed.partials[(size_t)i].amp > 0.0f)
+            {
+                h.amp = seed.partials[(size_t)i].amp;
+                h.phase = seed.partials[(size_t)i].phase;
+            }
+        }
+    }
+
+    static int partialBankMorphFrameIndex(const synth::WavetableSeedParams &seed)
+    {
+        const int fc = clampi(seed.frameCount, 1, synth::kMaxWavetableFrames);
+        return fc > 1 ? clampi(int(seed.morph * float(fc - 1) + 0.5f), 0, fc - 1) : 0;
+    }
+
+    static float partialBankPitchRatio(int oct, int sem, float fin, float crs)
+    {
+        const float totalSemis = float(oct) * 12.0f + float(sem) + fin / 100.0f + crs / 100.0f;
+        return std::pow(2.0f, totalSemis / 12.0f);
+    }
+
+    static void applyPartialBankGroupPitch(synth::WavetableSeedParams &seed,
+                                           int oct, int sem, float fin, float crs)
+    {
+        const float pitchRatio = partialBankPitchRatio(oct, sem, fin, crs);
+        for(int i = 0; i < synth::kMaxWavetablePartials; ++i)
+        {
+            auto &slot = seed.partials[(size_t)i];
+            slot.pitchOct = oct;
+            slot.pitchSem = sem;
+            slot.pitchFin = fin;
+            slot.pitchCrs = crs;
+            slot.ratio = float(i + 1) * pitchRatio;
+        }
+    }
+
+    static Kwt2PackedBin packKwtBin(float amp, float phase)
+    {
+        Kwt2PackedBin bin;
+        bin.amplitude = uint16_t(std::round(clampf(amp, 0.0f, 1.0f) * 65535.0f));
+        while(phase > kPi) phase -= 2.0f * kPi;
+        while(phase < -kPi) phase += 2.0f * kPi;
+        bin.phase = int16_t(std::round(clampf(phase / kPi, -1.0f, 1.0f) * 32767.0f));
+        return bin;
+    }
+
+    static synth::WavetableHarmonic unpackKwtBin(const Kwt2PackedBin &bin, int index)
+    {
+        synth::WavetableHarmonic h;
+        h.ratio = float(index + 1);
+        h.amp = float(bin.amplitude) / 65535.0f;
+        h.phase = float(bin.phase) / 32767.0f * kPi;
+        return h;
     }
 
     bool handleDoubleClickReset(float x, float y)
@@ -4828,12 +5889,77 @@ class KapibaraUI final : public UI
     {
         if(!harmonicEditorOpen_)
             return false;
+        auto *activeTrack = currentTrack();
         if(harmonicEditorCloseRect_.contains(x, y))
         {
             harmonicEditorOpen_ = false;
             metaProcessContextMenuOpen_ = false;
             dragTarget_ = DragTarget::None;
             return true;
+        }
+        if(activeTrack != nullptr && activeTrack->type == synth::SourceTrackType::PartialBank)
+        {
+            if(metaFrameScrollRect_.contains(x, y))
+            {
+                dragTarget_ = DragTarget::MetaFrameScroll;
+                dragScrollStartX_ = x;
+                dragScrollStartVal_ = metaFrameScrollStart_;
+                return true;
+            }
+            if(metaEditorImportRect_.contains(x, y))
+            {
+                beginWavetableImport();
+                return true;
+            }
+            if(metaEditorAddRect_.contains(x, y)) return performMetaFrameAction(0);
+            if(metaEditorDuplicateRect_.contains(x, y)) return performMetaFrameAction(1);
+            if(metaEditorDeleteRect_.contains(x, y)) return performMetaFrameAction(2);
+            if(metaEditorLeftRect_.contains(x, y)) return performMetaFrameAction(3);
+            if(metaEditorRightRect_.contains(x, y)) return performMetaFrameAction(4);
+            for(int local = 0; local < synth::kVisibleWavetableFrames; ++local)
+            {
+                if(metaFrameRects_[(size_t)local].contains(x, y))
+                {
+                    selectMetaFrameAt(metaFramePageStart_ + local, activeTrack->partialBank.frameCount);
+                    return true;
+                }
+            }
+            if(harmonicEditorPhaseRect_.contains(x, y))
+            {
+                dragTarget_ = DragTarget::PartialTablePhase;
+                editPartialTable(x, y, true);
+                return true;
+            }
+            if(harmonicEditorSpectrumRect_.contains(x, y))
+            {
+                dragTarget_ = DragTarget::PartialTableAmp;
+                editPartialTable(x, y, false);
+                return true;
+            }
+            if(metaHarmonicRatioRect_.contains(x, y))
+            {
+                dragTarget_ = DragTarget::MetaHarmonicRatio;
+                dragStartY_ = y;
+                dragStartNorm_ = float(selectedPartialIndex_) / float(synth::kMaxWavetablePartials - 1);
+                return true;
+            }
+            if(metaHarmonicAmpRect_.contains(x, y))
+            {
+                dragTarget_ = DragTarget::MetaHarmonicAmp;
+                dragStartY_ = y;
+                const auto &frame = activeTrack->partialBank.frames[(size_t)selectedMetaFrame_];
+                dragStartNorm_ = frame.harmonics[(size_t)selectedPartialIndex_].amp;
+                return true;
+            }
+            if(metaHarmonicPhaseRect_.contains(x, y))
+            {
+                dragTarget_ = DragTarget::MetaHarmonicPhase;
+                dragStartY_ = y;
+                const auto &frame = activeTrack->partialBank.frames[(size_t)selectedMetaFrame_];
+                dragStartNorm_ = (frame.harmonics[(size_t)selectedPartialIndex_].phase + kPi) / (2.0f * kPi);
+                return true;
+            }
+            return harmonicEditorPanelRect_.contains(x, y);
         }
         if(metaFrameScrollRect_.contains(x, y))
         {
@@ -4857,34 +5983,8 @@ class KapibaraUI final : public UI
         {
             if(metaFrameRects_[(size_t)local].contains(x, y))
             {
-                const int frameIndex = metaFramePageStart_ + local;
-                if(auto *track = currentTrack(); track != nullptr && frameIndex < track->metaOsc.frameCount)
-                {
-                    if(ctrlDown_)
-                    {
-                        if(metaFrameRangeAnchor_ < 0 || metaFrameRangeAnchor_ >= track->metaOsc.frameCount)
-                        {
-                            metaFrameRangeAnchor_ = frameIndex;
-                            metaFrameSelected_.fill(false);
-                            metaFrameSelected_[(size_t)frameIndex] = true;
-                            selectedMetaFrame_ = frameIndex;
-                            return true;
-                        }
-                        const int first = std::min(metaFrameRangeAnchor_, frameIndex);
-                        const int last = std::max(metaFrameRangeAnchor_, frameIndex);
-                        metaFrameSelected_.fill(false);
-                        for(int i = first; i <= last; ++i)
-                            metaFrameSelected_[(size_t)i] = true;
-                        selectedMetaFrame_ = frameIndex;
-                    }
-                    else
-                    {
-                        metaFrameSelected_.fill(false);
-                        selectedMetaFrame_ = frameIndex;
-                        metaFrameSelected_[(size_t)frameIndex] = true;
-                        metaFrameRangeAnchor_ = frameIndex;
-                    }
-                }
+                if(auto *track = currentTrack(); track != nullptr)
+                    selectMetaFrameAt(metaFramePageStart_ + local, track->metaOsc.frameCount);
                 return true;
             }
         }
@@ -4965,8 +6065,7 @@ class KapibaraUI final : public UI
         {
             if(presetSearchRect_.contains(x, y))
             {
-                presetNameEditing_ = true;
-                skipNextPresetCharacterInput_ = false;
+                beginSynthPresetRename();
                 return true;
             }
             if(presetMenuNewRect_.contains(x, y))
@@ -4974,6 +6073,7 @@ class KapibaraUI final : public UI
                 selectedPresetIndex_ = -1;
                 presetNameBuffer_.clear();
                 presetNameEditing_ = true;
+                presetNameEditTarget_ = PresetNameEditTarget::Synth;
                 skipNextPresetCharacterInput_ = false;
                 return true;
             }
@@ -4988,42 +6088,33 @@ class KapibaraUI final : public UI
                 {
                     selectedPresetIndex_ = presetIndex;
                     presetNameBuffer_ = presetNames_[(size_t)presetIndex];
+                    presetLabel_ = presetNameBuffer_;
                     presetNameEditing_ = false;
+                    presetNameEditTarget_ = PresetNameEditTarget::None;
                     skipNextPresetCharacterInput_ = false;
+                    if(currentClickIsDouble_)
+                    {
+                        releaseAllUiNotes();
+                        if(auto *p = plugin())
+                            p->loadUserPreset(presetNameBuffer_.c_str());
+                        pullFromPlugin();
+                        presetMenuOpen_ = false;
+                    }
                     return true;
                 }
             }
             if(presetMenuSaveRect_.contains(x, y))
             {
-                presetNameEditing_ = false;
-                skipNextPresetCharacterInput_ = false;
-                releaseAllUiNotes();
-                if(auto *p = plugin())
-                    p->saveUserPreset(presetNameBuffer_.empty() ? nullptr : presetNameBuffer_.c_str());
-                pullFromPlugin();
-                for(int i = 0; i < int(presetNames_.size()); ++i)
-                    if(presetNames_[(size_t)i] == presetNameBuffer_)
-                        selectedPresetIndex_ = i;
-                return true;
-            }
-            if(presetMenuLoadRect_.contains(x, y))
-            {
-                presetNameEditing_ = false;
-                skipNextPresetCharacterInput_ = false;
-                releaseAllUiNotes();
-                const char *name = nullptr;
-                if(!presetNameBuffer_.empty())
-                    name = presetNameBuffer_.c_str();
-                else if(selectedPresetIndex_ >= 0 && selectedPresetIndex_ < int(presetNames_.size()))
-                    name = presetNames_[(size_t)selectedPresetIndex_].c_str();
-                if(auto *p = plugin())
-                    p->loadUserPreset(name);
-                pullFromPlugin();
+                if(presetNameEditing_ && presetNameEditTarget_ == PresetNameEditTarget::Synth)
+                    commitPresetNameEdit();
+                else
+                    beginSynthPresetRename();
                 return true;
             }
             if(presetMenuDeleteRect_.contains(x, y))
             {
                 presetNameEditing_ = false;
+                presetNameEditTarget_ = PresetNameEditTarget::None;
                 skipNextPresetCharacterInput_ = false;
                 releaseAllUiNotes();
                 const char *name = nullptr;
@@ -5041,6 +6132,7 @@ class KapibaraUI final : public UI
             if(presetMenuResetRect_.contains(x, y))
             {
                 presetNameEditing_ = false;
+                presetNameEditTarget_ = PresetNameEditTarget::None;
                 skipNextPresetCharacterInput_ = false;
                 releaseAllUiNotes();
                 if(auto *p = plugin())
@@ -5074,11 +6166,54 @@ class KapibaraUI final : public UI
         }
         if(aboutRect_.contains(x, y))
             return true;
+        if(gainRect_.contains(x, y))
+        {
+            dragTarget_    = DragTarget::Gain;
+            dragStartY_    = y;
+            dragStartNorm_ = clampf(gain_, 0.0f, 1.0f);
+            return true;
+        }
+        return false;
+    }
+
+    // Direct gain/pan/send drag on ANY strip (no need to select the strip first).
+    bool handleStripFaderPress(float x, float y)
+    {
+        const int n = int(generator_.tracks.size());
+        for(int i = 0; i < n && i < int(synth::kMaxSourceTracks); ++i)
+        {
+            DragTarget tgt = DragTarget::None;
+            float norm = 0.0f;
+            const auto &t = generator_.tracks[(size_t)i];
+            if(stripGainRects_[(size_t)i].w > 0.0f && stripGainRects_[(size_t)i].contains(x, y))
+            { tgt = DragTarget::TrackGain; norm = t.gain * 0.5f; }
+            else if(stripPanRects_[(size_t)i].w > 0.0f && stripPanRects_[(size_t)i].contains(x, y))
+            { tgt = DragTarget::TrackPan; norm = (t.pan + 1.0f) * 0.5f; }
+            else if(stripSendRects_[(size_t)i].w > 0.0f && stripSendRects_[(size_t)i].contains(x, y))
+            { tgt = DragTarget::TrackSend; norm = t.send; }
+            if(tgt == DragTarget::None) continue;
+            dragTrackIndex_ = i;           // adjust this strip directly; editor view unchanged
+            dragTarget_ = tgt;
+            dragStartY_ = y;
+            dragStartNorm_ = clampf(norm, 0.0f, 1.0f);
+            return true;
+        }
         return false;
     }
 
     bool handlePageClick(float x, float y)
     {
+        // Editor tab switch (SOURCE / SHAPE / VOICE / MAPPING).
+        for(int i = 0; i < int(editorTabRects_.size()); ++i)
+            if(editorTabRects_[(size_t)i].contains(x, y))
+            {
+                editorTab_ = i;
+                repaint();
+                return true;
+            }
+        // Direct strip fader/pan/send drag takes priority over strip selection.
+        if(handleStripFaderPress(x, y))
+            return true;
         // Insert-slot buttons must be checked before strip selection logic
         if(handleInsertButtonClick(x, y))
             return true;
@@ -5175,6 +6310,29 @@ class KapibaraUI final : public UI
                 if(trackGainRect_.contains(x, y) || trackPanRect_.contains(x, y) || trackSendRect_.contains(x, y))
                     return false;
 
+                // ADSR route: cycle which amp env this strip uses.
+                if(stripEnvRect_.contains(x, y))
+                {
+                    track.ampEnvIndex = (clampi(track.ampEnvIndex, 0, synth::kMaxAmpEnvs - 1) + 1) % synth::kMaxAmpEnvs;
+                    selectedAmpEnv_ = track.ampEnvIndex;
+                    pushCurrentTrack();
+                    return true;
+                }
+                // Duplicate this strip's amp env into a free slot and use it.
+                if(stripDupRect_.contains(x, y))
+                {
+                    const int src = clampi(track.ampEnvIndex, 0, synth::kMaxAmpEnvs - 1);
+                    int dst = (src + 1) % synth::kMaxAmpEnvs;
+                    for(int e = 0; e < synth::kMaxAmpEnvs; ++e)
+                        if(e != src && envUseCount(e) == 0) { dst = e; break; }
+                    ampEnvs_[(size_t)dst] = ampEnvs_[(size_t)src];
+                    track.ampEnvIndex = dst;
+                    selectedAmpEnv_ = dst;
+                    pushAmpEnv();
+                    pushCurrentTrack();
+                    return true;
+                }
+
                 if(stripMuteRects_[i].contains(x, y))
                 {
                     track.mute = !track.mute;
@@ -5231,7 +6389,18 @@ class KapibaraUI final : public UI
                 pushCurrentTrack();
                 return true;
             }
-            if(metaWavetableNameRect_.contains(x, y) && track->type == synth::SourceTrackType::MetaOscillator)
+            if(metaFrameScrollRect_.contains(x, y)
+               && (track->type == synth::SourceTrackType::MetaOscillator
+                   || track->type == synth::SourceTrackType::PartialBank))
+            {
+                dragTarget_ = DragTarget::MetaFrameScroll;
+                dragScrollStartX_ = x;
+                dragScrollStartVal_ = metaFrameScrollStart_;
+                return true;
+            }
+            if(metaWavetableNameRect_.contains(x, y)
+               && (track->type == synth::SourceTrackType::MetaOscillator
+                   || track->type == synth::SourceTrackType::PartialBank))
             {
                 wavetablePresetMenuOpen_ = !wavetablePresetMenuOpen_;
                 presetMenuOpen_ = false;
@@ -5240,7 +6409,8 @@ class KapibaraUI final : public UI
                 return true;
             }
             if((metaWavetablePrevRect_.contains(x, y) || metaWavetableNextRect_.contains(x, y))
-               && track->type == synth::SourceTrackType::MetaOscillator)
+               && (track->type == synth::SourceTrackType::MetaOscillator
+                   || track->type == synth::SourceTrackType::PartialBank))
             {
                 if(wavetablePresets_.empty())
                     refreshWavetablePresets();
@@ -5280,9 +6450,21 @@ class KapibaraUI final : public UI
                 harmonicEditorOpen_ = true;
                 return true;
             }
+            if(metaHarmonicEditRect_.contains(x, y) && track->type == synth::SourceTrackType::PartialBank)
+            {
+                harmonicEditorOpen_ = true;
+                metaProcessContextMenuOpen_ = false;
+                selectedMetaFrame_ = partialBankMorphFrameIndex(track->partialBank);
+                return true;
+            }
             if(metaLoadRect_.contains(x, y) && track->type == synth::SourceTrackType::MetaOscillator)
             {
                 beginWavetableImport();
+                return true;
+            }
+            if(metaSaveRect_.contains(x, y) && track->type == synth::SourceTrackType::MetaOscillator)
+            {
+                openWavetableSaveBrowser();
                 return true;
             }
             for(int i = 0; i < int(metaFramePresetRects_.size()); ++i)
@@ -5297,9 +6479,12 @@ class KapibaraUI final : public UI
             {
                 if(metaFrameRects_[(size_t)local].contains(x, y) && track->type == synth::SourceTrackType::MetaOscillator)
                 {
-                    const int frameIndex = metaFramePageStart_ + local;
-                    if(frameIndex < track->metaOsc.frameCount)
-                        selectedMetaFrame_ = frameIndex;
+                    selectMetaFrameAt(metaFramePageStart_ + local, track->metaOsc.frameCount);
+                    return true;
+                }
+                if(metaFrameRects_[(size_t)local].contains(x, y) && track->type == synth::SourceTrackType::PartialBank)
+                {
+                    selectMetaFrameAt(metaFramePageStart_ + local, track->partialBank.frameCount);
                     return true;
                 }
             }
@@ -5386,6 +6571,11 @@ class KapibaraUI final : public UI
             beginWavetableImport();
             return true;
         }
+        if(metaSaveRect_.contains(x, y))
+        {
+            openWavetableSaveBrowser();
+            return true;
+        }
         for(int i = 0; i < int(metaFramePresetRects_.size()); ++i)
         {
             if(metaFramePresetRects_[(size_t)i].contains(x, y))
@@ -5398,9 +6588,7 @@ class KapibaraUI final : public UI
         {
             if(metaFrameRects_[(size_t)local].contains(x, y))
             {
-                const int frameIndex = metaFramePageStart_ + local;
-                if(frameIndex < metaSlot.frameCount)
-                    selectedMetaFrame_ = frameIndex;
+                selectMetaFrameAt(metaFramePageStart_ + local, metaSlot.frameCount);
                 return true;
             }
         }
@@ -5444,19 +6632,17 @@ class KapibaraUI final : public UI
                                   envSelectRects_[(size_t)i], x, y);
                 return true;
             }
-        if(adsrSourceRect_.w > 0.0f && adsrSourceRect_.contains(x, y))
-        {
-            beginModRouteDrag(synth::ModSource::Adsr, adsrSourceRect_, x, y);
-            return true;
-        }
         for(int i = 0; i < synth::kMaxAmpEnvs; ++i)
-            if(ampEnvTabRects_[(size_t)i].contains(x, y)) { selectedAmpEnv_ = i; return true; }
+            if(ampEnvTabRects_[(size_t)i].contains(x, y))
+            {
+                selectedAmpEnv_ = i;
+                beginModRouteDrag(static_cast<synth::ModSource>(int(synth::ModSource::Adsr1) + i),
+                                  ampEnvTabRects_[(size_t)i], x, y);
+                return true;
+            }
 
         auto &lfo = lfos_[(size_t)selectedLfo_];
-        auto &env = envs_[(size_t)selectedEnv_];
-        if(lfoEnableRect_.contains(x, y)) { lfo.enabled = !lfo.enabled; pushLfoOnly(); return true; }
         if(lfoShapeRect_.contains(x, y)) { lfo.shape = static_cast<synth::LfoShape>((int(lfo.shape) + 1) % 5); pushLfoOnly(); return true; }
-        if(envEnableRect_.contains(x, y)) { env.enabled = !env.enabled; pushEnvOnly(); return true; }
 
         if(eqEnableRect_.contains(x, y)) { effects_.eq.enabled = !effects_.eq.enabled; pushEffects(); return true; }
         if(eqModeRect_.contains(x, y)) { effects_.eq.mode = static_cast<synth::EffectProcessMode>((int(effects_.eq.mode) + 1) % 3); pushEffects(); return true; }
@@ -5498,13 +6684,34 @@ class KapibaraUI final : public UI
         if(trackSendRect_.contains(x, y))
             return setDragKnob(DragTarget::TrackSend, track ? track->send : 0.0f);
 
-        // Partial bank bar chart (absolute position click)
-        if(partialSpectrumRect_.contains(x, y)) return setDragAbs(DragTarget::PartialAmp);
+        // Partial bank harmonic knobs.
+        if(track && track->type == synth::SourceTrackType::PartialBank)
+        {
+            for(int i = 0; i < synth::kMaxWavetablePartials; ++i)
+            {
+                if(partialKnobRects_[(size_t)i].w > 0.0f && partialKnobRects_[(size_t)i].contains(x, y))
+                {
+                    selectedPartialIndex_ = i;
+                    auto &seed = track->partialBank;
+                    seed.frameCount = clampi(seed.frameCount, 1, synth::kMaxWavetableFrames);
+                    selectedMetaFrame_ = clampi(selectedMetaFrame_, 0, seed.frameCount - 1);
+                    ensurePartialBankFrameDefaults(seed, selectedMetaFrame_);
+                    const float amp = seed.frames[(size_t)selectedMetaFrame_].harmonics[(size_t)i].amp;
+                    return setDragKnob(DragTarget::PartialAmp, amp);
+                }
+            }
+        }
         if(partialAmpRect_.contains(x, y)) {
             auto *ptrack = track;
             float n = 0.0f;
             if(ptrack && ptrack->type == synth::SourceTrackType::PartialBank)
-                n = ptrack->partialBank.partials[(size_t)selectedPartialIndex_].amp;
+            {
+                auto &seed = ptrack->partialBank;
+                seed.frameCount = clampi(seed.frameCount, 1, synth::kMaxWavetableFrames);
+                selectedMetaFrame_ = clampi(selectedMetaFrame_, 0, seed.frameCount - 1);
+                ensurePartialBankFrameDefaults(seed, selectedMetaFrame_);
+                n = seed.frames[(size_t)selectedMetaFrame_].harmonics[(size_t)selectedPartialIndex_].amp;
+            }
             return setDragKnob(DragTarget::PartialAmp, n);
         }
         if(partialRatioRect_.contains(x, y)) {
@@ -5521,10 +6728,14 @@ class KapibaraUI final : public UI
         if(noiseColorRect_.contains(x, y))
             return setDragKnob(DragTarget::NoiseColor, track ? track->noiseColor : 0.5f);
         if(partialCountRect_.contains(x, y)) {
+            lastTrackRealtimeDragPushMs_ = 0u;
+            lastGenRealtimeDragPushMs_ = 0u;
             int cnt = track ? track->partialBank.partialCount : generator_.wavetableSeed.partialCount;
             return setDragKnob(DragTarget::PartialCount, float(cnt - 1) / 63.0f);
         }
         if(inharmonicRect_.contains(x, y)) {
+            lastTrackRealtimeDragPushMs_ = 0u;
+            lastGenRealtimeDragPushMs_ = 0u;
             float inh = track ? track->partialBank.inharmonicAmount : generator_.wavetableSeed.inharmonicAmount;
             return setDragKnob(DragTarget::Inharmonic, inh);
         }
@@ -5572,13 +6783,17 @@ class KapibaraUI final : public UI
         };
         if(metaWaveformRect_.contains(x, y)) return setDragMetaAbs(DragTarget::MetaWaveform);
 
-        // Pitch controls (OCT/SEM/FIN/CRS) — 只在 MetaOscillator source track 里
-        if(track && track->type == synth::SourceTrackType::MetaOscillator)
+        // Pitch controls (OCT/SEM/FIN/CRS) — MetaOscillator or whole PartialBank group.
+        if(track && (track->type == synth::SourceTrackType::MetaOscillator
+                     || track->type == synth::SourceTrackType::PartialBank))
         {
-            auto &ms = track->metaOsc;
+            auto &ms = track->type == synth::SourceTrackType::MetaOscillator
+                           ? track->metaOsc
+                           : track->partialBank.partials[0];
             if(metaOctRect_.contains(x, y))
             {
-                pushMetaUndoSnapshot();
+                if(track->type == synth::SourceTrackType::MetaOscillator)
+                    pushMetaUndoSnapshot();
                 dragTarget_   = DragTarget::MetaPitchOct;
                 dragStartY_   = y;
                 dragStartOct_ = ms.pitchOct;
@@ -5586,7 +6801,8 @@ class KapibaraUI final : public UI
             }
             if(metaSemRect_.contains(x, y))
             {
-                pushMetaUndoSnapshot();
+                if(track->type == synth::SourceTrackType::MetaOscillator)
+                    pushMetaUndoSnapshot();
                 dragTarget_   = DragTarget::MetaPitchSem;
                 dragStartY_   = y;
                 dragStartSem_ = ms.pitchSem;
@@ -5594,7 +6810,8 @@ class KapibaraUI final : public UI
             }
             if(metaFinRect_.contains(x, y))
             {
-                pushMetaUndoSnapshot();
+                if(track->type == synth::SourceTrackType::MetaOscillator)
+                    pushMetaUndoSnapshot();
                 dragTarget_   = DragTarget::MetaPitchFin;
                 dragStartY_   = y;
                 dragStartFin_ = ms.pitchFin;
@@ -5602,12 +6819,23 @@ class KapibaraUI final : public UI
             }
             if(metaCrsRect_.contains(x, y))
             {
-                pushMetaUndoSnapshot();
+                if(track->type == synth::SourceTrackType::MetaOscillator)
+                    pushMetaUndoSnapshot();
                 dragTarget_   = DragTarget::MetaPitchCrs;
                 dragStartY_   = y;
                 dragStartCrs_ = ms.pitchCrs;
                 return true;
             }
+        }
+
+        if(track && track->type == synth::SourceTrackType::PartialBank)
+        {
+            auto &seed = track->partialBank;
+            if(metaFrameCountRect_.contains(x, y))
+                return setDragKnob(DragTarget::MetaFrameCount,
+                                   float(seed.frameCount - 1) / float(synth::kMaxWavetableFrames - 1));
+            if(metaMorphRect_.contains(x, y))
+                return setDragKnob(DragTarget::MetaMorph, seed.morph);
         }
 
         {
@@ -5618,6 +6846,8 @@ class KapibaraUI final : public UI
             if(metaAmpRect_.contains(x, y))         return setDragMetaKnob(DragTarget::MetaAmp,        ms.amp);
             if(metaPhaseRect_.contains(x, y))       return setDragMetaKnob(DragTarget::MetaPhase,      (ms.phase + kPi) / (2.0f * kPi));
             if(metaPanRect_.contains(x, y))         return setDragMetaKnob(DragTarget::MetaPan,        (ms.pan + 1.0f) * 0.5f);
+            if(metaFrameCountRect_.contains(x, y))   return setDragMetaKnob(DragTarget::MetaFrameCount,
+                                                                            float(ms.frameCount - 1) / float(synth::kMaxWavetableFrames - 1));
             if(metaMorphRect_.contains(x, y))       return setDragKnob(DragTarget::MetaMorph,      ms.morph); // morph不修改帧数据
             if(metaWarpAmountRect_.contains(x, y))  return setDragMetaKnob(DragTarget::MetaWarpAmount, (ms.warpAmount + 1.0f) * 0.5f);
         }
@@ -5693,28 +6923,6 @@ class KapibaraUI final : public UI
             return true;
         }
 
-        // Layout divider drags
-        if(layoutVSplitHandle_.contains(x, y))
-        {
-            dragTarget_ = DragTarget::LayoutVSplit;
-            dragStartY_ = y;
-            dragStartLayoutRatio_ = layoutBottomRatio_;
-            return true;
-        }
-        if(layoutRackSplitHandle_.contains(x, y))
-        {
-            dragTarget_ = DragTarget::LayoutRackSplit;
-            dragStartY_ = x;  // repurpose dragStartY_ as startX
-            dragStartLayoutRatio_ = layoutRackRatio_;
-            return true;
-        }
-        if(layoutStripSplitHandle_.contains(x, y))
-        {
-            dragTarget_ = DragTarget::LayoutStripSplit;
-            dragStartY_ = x;
-            dragStartLayoutRatio_ = layoutStripRatio_;
-            return true;
-        }
         return false;
     }
 
@@ -5739,29 +6947,31 @@ class KapibaraUI final : public UI
         switch(dragTarget_)
         {
             case DragTarget::TrackGain:
-                if(auto *track = currentTrack()) { track->gain = knobNorm() * 2.0f; pushCurrentTrack(); }
+                if(auto *t = dragTrack()) { t->gain = knobNorm() * 2.0f; pushTrackById(t->id); }
                 break;
             case DragTarget::TrackPan:
-                if(auto *track = currentTrack()) { track->pan = knobNorm() * 2.0f - 1.0f; pushCurrentTrack(); }
+                if(auto *t = dragTrack()) { t->pan = knobNorm() * 2.0f - 1.0f; pushTrackById(t->id); }
                 break;
             case DragTarget::TrackSend:
-                if(auto *track = currentTrack()) { track->send = knobNorm(); pushCurrentTrack(); }
+                if(auto *t = dragTrack()) { t->send = knobNorm(); pushTrackById(t->id); }
                 break;
             case DragTarget::PartialAmp:
                 if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::PartialBank)
                 {
-                    if(partialSpectrumRect_.contains(x, y))
-                        selectedPartialIndex_ = clampi(int((x - partialSpectrumRect_.x) / std::max(1.0f, partialSpectrumRect_.w)
-                                                           * float(synth::kMaxWavetablePartials)),
-                                                       0, synth::kMaxWavetablePartials - 1);
-                    auto &slot = track->partialBank.partials[(size_t)selectedPartialIndex_];
+                    auto &seed = track->partialBank;
+                    seed.frameCount = clampi(seed.frameCount, 1, synth::kMaxWavetableFrames);
+                    selectedMetaFrame_ = clampi(selectedMetaFrame_, 0, seed.frameCount - 1);
+                    ensurePartialBankFrameDefaults(seed, selectedMetaFrame_);
+                    auto &slot = seed.partials[(size_t)selectedPartialIndex_];
+                    auto &harm = seed.frames[(size_t)selectedMetaFrame_].harmonics[(size_t)selectedPartialIndex_];
                     slot.enabled = true;
-                    slot.amp = partialSpectrumRect_.contains(x, y)
-                                   ? clampf(1.0f - (y - partialSpectrumRect_.y) / std::max(1.0f, partialSpectrumRect_.h), 0.0f, 1.0f)
-                                   : knobNorm();
-                    if(selectedPartialIndex_ + 1 > track->partialBank.partialCount)
-                        track->partialBank.partialCount = selectedPartialIndex_ + 1;
-                    pushCurrentTrack();
+                    const float amp = knobNorm();
+                    slot.amp = amp;
+                    harm.ratio = float(selectedPartialIndex_ + 1);
+                    harm.amp = amp;
+                    if(selectedPartialIndex_ + 1 > seed.partialCount)
+                        seed.partialCount = selectedPartialIndex_ + 1;
+                    deferTrackPush_ = true;
                 }
                 break;
             case DragTarget::PartialRatio:
@@ -5769,7 +6979,7 @@ class KapibaraUI final : public UI
                 {
                     auto &slot = track->partialBank.partials[(size_t)selectedPartialIndex_];
                     slot.ratio = 0.01f + knobNorm() * 63.99f;
-                    pushCurrentTrack();
+                    deferTrackPush_ = true;
                 }
                 break;
             case DragTarget::BasicPulse:
@@ -5787,21 +6997,29 @@ class KapibaraUI final : public UI
                     track->partialBank.partialCount = clampi(1 + int(std::round(knobNorm() * 63.0f)), 1, 64);
                     for(int i = 0; i < synth::kMaxWavetablePartials; ++i)
                         track->partialBank.partials[(size_t)i].enabled = i < track->partialBank.partialCount;
-                    pushCurrentTrack();
+                    deferTrackPush_ = true;
+                    pushCurrentTrackDuringRealtimeDrag();
                 }
                 else
                 {
                     generator_.wavetableSeed.partialCount = clampi(1 + int(std::round(knobNorm() * 63.0f)), 1, 64);
-                    pushGenerator();
+                    deferGenPush_ = true;
+                    pushGeneratorDuringRealtimeDrag();
                 }
                 break;
             case DragTarget::Inharmonic:
                 if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::PartialBank)
                 {
                     track->partialBank.inharmonicAmount = knobNorm();
-                    pushCurrentTrack();
+                    deferTrackPush_ = true;
+                    pushCurrentTrackDuringRealtimeDrag();
                 }
-                else { generator_.wavetableSeed.inharmonicAmount = knobNorm(); pushGenerator(); }
+                else
+                {
+                    generator_.wavetableSeed.inharmonicAmount = knobNorm();
+                    deferGenPush_ = true;
+                    pushGeneratorDuringRealtimeDrag();
+                }
                 break;
             case DragTarget::Gain: gain_ = knobNorm(); pushGain(); break;
             case DragTarget::SourceGain: source.gain = knobNorm() * 2.0f; pushSource(); break;
@@ -5912,6 +7130,14 @@ class KapibaraUI final : public UI
                     selectedMetaFrame_ = std::min(selectedMetaFrame_, track->metaOsc.frameCount - 1);
                     pushCurrentTrack();
                 }
+                else if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::PartialBank)
+                {
+                    track->partialBank.frameCount = clampi(1 + int(std::round(knobNorm() * float(synth::kMaxWavetableFrames - 1))),
+                                                           1, synth::kMaxWavetableFrames);
+                    selectedMetaFrame_ = std::min(selectedMetaFrame_, track->partialBank.frameCount - 1);
+                    ensurePartialBankFrameDefaults(track->partialBank, selectedMetaFrame_);
+                    pushCurrentTrack();
+                }
                 else
                 {
                     metaSlot.frameCount = clampi(1 + int(std::round(knobNorm() * float(synth::kMaxWavetableFrames - 1))),
@@ -5923,6 +7149,12 @@ class KapibaraUI final : public UI
             case DragTarget::MetaMorph:
                 if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::MetaOscillator)
                 { track->metaOsc.morph = knobNorm(); pushCurrentTrackMorphOnly(); }
+                else if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::PartialBank)
+                {
+                    track->partialBank.morph = knobNorm();
+                    selectedMetaFrame_ = partialBankMorphFrameIndex(track->partialBank);
+                    pushCurrentTrack();
+                }
                 else { metaSlot.morph = knobNorm(); pushMetaPartialRuntime(); }
                 break;
             case DragTarget::MetaWarpAmount:
@@ -5938,6 +7170,14 @@ class KapibaraUI final : public UI
                     track->metaOsc.syncRatioFromPitch();
                     pushCurrentTrack();
                 }
+                else if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::PartialBank)
+                {
+                    const int delta = int((dragStartY_ - y) / 22.0f);
+                    const int oct = std::max(-4, std::min(4, dragStartOct_ + delta));
+                    const auto &base = track->partialBank.partials[0];
+                    applyPartialBankGroupPitch(track->partialBank, oct, base.pitchSem, base.pitchFin, base.pitchCrs);
+                    pushCurrentTrack();
+                }
                 break;
             case DragTarget::MetaPitchSem:
                 if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::MetaOscillator)
@@ -5945,6 +7185,14 @@ class KapibaraUI final : public UI
                     const int delta = int((dragStartY_ - y) / 12.0f);
                     track->metaOsc.pitchSem = std::max(-12, std::min(12, dragStartSem_ + delta));
                     track->metaOsc.syncRatioFromPitch();
+                    pushCurrentTrack();
+                }
+                else if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::PartialBank)
+                {
+                    const int delta = int((dragStartY_ - y) / 12.0f);
+                    const int sem = std::max(-12, std::min(12, dragStartSem_ + delta));
+                    const auto &base = track->partialBank.partials[0];
+                    applyPartialBankGroupPitch(track->partialBank, base.pitchOct, sem, base.pitchFin, base.pitchCrs);
                     pushCurrentTrack();
                 }
                 break;
@@ -5956,6 +7204,14 @@ class KapibaraUI final : public UI
                     track->metaOsc.syncRatioFromPitch();
                     pushCurrentTrack();
                 }
+                else if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::PartialBank)
+                {
+                    const float delta = (dragStartY_ - y) * 0.6f;
+                    const float fin = clampf(dragStartFin_ + delta, -100.0f, 100.0f);
+                    const auto &base = track->partialBank.partials[0];
+                    applyPartialBankGroupPitch(track->partialBank, base.pitchOct, base.pitchSem, fin, base.pitchCrs);
+                    pushCurrentTrack();
+                }
                 break;
             case DragTarget::MetaPitchCrs:
                 if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::MetaOscillator)
@@ -5965,16 +7221,49 @@ class KapibaraUI final : public UI
                     track->metaOsc.syncRatioFromPitch();
                     pushCurrentTrack();
                 }
+                else if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::PartialBank)
+                {
+                    const float delta = (dragStartY_ - y) * 0.1f;
+                    const float crs = clampf(dragStartCrs_ + delta, -100.0f, 100.0f);
+                    const auto &base = track->partialBank.partials[0];
+                    applyPartialBankGroupPitch(track->partialBank, base.pitchOct, base.pitchSem, base.pitchFin, crs);
+                    pushCurrentTrack();
+                }
                 break;
             case DragTarget::MetaFrameScan:
-                selectedMetaFrame_ = clampi(int(normIn(metaFrameStripRect_) * float(std::max(1, metaSlot.frameCount))),
-                                            0, std::max(0, metaSlot.frameCount - 1));
-                metaSlot.morph = metaSlot.frameCount > 1
-                                     ? float(selectedMetaFrame_) / float(metaSlot.frameCount - 1)
-                                     : 0.0f;
-                pushMetaPartialRuntime();
+                if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::PartialBank)
+                {
+                    auto &seed = track->partialBank;
+                    selectedMetaFrame_ = clampi(int(normIn(metaFrameStripRect_) * float(std::max(1, seed.frameCount))),
+                                                0, std::max(0, seed.frameCount - 1));
+                    seed.morph = seed.frameCount > 1 ? float(selectedMetaFrame_) / float(seed.frameCount - 1) : 0.0f;
+                    pushCurrentTrack();
+                }
+                else
+                {
+                    selectedMetaFrame_ = clampi(int(normIn(metaFrameStripRect_) * float(std::max(1, metaSlot.frameCount))),
+                                                0, std::max(0, metaSlot.frameCount - 1));
+                    metaSlot.morph = metaSlot.frameCount > 1
+                                         ? float(selectedMetaFrame_) / float(metaSlot.frameCount - 1)
+                                         : 0.0f;
+                    pushMetaPartialRuntime();
+                }
+                break;
+            case DragTarget::PartialTableAmp:
+                editPartialTable(x, y, false);
+                break;
+            case DragTarget::PartialTablePhase:
+                editPartialTable(x, y, true);
                 break;
             case DragTarget::MetaHarmonicRatio:
+                if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::PartialBank)
+                {
+                    selectedPartialIndex_ = clampi(int(std::round(knobNorm()
+                                                         * float(synth::kMaxWavetablePartials - 1))),
+                                                   0, synth::kMaxWavetablePartials - 1);
+                    selectedMetaHarmonic_ = selectedPartialIndex_;
+                    break;
+                }
                 if(harmonicEditorOpen_)
                 {
                     selectedMetaHarmonic_ = clampi(int(std::round(knobNorm()
@@ -5991,6 +7280,17 @@ class KapibaraUI final : public UI
                 else { metaHarmonic.ratio = 0.01f + knobNorm() * (float(synth::kEditableWavetableHarmonics) - 0.01f); pushMetaPartial(); }
                 break;
             case DragTarget::MetaHarmonicAmp:
+                if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::PartialBank)
+                {
+                    auto &seed = track->partialBank;
+                    ensurePartialBankFrameDefaults(seed, selectedMetaFrame_);
+                    auto &h = seed.frames[(size_t)selectedMetaFrame_].harmonics[(size_t)selectedPartialIndex_];
+                    h.ratio = float(selectedPartialIndex_ + 1);
+                    h.amp = knobNorm();
+                    seed.partials[(size_t)selectedPartialIndex_].amp = h.amp;
+                    pushCurrentTrack();
+                    break;
+                }
                 if(harmonicEditorOpen_)
                 {
                     editSelectedSpectrumControl(knobNorm(), false);
@@ -6004,6 +7304,16 @@ class KapibaraUI final : public UI
                 else { metaHarmonic.amp = knobNorm(); pushMetaPartial(); }
                 break;
             case DragTarget::MetaHarmonicPhase:
+                if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::PartialBank)
+                {
+                    auto &seed = track->partialBank;
+                    ensurePartialBankFrameDefaults(seed, selectedMetaFrame_);
+                    auto &h = seed.frames[(size_t)selectedMetaFrame_].harmonics[(size_t)selectedPartialIndex_];
+                    h.ratio = float(selectedPartialIndex_ + 1);
+                    h.phase = knobNorm() * 2.0f * kPi - kPi;
+                    pushCurrentTrack();
+                    break;
+                }
                 if(harmonicEditorOpen_)
                 {
                     editSelectedSpectrumControl(knobNorm(), true);
@@ -6021,9 +7331,14 @@ class KapibaraUI final : public UI
             case DragTarget::MetaTimeEditor:
             case DragTarget::MetaSpectrumEditor: editMetaDomain(x, y); break;
             case DragTarget::MetaFrameScroll:
-                if(auto *t2 = currentTrack(); t2 != nullptr && t2->type == synth::SourceTrackType::MetaOscillator)
+                if(auto *t2 = currentTrack(); t2 != nullptr
+                   && (t2->type == synth::SourceTrackType::MetaOscillator
+                       || t2->type == synth::SourceTrackType::PartialBank))
                 {
-                    const int maxScroll = std::max(0, t2->metaOsc.frameCount - synth::kVisibleWavetableFrames);
+                    const int frameCount = t2->type == synth::SourceTrackType::PartialBank
+                                               ? t2->partialBank.frameCount
+                                               : t2->metaOsc.frameCount;
+                    const int maxScroll = std::max(0, frameCount - synth::kVisibleWavetableFrames);
                     if(maxScroll > 0)
                     {
                         const float pixPerStep = std::max(1.0f, metaFrameScrollRect_.w / float(maxScroll));
@@ -6101,21 +7416,21 @@ class KapibaraUI final : public UI
             }
             case DragTarget::LayoutVSplit:
             {
-                const float pageH = static_cast<float>(getHeight()) - 184.0f;
+                const float pageH = static_cast<float>(uiH()) - 184.0f;
                 const float delta = (dragStartY_ - y) / std::max(1.0f, pageH);
                 layoutBottomRatio_ = clampf(dragStartLayoutRatio_ + delta, 0.18f, 0.72f);
                 break;
             }
             case DragTarget::LayoutRackSplit:
             {
-                const float pageW = static_cast<float>(getWidth()) - 32.0f;
+                const float pageW = static_cast<float>(uiW()) - 32.0f;
                 const float delta = (x - dragStartY_) / std::max(1.0f, pageW);
                 layoutRackRatio_ = clampf(dragStartLayoutRatio_ + delta, 0.11f, 0.38f);
                 break;
             }
             case DragTarget::LayoutStripSplit:
             {
-                const float pageW = static_cast<float>(getWidth()) - 32.0f;
+                const float pageW = static_cast<float>(uiW()) - 32.0f;
                 const float delta = (dragStartY_ - x) / std::max(1.0f, pageW);
                 layoutStripRatio_ = clampf(dragStartLayoutRatio_ + delta, 0.13f, 0.42f);
                 break;
@@ -6258,7 +7573,37 @@ class KapibaraUI final : public UI
             pt.x = clampf(nx, lo, hi);
             pt.y = ny;
         }
-        pushEnvOnly();
+        matrixEnvDirty_ = true; // published on mouse release, not every motion
+    }
+
+    void editPartialTable(float x, float y, bool phaseMode)
+    {
+        auto *track = currentTrack();
+        if(track == nullptr || track->type != synth::SourceTrackType::PartialBank)
+            return;
+        auto &seed = track->partialBank;
+        seed.frameCount = clampi(seed.frameCount, 1, synth::kMaxWavetableFrames);
+        selectedMetaFrame_ = clampi(selectedMetaFrame_, 0, seed.frameCount - 1);
+        ensurePartialBankFrameDefaults(seed, selectedMetaFrame_);
+        Rect rect = phaseMode ? harmonicEditorPhaseRect_ : harmonicEditorSpectrumRect_;
+        selectedPartialIndex_ = clampi(int((x - rect.x) / std::max(1.0f, rect.w)
+                                           * float(synth::kMaxWavetablePartials)),
+                                      0, synth::kMaxWavetablePartials - 1);
+        selectedMetaHarmonic_ = selectedPartialIndex_;
+        auto &frame = seed.frames[(size_t)selectedMetaFrame_];
+        auto &h = frame.harmonics[(size_t)selectedPartialIndex_];
+        h.ratio = float(selectedPartialIndex_ + 1);
+        if(phaseMode)
+        {
+            const float normY = clampf((y - rect.y) / std::max(1.0f, rect.h), 0.0f, 1.0f);
+            h.phase = (0.5f - normY) * 2.0f * kPi;
+        }
+        else
+        {
+            h.amp = clampf(1.0f - (y - rect.y) / std::max(1.0f, rect.h), 0.0f, 1.0f);
+            seed.partials[(size_t)selectedPartialIndex_].amp = h.amp;
+        }
+        pushCurrentTrack();
     }
 
     void editHarmonicEditor(float x, float y)
@@ -6288,6 +7633,85 @@ class KapibaraUI final : public UI
     bool performMetaFrameAction(int action)
     {
         auto *track = currentTrack();
+        if(track != nullptr && track->type == synth::SourceTrackType::PartialBank)
+        {
+            auto &seed = track->partialBank;
+            seed.frameCount = clampi(seed.frameCount, 1, synth::kMaxWavetableFrames);
+            selectedMetaFrame_ = clampi(selectedMetaFrame_, 0, std::max(0, seed.frameCount - 1));
+            synth::WavetablePartialSlot slot;
+            slot.frameCount = seed.frameCount;
+            slot.morph = seed.morph;
+            slot.frames = seed.frames;
+
+            if(action == 2)
+            {
+                int selectedCount = 0;
+                for(int i = 0; i < slot.frameCount; ++i)
+                    selectedCount += metaFrameSelected_[(size_t)i] ? 1 : 0;
+                if(selectedCount == 0)
+                {
+                    metaEditorStatus_ = "select frames to delete";
+                    return true;
+                }
+                if(slot.frameCount <= 1)
+                {
+                    metaEditorStatus_ = "one frame required";
+                    return true;
+                }
+                const int deleted = synth::deleteSelectedWavetableFrames(
+                    slot, metaFrameSelected_.data(), slot.frameCount);
+                seed.frameCount = slot.frameCount;
+                seed.frames = slot.frames;
+                seed.morph = slot.morph;
+                selectedMetaFrame_ = clampi(selectedMetaFrame_, 0, std::max(0, seed.frameCount - 1));
+                metaFrameSelected_.fill(false);
+                metaFrameSelected_[(size_t)selectedMetaFrame_] = true;
+                metaFrameRangeAnchor_ = selectedMetaFrame_;
+                metaEditorStatus_ = deleted > 0 ? "selected partial frames deleted" : "no frames deleted";
+                pushCurrentTrack();
+                return true;
+            }
+
+            bool changed = false;
+            switch(action)
+            {
+                case 0:
+                    changed = synth::addWavetableFrame(slot, selectedMetaFrame_);
+                    if(changed) ++selectedMetaFrame_;
+                    metaEditorStatus_ = changed ? "blank partial frame added" : "frame limit reached";
+                    break;
+                case 1:
+                    changed = synth::duplicateWavetableFrame(slot, selectedMetaFrame_);
+                    if(changed) ++selectedMetaFrame_;
+                    metaEditorStatus_ = changed ? "partial frame duplicated" : "frame limit reached";
+                    break;
+                case 3:
+                    changed = synth::moveWavetableFrame(slot, selectedMetaFrame_, selectedMetaFrame_ - 1);
+                    if(changed) --selectedMetaFrame_;
+                    metaEditorStatus_ = changed ? "partial frame moved left" : "already first frame";
+                    break;
+                case 4:
+                    changed = synth::moveWavetableFrame(slot, selectedMetaFrame_, selectedMetaFrame_ + 1);
+                    if(changed) ++selectedMetaFrame_;
+                    metaEditorStatus_ = changed ? "partial frame moved right" : "already last frame";
+                    break;
+                default:
+                    break;
+            }
+            if(changed)
+            {
+                seed.frameCount = slot.frameCount;
+                seed.frames = slot.frames;
+                seed.morph = slot.morph;
+                seed.frameCount = clampi(seed.frameCount, 1, synth::kMaxWavetableFrames);
+                selectedMetaFrame_ = clampi(selectedMetaFrame_, 0, seed.frameCount - 1);
+                metaFrameSelected_.fill(false);
+                metaFrameSelected_[(size_t)selectedMetaFrame_] = true;
+                metaFrameRangeAnchor_ = selectedMetaFrame_;
+                pushCurrentTrack();
+            }
+            return true;
+        }
         if(track == nullptr || track->type != synth::SourceTrackType::MetaOscillator)
             return true;
         auto &slot = track->metaOsc;
@@ -6603,6 +8027,15 @@ class KapibaraUI final : public UI
 
         lastLoadPath_ = loadPathBuffer_;
         bool ok = false;
+        // Kapibara native harmonic/phase wavetable round-trip.
+        if(loadPathBuffer_.size() >= 4
+           && loadPathBuffer_.compare(loadPathBuffer_.size() - 4, 4, ".kwt") == 0)
+        {
+            ok = loadWavetableHarmonicFile(loadPathBuffer_);
+            if(ok)
+                pullFromPlugin();
+            return ok;
+        }
         if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::MetaOscillator)
         {
             pushMetaUndoSnapshot();
@@ -6625,6 +8058,12 @@ class KapibaraUI final : public UI
             else
                 loadStatus_ = "load failed: " + result.message;
         }
+        else if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::PartialBank)
+        {
+            (void)track;
+            loadStatus_ = "PartialBank loads .kwt harmonic tables";
+            ok = false;
+        }
         else if(auto *p = plugin())
         {
             ok = p->loadWavetableFrame(selectedMetaPartial_, selectedMetaFrame_, loadPathBuffer_.c_str());
@@ -6646,6 +8085,316 @@ class KapibaraUI final : public UI
             selectedMetaFrame_ = clampi(selectedMetaFrame_, 0, std::max(0, slot.frameCount - 1));
         }
         return ok;
+    }
+
+    // ---- IR convolution reverb: impulse files live in presets/irs (.wav) ----
+    void refreshIrFiles()
+    {
+        irFiles_.clear();
+        std::error_code ec;
+        const std::filesystem::path dir("presets/irs");
+        std::filesystem::create_directories(dir, ec);
+        for(const auto &entry : std::filesystem::directory_iterator(dir, ec))
+        {
+            if(ec) break;
+            if(!entry.is_regular_file(ec)) continue;
+            auto ext = entry.path().extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return char(std::tolower(c)); });
+            if(ext != ".wav") continue;
+            irFiles_.push_back({ entry.path().stem().string(), entry.path().string() });
+        }
+        std::sort(irFiles_.begin(), irFiles_.end(),
+                  [](const auto &a, const auto &b){ return a.first < b.first; });
+    }
+
+    void loadImpulseIntoInsert(InsertEffect &e, const std::string &name, const std::string &path)
+    {
+        std::vector<float> samples;
+        uint32_t sr = 48000;
+        if(!synth::loadImpulseResponseMono(path, samples, sr))
+        {
+            metaEditorStatus_ = "IR load failed: " + name;
+            return;
+        }
+        const double engineSr = getSampleRate() > 1000.0 ? getSampleRate() : 48000.0;
+        // hop=512 → ~11ms latency; cap IR at 3 seconds.
+        e.conv.ir = synth::fx::buildConvIR(samples, 512, 3.0f, engineSr, name);
+        e.conv.irName = name;
+        metaEditorStatus_ = "IR loaded: " + name;
+    }
+
+    // Save the current Meta Oscillator's harmonic wavetable straight into the
+    // presets/wavetables folder (no OS file dialog — those are unreliable under
+    // some Wayland compositors). The saved .kwt then appears in the preset list.
+    void openWavetableSaveBrowser()
+    {
+        auto *track = currentTrack();
+        if(track == nullptr
+           || (track->type != synth::SourceTrackType::MetaOscillator
+               && track->type != synth::SourceTrackType::PartialBank))
+        {
+            metaEditorStatus_ = "select Meta or PartialBank to save";
+            return;
+        }
+        std::string dir = "presets/wavetables";
+        if(auto *p = plugin())
+            dir = p->wavetableUserDir();
+        std::string base = wavetablePresetLabel_.empty() ? std::string("wavetable") : wavetablePresetLabel_;
+        // Strip any directory part the label may carry.
+        const size_t slash = base.find_last_of("/\\");
+        if(slash != std::string::npos)
+            base = base.substr(slash + 1);
+        // Pick a unique filename so saves don't silently overwrite.
+        std::error_code ec;
+        std::string path = dir + "/" + base + ".kwt";
+        int suffix = 2;
+        while(std::filesystem::exists(path, ec))
+            path = dir + "/" + base + "_" + std::to_string(suffix++) + ".kwt";
+        saveWavetableToFile(path);
+        refreshWavetablePresets();
+    }
+
+    void saveOrRenameWavetablePreset(const std::string &newStem)
+    {
+        std::string dir = "presets/wavetables";
+        if(auto *p = plugin())
+            dir = p->wavetableUserDir();
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        const bool hasSelection = selectedWavetablePresetIndex_ >= 0
+                                  && selectedWavetablePresetIndex_ < int(wavetablePresets_.size());
+        if(hasSelection)
+        {
+            const auto oldPath = std::filesystem::path(wavetablePresets_[(size_t)selectedWavetablePresetIndex_].path);
+            const auto ext = oldPath.extension().empty() ? std::filesystem::path(".kwt") : oldPath.extension();
+            auto newPath = oldPath.parent_path() / (newStem + ext.string());
+            if(newPath != oldPath)
+            {
+                int suffix = 2;
+                while(std::filesystem::exists(newPath, ec))
+                    newPath = oldPath.parent_path() / (newStem + "_" + std::to_string(suffix++) + ext.string());
+                std::filesystem::rename(oldPath, newPath, ec);
+                if(ec)
+                {
+                    metaEditorStatus_ = "rename failed: " + oldPath.string();
+                    loadStatus_ = metaEditorStatus_;
+                    return;
+                }
+                lastLoadPath_ = newPath.string();
+            }
+            wavetablePresetLabel_ = newStem;
+            metaEditorStatus_ = "renamed wavetable: " + newStem;
+            loadStatus_ = metaEditorStatus_;
+            refreshWavetablePresets();
+            for(int i = 0; i < int(wavetablePresets_.size()); ++i)
+                if(wavetablePresets_[(size_t)i].name == newStem)
+                    selectedWavetablePresetIndex_ = i;
+            return;
+        }
+
+        std::filesystem::path path = std::filesystem::path(dir) / (newStem + ".kwt");
+        int suffix = 2;
+        while(std::filesystem::exists(path, ec))
+            path = std::filesystem::path(dir) / (newStem + "_" + std::to_string(suffix++) + ".kwt");
+        saveWavetableToFile(path.string());
+        refreshWavetablePresets();
+        for(int i = 0; i < int(wavetablePresets_.size()); ++i)
+            if(wavetablePresets_[(size_t)i].path == path.string())
+                selectedWavetablePresetIndex_ = i;
+    }
+
+    // Serializes the current Meta Oscillator's per-frame harmonics (ratio/amp/phase)
+    // to a plain-text .kwt file. Not a WAV: only the additive spectrum is stored.
+    void saveWavetableToFile(const std::string &path)
+    {
+        auto *track = currentTrack();
+        if(track == nullptr
+           || (track->type != synth::SourceTrackType::MetaOscillator
+               && track->type != synth::SourceTrackType::PartialBank))
+        {
+            metaEditorStatus_ = "select Meta or PartialBank to save";
+            return;
+        }
+        const bool isBank = track->type == synth::SourceTrackType::PartialBank;
+        const int frameCount = isBank
+                                   ? clampi(track->partialBank.frameCount, 1, synth::kMaxWavetableFrames)
+                                   : clampi(track->metaOsc.frameCount, 1, synth::kMaxWavetableFrames);
+        const auto &frameStorage = isBank ? track->partialBank.frames : track->metaOsc.frames;
+        const int harmonicLimit = isBank ? synth::kMaxWavetablePartials : synth::kMaxWavetableHarmonics;
+        std::ofstream out(path, std::ios::out | std::ios::binary | std::ios::trunc);
+        if(!out)
+        {
+            metaEditorStatus_ = "save failed: " + path;
+            loadStatus_ = metaEditorStatus_;
+            return;
+        }
+        Kwt2Header header;
+        header.frameCount = uint32_t(frameCount);
+        header.binCount = uint32_t(harmonicLimit);
+        out.write(reinterpret_cast<const char *>(&header), sizeof(header));
+        const auto &frames = frameStorage.get();
+        for(int f = 0; f < frameCount; ++f)
+        {
+            const auto &fp = frames[(size_t)f];
+            const synth::WavetableFrame *frame = fp ? fp.get() : nullptr;
+            for(int h = 0; h < harmonicLimit; ++h)
+            {
+                const auto &hm = frame != nullptr ? frame->harmonics[(size_t)h] : synth::WavetableHarmonic {};
+                const auto packed = packKwtBin(hm.amp, hm.phase);
+                out.write(reinterpret_cast<const char *>(&packed), sizeof(packed));
+            }
+        }
+        out.close();
+        const size_t slash = path.find_last_of("/\\");
+        lastLoadPath_ = path;
+        wavetablePresetLabel_ = path.substr(slash == std::string::npos ? 0 : slash + 1);
+        const size_t dot = wavetablePresetLabel_.find_last_of('.');
+        if(dot != std::string::npos)
+            wavetablePresetLabel_ = wavetablePresetLabel_.substr(0, dot);
+        metaEditorStatus_ = "saved " + path;
+        loadStatus_ = metaEditorStatus_;
+    }
+
+    // Loads a .kwt harmonic/phase wavetable into the current Meta Oscillator or
+    // PartialBank. PartialBank uses only harmonics[0..63] as frame amp/phase.
+    bool loadWavetableHarmonicFile(const std::string &path)
+    {
+        auto *track = currentTrack();
+        if(track == nullptr
+           || (track->type != synth::SourceTrackType::MetaOscillator
+               && track->type != synth::SourceTrackType::PartialBank))
+            return false;
+        const bool isBank = track->type == synth::SourceTrackType::PartialBank;
+        {
+            std::ifstream bin(path, std::ios::binary);
+            Kwt2Header header;
+            if(bin.read(reinterpret_cast<char *>(&header), sizeof(header))
+               && std::memcmp(header.magic, "KWT2", 4) == 0)
+            {
+                const int frameCount = clampi(int(header.frameCount), 1, synth::kMaxWavetableFrames);
+                const int binCount = clampi(int(header.binCount), 1, synth::kMaxWavetableHarmonics);
+                if(!isBank)
+                    pushMetaUndoSnapshot();
+                auto &metaSlot = track->metaOsc;
+                auto &bank = track->partialBank;
+                if(isBank)
+                {
+                    bank.frameCount = frameCount;
+                    bank.morph = 0.0f;
+                    bank.partialCount = synth::kMaxWavetablePartials;
+                    for(int i = 0; i < synth::kMaxWavetablePartials; ++i)
+                        bank.partials[(size_t)i].enabled = true;
+                }
+                else
+                {
+                    metaSlot.frameCount = frameCount;
+                }
+                auto &frames = isBank ? bank.frames.ensure() : metaSlot.frames.ensure();
+                const int limit = isBank ? synth::kMaxWavetablePartials : synth::kMaxWavetableHarmonics;
+                for(int f = 0; f < frameCount; ++f)
+                {
+                    if(!frames[(size_t)f])
+                        frames[(size_t)f] = std::make_shared<synth::WavetableFrame>();
+                    auto &frame = *frames[(size_t)f];
+                    frame.useImportedWaveform = false;
+                    frame.waveform.reset();
+                    frame.spectrum.reset();
+                    frame.harmonics.fill(synth::WavetableHarmonic {});
+                    for(int b = 0; b < binCount; ++b)
+                    {
+                        Kwt2PackedBin packed;
+                        if(!bin.read(reinterpret_cast<char *>(&packed), sizeof(packed)))
+                        {
+                            loadStatus_ = "bad KWT2: " + path;
+                            return false;
+                        }
+                        if(b < limit)
+                            frame.harmonics[(size_t)b] = unpackKwtBin(packed, b);
+                    }
+                }
+                selectedMetaFrame_ = 0;
+                metaFrameSelected_.fill(false);
+                metaFrameSelected_[0] = true;
+                metaFrameRangeAnchor_ = 0;
+                pushCurrentTrack();
+                loadStatus_ = "loaded " + path;
+                return true;
+            }
+        }
+
+        std::ifstream in(path);
+        if(!in)
+        {
+            loadStatus_ = "load failed: " + path;
+            return false;
+        }
+        std::string tag;
+        int version = 0;
+        in >> tag >> version;
+        if(tag != "KAPIBARA_WT")
+        {
+            loadStatus_ = "not a Kapibara wavetable: " + path;
+            return false;
+        }
+        std::string key;
+        int frameCount = 1;
+        in >> key >> frameCount;
+        frameCount = clampi(frameCount, 1, synth::kMaxWavetableFrames);
+
+        if(!isBank)
+            pushMetaUndoSnapshot();
+        auto &metaSlot = track->metaOsc;
+        auto &bank = track->partialBank;
+        if(isBank)
+        {
+            bank.frameCount = frameCount;
+            bank.morph = 0.0f;
+            bank.partialCount = synth::kMaxWavetablePartials;
+            for(int i = 0; i < synth::kMaxWavetablePartials; ++i)
+                bank.partials[(size_t)i].enabled = true;
+        }
+        else
+        {
+            metaSlot.frameCount = frameCount;
+        }
+        auto &frames = isBank ? bank.frames.ensure() : metaSlot.frames.ensure();
+        for(int f = 0; f < frameCount; ++f)
+        {
+            std::string ftag;
+            int idx = 0, used = 0;
+            in >> ftag >> idx >> used;
+            if(!frames[(size_t)f])
+                frames[(size_t)f] = std::make_shared<synth::WavetableFrame>();
+            auto &frame = *frames[(size_t)f];
+            frame.useImportedWaveform = false;
+            frame.waveform.reset();
+            frame.spectrum.reset();
+            frame.harmonics.fill(synth::WavetableHarmonic {});
+            used = clampi(used, 0, synth::kMaxWavetableHarmonics);
+            for(int h = 0; h < used; ++h)
+            {
+                float ratio = 1.0f, amp = 0.0f, phase = 0.0f;
+                in >> ratio >> amp >> phase;
+                const int dst = isBank ? clampi(int(std::round(ratio)) - 1, 0, synth::kMaxWavetablePartials)
+                                       : h;
+                if(dst >= (isBank ? synth::kMaxWavetablePartials : synth::kMaxWavetableHarmonics))
+                    continue;
+                frame.harmonics[(size_t)dst].ratio = isBank ? float(dst + 1) : ratio;
+                frame.harmonics[(size_t)dst].amp = amp;
+                frame.harmonics[(size_t)dst].phase = phase;
+            }
+            if(isBank)
+                for(int h = 0; h < synth::kMaxWavetablePartials; ++h)
+                    if(frame.harmonics[(size_t)h].ratio <= 0.0f)
+                        frame.harmonics[(size_t)h].ratio = float(h + 1);
+        }
+        selectedMetaFrame_ = 0;
+        metaFrameSelected_.fill(false);
+        metaFrameSelected_[0] = true;
+        metaFrameRangeAnchor_ = 0;
+        pushCurrentTrack();
+        loadStatus_ = "loaded " + path;
+        return true;
     }
 
     void ensureDefaultOperatorChain()
@@ -6814,6 +8563,15 @@ class KapibaraUI final : public UI
     int selectedMetaFrame_ = 0;
     std::array<bool, synth::kMaxWavetableFrames> metaFrameSelected_ {};
     int metaFrameRangeAnchor_ = -1;
+    int frameRangeCount_ = 0;
+    bool matrixEnvDirty_ = false;
+    static constexpr uint64_t kRealtimeDragPushIntervalMs = 8u;
+    uint64_t lastTrackRealtimeDragPushMs_ = 0u;
+    uint64_t lastGenRealtimeDragPushMs_ = 0u;
+    // Heavy partial-bank edits still flush on release. Realtime-safe runtime
+    // controls such as Partials/Inharmonic are additionally throttled while dragging.
+    bool deferTrackPush_ = false;
+    bool deferGenPush_ = false;
     bool ctrlDown_ = false;
     int selectedMetaHarmonic_ = 0;
     int selectedEnvPoint_ = -1;
@@ -6826,7 +8584,8 @@ class KapibaraUI final : public UI
     float dragStartDepth_ = 0.0f;
     float dragDepthLimit_ = 1.0f;
     float dragStartLayoutRatio_ = 0.0f;
-    float layoutBottomRatio_ = 0.48f;
+    float layoutBottomRatio_ = 0.45f;   // bottom row = strips
+    float layoutMatrixRatio_ = 0.36f;   // top-right column = matrix
     float layoutRackRatio_   = 0.20f;
     float layoutStripRatio_  = 0.25f;
     Rect layoutVSplitHandle_ {}, layoutRackSplitHandle_ {}, layoutStripSplitHandle_ {};
@@ -6870,6 +8629,8 @@ class KapibaraUI final : public UI
     std::array<Rect, 2> stripGroupContextRects_ {};
     int  groupContextTargetGroup_ = -1;  // >=0 => ungroup menu for this group; -1 => create-group menu
     std::array<Rect, synth::kMaxSourceTracks> stripGroupBusRects_ {};
+    std::array<Rect, synth::kMaxSourceTracks> stripGainRects_ {}, stripPanRects_ {}, stripSendRects_ {};
+    int dragTrackIndex_ = -1; // strip whose gain/pan/send is being dragged
     std::vector<InsertHit> insertHits_;
     std::vector<FxKnobHit> fxKnobHits_;
     std::vector<FxBtnHit> fxBypassHits_, fxDeleteHits_, fxModeHits_;
@@ -6900,16 +8661,19 @@ class KapibaraUI final : public UI
     bool modeMenuOpen_ = false;
     int modeMenuKind_ = 0;   // 1 = filter, 2 = distortion
     int modeMenuSlot_ = 0;   // bank slot 0..7
+    int modeMenuSelectedIndex_ = 0;
     float modeMenuX_ = 0.0f, modeMenuY_ = 0.0f;
     std::array<Rect, 12> modeMenuRects_ {};
     bool addTrackMenuOpen_ = false;
     bool presetNameEditing_ = false;
+    PresetNameEditTarget presetNameEditTarget_ = PresetNameEditTarget::None;
     bool skipNextPresetCharacterInput_ = false;
     std::string presetLabel_ = "Select preset";
     std::string presetNameBuffer_ = "user_kapibara";
     std::vector<std::string> presetNames_ {};
     int selectedPresetIndex_ = -1;
     std::vector<WavetablePresetEntry> wavetablePresets_ {};
+    std::vector<std::pair<std::string, std::string>> irFiles_ {}; // (name, path) for IR reverb
     int selectedWavetablePresetIndex_ = -1;
     std::string wavetablePresetLabel_ = "Select Wavetable";
     std::string loadPathBuffer_ {};
@@ -6918,6 +8682,12 @@ class KapibaraUI final : public UI
     std::string loadStatus_ = "type wav path after Load";
     std::string metaEditorStatus_ = "ready";
     float uiScale_ = 1.0f;
+    // Letterbox state (fixed-aspect canvas centered in the real window).
+    float realW_ = float(DISTRHO_UI_DEFAULT_WIDTH);
+    float realH_ = float(DISTRHO_UI_DEFAULT_HEIGHT);
+    float lbX_ = 0.0f, lbY_ = 0.0f;
+    float lbW_ = float(DISTRHO_UI_DEFAULT_WIDTH), lbH_ = float(DISTRHO_UI_DEFAULT_HEIGHT);
+    float uiRenderScale_ = 1.0f;  // uniform window-fit scale applied to the whole canvas
     char scratch_[64] {};
 
     Rect toolbar_ {}, panicRect_ {}, statusRect_ {}, keyboardRect_ {};
@@ -6927,9 +8697,11 @@ class KapibaraUI final : public UI
     Rect optionsMenuPanelRect_ {}, uiScaleRect_ {};
     Rect wavetableImportPanelRect_ {}, wavetableImportCancelRect_ {};
     Rect wavetablePresetPanelRect_ {}, wavetablePresetListRect_ {};
-    Rect wavetablePresetLoadRect_ {}, wavetablePresetImportRect_ {}, wavetablePresetRefreshRect_ {}, wavetablePresetCloseRect_ {};
+    Rect wavetablePresetLoadRect_ {}, wavetablePresetNameRect_ {}, wavetablePresetImportRect_ {}, wavetablePresetRefreshRect_ {}, wavetablePresetCloseRect_ {};
+    Rect wavetablePresetSaveRect_ {};
     std::array<Rect, 5> wavetableBuiltinRects_ {};
     std::array<Rect, 8> wavetablePresetRowRects_ {};
+    bool currentClickIsDouble_ = false;
     Rect metaProcessContextPanelRect_ {};
     std::array<Rect, 7> metaProcessContextRects_ {};
     float metaProcessContextX_ = 0.0f;
@@ -6938,7 +8710,10 @@ class KapibaraUI final : public UI
     std::array<Rect, 3> importFrameLimitRects_ {};
     std::array<Rect, 5> wavetableImportModeRects_ {};
     std::array<Rect, 6> presetRowRects_ {};
-    Rect partialCountRect_ {}, inharmonicModeRect_ {}, inharmonicRect_ {}, gainRect_ {};
+    Rect partialCountRect_ {}, inharmonicModeRect_ {}, inharmonicRect_ {}, gainRect_ {}, masterMeterRect_ {};
+    int editorTab_ = 0;  // 0=SOURCE 1=SHAPE 2=VOICE 3=MAPPING
+    std::array<Rect, 4> editorTabRects_ {};
+    std::array<Rect, synth::kMaxWavetablePartials> partialKnobRects_ {};
     std::array<Rect, 4> sourceCountRects_ {};
     std::array<Rect, synth::kMaxSourceTracks> sourceChainRects_ {};
     Rect addTrackRect_ {};
@@ -6947,6 +8722,7 @@ class KapibaraUI final : public UI
     std::array<Rect, synth::kMaxSourceTracks> trackRowRects_ {};
     std::array<Rect, synth::kMaxSourceTracks> stripRects_ {};
     Rect trackOutputModeRect_ {}, trackGainRect_ {}, trackPanRect_ {}, trackSendRect_ {};
+    Rect stripEnvRect_ {}, stripDupRect_ {};
     Rect ampEnvSelectRect_ {}, duplicateEnvRect_ {};
     Rect partialSpectrumRect_ {}, partialAmpRect_ {}, partialRatioRect_ {};
     Rect basicShapeRect_ {}, basicPulseRect_ {}, basicSubRect_ {};
@@ -6960,7 +8736,9 @@ class KapibaraUI final : public UI
     Rect metaEnableRect_ {}, metaWarpModeRect_ {}, metaFrameButtonRect_ {};
     Rect metaWavetableNameRect_ {}, metaWavetablePrevRect_ {}, metaWavetableNextRect_ {};
     Rect metaHarmonicEditRect_ {};
-    Rect metaLoadRect_ {}, metaLoadPathRect_ {}, metaFrameStripRect_ {};
+    Rect metaLoadRect_ {}, metaSaveRect_ {}, metaLoadPathRect_ {}, metaFrameStripRect_ {};
+    bool metaFramesShown_ = false;
+    bool fileBrowserSaving_ = false;
     std::array<Rect, 5> metaFramePresetRects_ {};
     std::array<Rect, synth::kVisibleWavetableFrames> metaFrameRects_ {};
     int metaFramePageStart_ = 0;
@@ -6993,6 +8771,7 @@ class KapibaraUI final : public UI
     Rect metaFrameScrollRect_ {};
     Rect metaEditorTimeRect_ {}, metaEditorSpectrumRect_ {}, metaEditorFrameStripRect_ {};
     Rect metaEditorImportRect_ {}, metaEditorAddRect_ {}, metaEditorDuplicateRect_ {}, metaEditorDeleteRect_ {};
+    Rect metaSelAllRect_ {};
     Rect metaEditorLeftRect_ {}, metaEditorRightRect_ {}, metaEditorAlignRect_ {};
     Rect metaEditorLinearRect_ {}, metaEditorSpectralMorphRect_ {};
     std::array<Rect, 5> opSelectRects_ {};
