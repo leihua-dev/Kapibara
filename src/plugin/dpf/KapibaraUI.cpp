@@ -65,7 +65,7 @@ enum class DragTarget
     MetaFrameScan, MetaWaveform, MetaHarmonicRatio, MetaHarmonicAmp, MetaHarmonicPhase,
     PartialTableAmp, PartialTablePhase,
     LfoFreq, LfoPhase, LfoRho,
-    EnvPointA, EnvPointB, EnvCurveA, MatrixEnvCurve, MatrixEnvSeg, ModEnvRate, HarmonicEditor, MetaTimeEditor, MetaSpectrumEditor,
+    EnvPointA, EnvPointB, EnvCurveA, MatrixEnvCurve, MatrixEnvSeg, ModEnvRate, AmpAdsrSeg, HarmonicEditor, MetaTimeEditor, MetaSpectrumEditor,
     RuleDepth, RuleBandLo, RuleBandHi,
     ModDepth,
     ChaosRate, ChaosAmount, ShapePhase, ShapeRho, ShapeUp, ShapeDown,
@@ -4677,6 +4677,7 @@ class KapibaraUI final : public UI
         lfoShapeRect_ = {}; lfoFreqRect_ = {}; lfoPhaseRect_ = {}; lfoRhoRect_ = {};
         lfoEnableRect_ = {}; envEnableRect_ = {}; adsrSourceRect_ = {};
         modModeRect_ = {}; modEnvRateRect_ = {};
+        if(matrixTab_ != 2) ampAdsrRect_ = {};
         envPointARect_ = {}; envPointBRect_ = {}; envCurveARect_ = {}; matrixEnvCurveRect_ = {};
         attackRect_ = {}; decayRect_ = {}; sustainRect_ = {}; releaseRect_ = {};
         ruleEnableRect_ = {}; ruleSourceRect_ = {}; ruleDestRect_ = {}; ruleWeightRect_ = {};
@@ -4768,6 +4769,11 @@ class KapibaraUI final : public UI
         static constexpr const char *ampEnvTabs[] = { "ENV1", "ENV2", "ENV3", "ENV4" };
         drawTabBar({ r.x, r.y, std::min(r.w, 320.0f), 24.0f }, ampEnvTabs, synth::kMaxAmpEnvs,
                    selectedAmpEnv_, ampEnvTabRects_.data());
+        useUiFont();
+        uiFontSize(7.5f);
+        textAlign(ALIGN_RIGHT | ALIGN_MIDDLE);
+        fillColor(DesignTokens::textSecondary());
+        text(r.x + r.w, r.y + 11.0f, "Ctrl-drag a segment = bend", nullptr);
         auto &ampEnv = ampEnvs_[(size_t)selectedAmpEnv_];
         const float kw = (r.w - 18.0f) * 0.25f;
         attackRect_  = { r.x,                      r.y + 38.0f, kw, 44.0f };
@@ -5653,24 +5659,44 @@ class KapibaraUI final : public UI
         const float xS = x0 + plotW * ((a + d + sustainSpan) / sum);
         const float y0 = r.y + r.h - 8.0f;
         const float y1 = r.y + 8.0f;
-        const float yS = y0 - env.sustain * (r.h - 16.0f);
+        const float sustain = clampf(env.sustain, 0.0f, 1.0f);
 
+        // Store hit info for Ctrl-drag segment bending.
+        ampAdsrRect_ = r;
+        ampAdsrXA_ = xA; ampAdsrXD_ = xD; ampAdsrXS_ = xS; ampAdsrXR_ = xR;
+
+        const auto vy = [&](float v) { return y0 - clampf(v, 0.0f, 1.0f) * (y0 - y1); };
+        constexpr int kN = 18;
+        // Trace the curved A/D/S/R outline (matches the engine's adsrCurveEval shaping).
+        const auto trace = [&]() {
+            moveTo(x0, vy(0.0f));
+            for(int i = 1; i <= kN; ++i)
+            {
+                const float t = float(i) / float(kN);
+                lineTo(x0 + (xA - x0) * t, vy(synth::adsrCurveEval(t, env.curveA)));
+            }
+            for(int i = 1; i <= kN; ++i)
+            {
+                const float t = float(i) / float(kN);
+                const float v = sustain + (1.0f - sustain) * (1.0f - synth::adsrCurveEval(t, env.curveD));
+                lineTo(xA + (xD - xA) * t, vy(v));
+            }
+            lineTo(xS, vy(sustain));
+            for(int i = 1; i <= kN; ++i)
+            {
+                const float t = float(i) / float(kN);
+                lineTo(xS + (xR - xS) * t, vy(sustain * (1.0f - synth::adsrCurveEval(t, env.curveR))));
+            }
+        };
         beginPath();
-        moveTo(x0, y0);
-        lineTo(xA, y1);
-        lineTo(xD, yS);
-        lineTo(xS, yS);
+        trace();
         lineTo(xR, y0);
         lineTo(x0, y0);
         closePath();
         fillColor(DesignTokens::accentGreen().withAlpha(0.09f));
         fill();
         beginPath();
-        moveTo(x0, y0);
-        lineTo(xA, y1);
-        lineTo(xD, yS);
-        lineTo(xS, yS);
-        lineTo(xR, y0);
+        trace();
         strokeColor(DesignTokens::accentGreen());
         strokeWidth(2.0f);
         stroke();
@@ -7285,6 +7311,24 @@ class KapibaraUI final : public UI
         }
 
         // Matrix / LFO / ENV / Rules
+        // Ctrl-drag a segment of the AMP ENV curve to bend it.
+        if(ctrlDown_ && ampAdsrRect_.contains(x, y))
+        {
+            auto &ae = ampEnvs_[(size_t)selectedAmpEnv_];
+            int seg = -1;
+            float startCurve = 0.5f;
+            if(x < ampAdsrXA_)        { seg = 0; startCurve = ae.curveA; }
+            else if(x < ampAdsrXD_)   { seg = 1; startCurve = ae.curveD; }
+            else if(x >= ampAdsrXS_)  { seg = 2; startCurve = ae.curveR; }
+            if(seg >= 0)
+            {
+                ampAdsrDragSeg_ = seg;
+                dragTarget_ = DragTarget::AmpAdsrSeg;
+                dragStartY_ = y;
+                dragStartDepth_ = startCurve;
+                return true;
+            }
+        }
         if(modModeRect_.contains(x, y))
         {
             env.loop = !env.loop;   // ENV slot: toggle one-shot <-> loop
@@ -7812,6 +7856,16 @@ class KapibaraUI final : public UI
                 break;
             case DragTarget::LfoFreq: lfo.frequencyHz = knobNorm() * 20.0f; pushLfoOnly(); break;
             case DragTarget::ModEnvRate: env.loopRateHz = std::max(0.05f, knobNorm() * 20.0f); pushEnvOnly(); break;
+            case DragTarget::AmpAdsrSeg:
+            {
+                auto &ae = ampEnvs_[(size_t)selectedAmpEnv_];
+                const float c = clampf(dragStartDepth_ + (dragStartY_ - y) * uiRenderScale_ / 160.0f, 0.0f, 1.0f);
+                if(ampAdsrDragSeg_ == 0)      ae.curveA = c;
+                else if(ampAdsrDragSeg_ == 1) ae.curveD = c;
+                else if(ampAdsrDragSeg_ == 2) ae.curveR = c;
+                pushAmpEnv();
+                break;
+            }
             case DragTarget::LfoPhase: lfo.phase0 = knobNorm(); pushLfoOnly(); break;
             case DragTarget::LfoRho: lfo.rhoLfo = knobNorm(); pushLfoOnly(); break;
             case DragTarget::EnvPointA: env.points[1].y = knobNorm(); pushEnvOnly(); break;
@@ -9133,6 +9187,9 @@ class KapibaraUI final : public UI
     int selectedMatrixModSlot_ = 0;  // unified matrix LFO1-4 (0-3) / ENV1-4 (4-7) selection
     int envDragSeg_ = -1;            // segment whose curvature is being Ctrl-dragged
     Rect modModeRect_ {}, modEnvRateRect_ {};
+    Rect ampAdsrRect_ {};
+    float ampAdsrXA_ = 0.0f, ampAdsrXD_ = 0.0f, ampAdsrXS_ = 0.0f, ampAdsrXR_ = 0.0f;
+    int ampAdsrDragSeg_ = -1;  // 0=attack 1=decay 2=release
     int mouseKey_ = -1;
     std::array<bool, 128> computerKeys_ {};
     std::array<int, 512> pressedKeycodeNotes_ {};

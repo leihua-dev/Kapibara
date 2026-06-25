@@ -771,13 +771,13 @@ void Voice::beginPartialRender(int numSamples)
     numSamples = std::min(numSamples, kMaxVoiceRenderBlockSamples);
     auto advanceAdsr = [](AdsrRuntimeState &st,
                           float sustain,
-                          float curve) -> float {
+                          float curveA, float curveD, float curveR) -> float {
         switch(st.state)
         {
             case PartialState::Attack:
             {
                 const float tau = float(st.stageSample) / float(std::max(1, st.attackSamples));
-                st.value = adsrCurveEval(tau, curve);
+                st.value = adsrCurveEval(tau, curveA);
                 ++st.stageSample;
                 if(st.stageSample >= st.attackSamples)
                 {
@@ -790,7 +790,7 @@ void Voice::beginPartialRender(int numSamples)
             case PartialState::Decay:
             {
                 const float tau = float(st.stageSample) / float(std::max(1, st.decaySamples));
-                const float f = adsrCurveEval(tau, curve);
+                const float f = adsrCurveEval(tau, curveD);
                 st.value = sustain + (1.0f - sustain) * (1.0f - f);
                 ++st.stageSample;
                 if(st.stageSample >= st.decaySamples)
@@ -807,7 +807,7 @@ void Voice::beginPartialRender(int numSamples)
             case PartialState::Release:
             {
                 const float tau = float(st.stageSample) / float(std::max(1, st.releaseSamples));
-                const float f = adsrCurveEval(tau, curve);
+                const float f = adsrCurveEval(tau, curveR);
                 st.value = st.releaseFrom * (1.0f - f);
                 ++st.stageSample;
                 if(st.stageSample >= st.releaseSamples)
@@ -927,7 +927,7 @@ void Voice::beginPartialRender(int numSamples)
 
     for(int s = 0; s < numSamples; ++s)
     {
-        globalEnvScratch_[(size_t)s] = advanceAdsr(ampEnv_, sustain_, adsrCurve_);
+        globalEnvScratch_[(size_t)s] = advanceAdsr(ampEnv_, sustain_, adsrCurve_, adsrCurve_, adsrCurve_);
         for(int e = 0; e < kMaxModEnvs; ++e)
         {
             const auto &p = modEnvParams_[(size_t)e];
@@ -940,7 +940,8 @@ void Voice::beginPartialRender(int numSamples)
             const auto &params = sharedAmpEnvParams_[(size_t)e];
             ampEnvScratch_[(size_t)e][(size_t)s] =
                 advanceAdsr(sharedAmpEnvState_[(size_t)e], clampf(params.sustain, 0.0f, 1.0f),
-                            clampf(params.curve, 0.0f, 1.0f));
+                            clampf(params.curveA, 0.0f, 1.0f), clampf(params.curveD, 0.0f, 1.0f),
+                            clampf(params.curveR, 0.0f, 1.0f));
         }
         const int trackCount = renderTrackCount_ > 0
                                    ? renderTrackCount_

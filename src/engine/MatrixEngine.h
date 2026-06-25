@@ -155,7 +155,10 @@ struct AdsrParams
     float decay = 0.35f;
     float sustain = 0.0f;
     float release = 0.08f;
-    float curve = 0.5f;
+    float curve = 0.5f;            // legacy global curve (kept for back-compat)
+    float curveA = 0.5f;          // per-stage curvature, 0.5 = linear
+    float curveD = 0.5f;
+    float curveR = 0.5f;
 };
 
 float adsrCurveEval(float tau, float curve);
