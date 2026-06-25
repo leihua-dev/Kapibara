@@ -58,6 +58,7 @@ class Voice
                        const AdsrParams &adsr,
                        const std::array<AdsrParams, kMaxAmpEnvs> &ampEnvs,
                        const std::array<MatrixEnvParams, kMaxModEnvs> &matrixEnvs,
+                       const std::array<LfoParams, kMaxLfos> &lfos,
                        const UnisonParams &unison,
                        const std::array<RenderTrackRuntime, kMaxSourceTracks> &trackRuntime,
                        int renderTrackCount,
@@ -100,6 +101,13 @@ class Voice
     float keyTrack01() const { return keyTrack01_; }
     float averageEnv() const { return avgEnv_; }
     const std::array<float, kMaxModEnvs> &modEnvLevels() const { return modEnvLevel_; }
+    const std::array<float, kMaxLfos> &lfoVoiceLevels() const { return lfoVoiceLevel_; }
+    std::array<float, kMaxAmpEnvs> ampEnvLevels() const
+    {
+        std::array<float, kMaxAmpEnvs> v {};
+        for(int i = 0; i < kMaxAmpEnvs; ++i) v[(size_t)i] = sharedAmpEnvState_[(size_t)i].value;
+        return v;
+    }
     uint32_t voiceRandomSeed() const { return rngSeed_; }
 
   private:
@@ -226,6 +234,10 @@ class Voice
     std::array<AdsrRuntimeState, kMaxSourceTracks> trackEnvState_ {};
     std::array<AdsrRuntimeState, kMaxModEnvs> modEnvState_ {};
     std::array<MatrixEnvParams, kMaxModEnvs> modEnvParams_ {};
+    // Per-voice LFO modulators (unified with ENVs: point curves, looping or one-shot).
+    std::array<LfoParams, kMaxLfos> voiceLfoParams_ {};
+    std::array<float, kMaxLfos> lfoVoicePhase_ {};
+    std::array<float, kMaxLfos> lfoVoiceLevel_ {};
     std::array<AdsrRuntimeState, kMaxAmpEnvs> sharedAmpEnvState_ {};
     std::array<AdsrParams, kMaxAmpEnvs> sharedAmpEnvParams_ {};
     std::array<float, kMaxModEnvs> modEnvLevel_ {};

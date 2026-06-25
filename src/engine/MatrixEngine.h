@@ -85,8 +85,11 @@ struct LfoParams
     float pUp = 1.0f;        // p_u
     float pDown = 1.0f;      // p_d
     // Custom point-curve mode: when usePoints is set the LFO reads this
-    // breakpoint curve as its looping waveform instead of `shape`.
+    // breakpoint curve as its waveform instead of `shape`. In the unified
+    // modulator model the curve is evaluated per-voice; loop=false makes it a
+    // one-shot (note-triggered envelope) instead of repeating.
     bool usePoints = false;
+    bool loop = true;
     int pointCount = 4;
     std::array<MatrixEnvPoint, kMaxMatrixEnvPoints> points {
         MatrixEnvPoint { 0.0f, 0.5f, 0.0f },
@@ -128,9 +131,10 @@ class Lfo
     void reset(float phase = 0.0f);
     // Advance by `samples` and return the latest output value in [-1, 1].
     float tick(const LfoParams &p, int samples);
+    // Evaluate the shape/point waveform at phase xi in [0,1) -> [-1, 1].
+    static float shapeOutput(const LfoParams &p, float xi);
 
   private:
-    static float shapeOutput(const LfoParams &p, float xi);
     double sampleRate_ = 48000.0;
     float xi_ = 0.0f;        // current phase fraction in [0,1)
     float lastSh_ = 0.0f;    // sample-and-hold latch
@@ -345,7 +349,8 @@ class MatrixEngine
                           const int *trackBegin = nullptr,
                           const int *trackEnd = nullptr,
                           int trackCount = 0,
-                          const std::array<float, kMaxAmpEnvs> *ampEnvLevels = nullptr) const;
+                          const std::array<float, kMaxAmpEnvs> *ampEnvLevels = nullptr,
+                          const std::array<float, kMaxLfos> *lfoVoiceLevels = nullptr) const;
 
     // Global (per-strip, control-rate) value of a modulation source. Per-voice-only
     // sources (velocity/key/random) return 0; ADSR/ENV use the passed representatives.

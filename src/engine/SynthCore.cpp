@@ -54,10 +54,38 @@ bool frameTableContentChanged(const WavetablePartialSlot &a, const WavetablePart
     return false;
 }
 
+bool seedFrameTableContentChanged(const WavetableSeedParams &a, const WavetableSeedParams &b)
+{
+    if(a.frameCount != b.frameCount || std::abs(a.morph - b.morph) > 1.0e-6f)
+        return true;
+    const auto &framesA = a.frames.get();
+    const auto &framesB = b.frames.get();
+    const int frameCount = std::clamp(a.frameCount, 1, kMaxWavetableFrames);
+    for(int f = 0; f < frameCount; ++f)
+    {
+        const auto &pa = framesA[(size_t)f];
+        const auto &pb = framesB[(size_t)f];
+        if(pa == pb)
+            continue;
+        if(!pa || !pb)
+            return true;
+        for(int h = 0; h < kMaxWavetablePartials; ++h)
+        {
+            const auto &ha = pa->harmonics[(size_t)h];
+            const auto &hb = pb->harmonics[(size_t)h];
+            if(std::abs(ha.amp - hb.amp) > 1.0e-6f
+               || std::abs(ha.phase - hb.phase) > 1.0e-6f)
+                return true;
+        }
+    }
+    return false;
+}
+
 bool wavetableSeedContentChanged(const WavetableSeedParams &a, const WavetableSeedParams &b)
 {
     if(a.partialCount != b.partialCount || a.freqShape != b.freqShape
-       || std::abs(a.inharmonicAmount - b.inharmonicAmount) > 1.0e-6f)
+       || std::abs(a.inharmonicAmount - b.inharmonicAmount) > 1.0e-6f
+       || seedFrameTableContentChanged(a, b))
         return true;
     for(int i = 0; i < kMaxWavetablePartials; ++i)
     {
@@ -329,18 +357,40 @@ void SynthCore::ensureSourceTracksNoLock()
 {
     if(!source.gen.tracks.empty())
         return;
-    auto track = makeDefaultTrack(SourceTrackType::PartialBank, 1u, "Partial Bank 1");
-    track.partialBank = source.gen.wavetableSeed;
-    track.strip = source.gen.sources[0];
-    track.gain = track.strip.gain;
-    track.pan = track.strip.pan;
-    track.ampEnvIndex = 0;
-    track.unison = source.gen.unison;
-    track.ampEnvelope = globalAdsr;
-    if(track.ampEnvelope.sustain <= 0.0f)
-        track.ampEnvelope.sustain = 1.0f;
-    source.gen.tracks.push_back(std::move(track));
-    nextTrackId_ = 2u;
+
+    // Default patch loads one track of every oscillator type.
+    auto bank = makeDefaultTrack(SourceTrackType::PartialBank, 1u, "Partial Bank");
+    bank.partialBank = source.gen.wavetableSeed;
+    bank.strip = source.gen.sources[0];
+    bank.gain = bank.strip.gain;
+    bank.pan = bank.strip.pan;
+    bank.ampEnvIndex = 0;
+    bank.unison = source.gen.unison;
+    bank.ampEnvelope = globalAdsr;
+    if(bank.ampEnvelope.sustain <= 0.0f)
+        bank.ampEnvelope.sustain = 1.0f;
+    source.gen.tracks.push_back(std::move(bank));
+
+    const SourceTrackType extraTypes[] = {
+        SourceTrackType::MetaOscillator,
+        SourceTrackType::BasicOscillator,
+        SourceTrackType::SampleNoise,
+    };
+    uint32_t id = 2u;
+    for(auto type : extraTypes)
+    {
+        auto t = makeDefaultTrack(type, id, nullptr);
+        t.ampEnvIndex = 0;
+        t.ampEnvelope = globalAdsr;
+        if(t.ampEnvelope.sustain <= 0.0f)
+            t.ampEnvelope.sustain = 1.0f;
+        // Start the extra layers muted-quiet so the default mix is not overpowering.
+        t.gain = 0.7f;
+        t.strip.gain = 0.7f;
+        source.gen.tracks.push_back(std::move(t));
+        ++id;
+    }
+    nextTrackId_ = id;
 }
 
 void SynthCore::rebuildTrackRenderStateNoLock(bool rebakeTables)
@@ -384,9 +434,31 @@ void SynthCore::rebuildTrackRenderStateNoLock(bool rebakeTables)
         generator.generate(local, frame);
         WavetableSeedRenderState localWave;
         if(track.type == SourceTrackType::MetaOscillator)
-            bakeWavetableSeed(seed, 1, localWave);
+        {
+            // Runtime-only rebuilds happen while dragging controls such as
+            // PartialBank Partials/Inharmonic. Do not rebake Meta wavetable
+            // mip caches on that path; reuse the existing rendered partial
+            // data for this render track and only fall back to baking when the
+            // table cache is missing or explicit content changed.
+            if(!rebakeTables && source.wavetable && renderTrack < source.wavetable->trackCount)
+            {
+                refreshWavetableSeedRuntime(seed, 1, localWave);
+                const int oldBegin = source.wavetable->trackBegin[(size_t)renderTrack];
+                const int oldEnd = source.wavetable->trackEnd[(size_t)renderTrack];
+                const int oldCount = std::max(0, oldEnd - oldBegin);
+                const int reuseCount = std::min(frame.partialCount, oldCount);
+                for(int i = 0; i < reuseCount; ++i)
+                    localWave.partials[(size_t)i] = source.wavetable->partials[(size_t)(oldBegin + i)];
+            }
+            else
+            {
+                bakeWavetableSeed(seed, 1, localWave);
+            }
+        }
         else
+        {
             fillSineOnlyRenderState(seed, frame, localWave);
+        }
 
         const int begin = partialOffset;
         const int copyCount = std::min(frame.partialCount, kMaxWavetablePartials - partialOffset);
@@ -609,7 +681,13 @@ void SynthCore::setSourceTrack(uint32_t trackId, const SourceTrackParams &track)
     *it = track;
     it->id = trackId;
     if(contentChanged || membershipChanged)
-        rebuildTrackRenderStateNoLock(contentChanged);
+    {
+        // Only Meta oscillator table-content edits need cached wavetable rebakes.
+        // PartialBank Partials/Inharmonic changes are runtime frame changes; rebuild
+        // the render snapshot, but do not force table-cache work while dragging.
+        const bool rebakeTables = contentChanged && track.type == SourceTrackType::MetaOscillator;
+        rebuildTrackRenderStateNoLock(rebakeTables);
+    }
     else if(track.type == SourceTrackType::MetaOscillator)
         updateMetaTrackRenderParamsNoLock(trackId);  // fast path: no rebake
     publishSnapshotNoLock();
@@ -1167,6 +1245,17 @@ void SynthCore::renderStripBuses(float *left, float *right, int numSamples,
             processInsertChain(trackBus_[(size_t)t].l.data(), trackBus_[(size_t)t].r.data(), numSamples,
                                sampleRate, rt.inserts, trackInsertState_[(size_t)t],
                                trackInsertMod_[(size_t)t].data(), kInsertModParams);
+
+        // Post-insert peak for the UI level meter (ballistic decay so it falls smoothly).
+        float peak = 0.0f;
+        for(int s = 0; s < numSamples; ++s)
+        {
+            peak = std::max(peak, std::abs(trackBus_[(size_t)t].l[(size_t)s]));
+            peak = std::max(peak, std::abs(trackBus_[(size_t)t].r[(size_t)s]));
+        }
+        float prev = trackLevel_[(size_t)t].load(std::memory_order_relaxed);
+        const float decayed = prev * 0.85f;
+        trackLevel_[(size_t)t].store(peak > decayed ? peak : decayed, std::memory_order_relaxed);
     }
 
     // 2) Group buses: sum member strips, run group inserts, and remember which strips
@@ -1385,6 +1474,7 @@ void SynthCore::renderBlock(float *left, float *right, int numSamples)
             // Per-strip (global) insert modulation: representative ADSR/ENV across voices.
             float adsrRep = 0.0f;
             std::array<float, kMaxModEnvs> envRep {};
+            std::array<float, kMaxAmpEnvs> ampRep {};
             int activeCount = 0;
             for(auto &v : voices)
             {
@@ -1393,11 +1483,14 @@ void SynthCore::renderBlock(float *left, float *right, int numSamples)
                 adsrRep += v.averageEnv();
                 const auto &el = v.modEnvLevels();
                 for(int e = 0; e < kMaxModEnvs; ++e) envRep[(size_t)e] += el[(size_t)e];
+                const auto ae = v.ampEnvLevels();
+                for(int e = 0; e < kMaxAmpEnvs; ++e) ampRep[(size_t)e] += ae[(size_t)e];
             }
             if(activeCount > 0)
             {
                 adsrRep /= float(activeCount);
                 for(int e = 0; e < kMaxModEnvs; ++e) envRep[(size_t)e] /= float(activeCount);
+                for(int e = 0; e < kMaxAmpEnvs; ++e) ampRep[(size_t)e] /= float(activeCount);
             }
             for(auto &m : trackInsertMod_) m.fill(0.0f);
             if(snap)
@@ -1412,7 +1505,7 @@ void SynthCore::renderBlock(float *left, float *right, int numSamples)
                         if(snap->trackRuntime[(size_t)t].trackId == rule.targetTrackId) { rt = t; break; }
                     if(rt < 0) continue;
                     trackInsertMod_[(size_t)rt][(size_t)insertModIndex(rule.targetSlot, param)] +=
-                        rule.depth * matrix.globalModSource(rule.source, adsrRep, envRep);
+                        rule.depth * matrix.globalModSource(rule.source, adsrRep, envRep, ampRep);
                 }
             }
 
@@ -1425,13 +1518,16 @@ void SynthCore::renderBlock(float *left, float *right, int numSamples)
                 const auto frame = clampedFrame(sampleTimeline(*snap->timeline, v.sourceTimeSeconds()));
                 v.setWavetableRenderState(snap->wavetable);
                 MatrixVoiceOutput mtx;
+                const auto voiceAmpEnv = v.ampEnvLevels();
+                const auto voiceLfo = v.lfoVoiceLevels();
                 matrix.evaluateForVoice(mtx, frame,
                                         v.velocity(), v.keyTrack01(),
                                         v.averageEnv(), v.modEnvLevels(),
                                         float((v.voiceRandomSeed() & 0xFF)) / 255.0f,
                                         matrixTrackIds.data(), matrixTrackBegin.data(), matrixTrackEnd.data(),
-                                        snap->renderTrackCount);
+                                        snap->renderTrackCount, &voiceAmpEnv, &voiceLfo);
                 v.updateControl(frame, mtx, snap->adsr, snap->ampEnvParams, snap->matrixEnvParams,
+                                snap->lfoParams,
                                 snap->unison, snap->trackRuntime, snap->renderTrackCount, snap->renderQuality,
                                 snap->globalGain, kSeedControlBlockSize);
             }

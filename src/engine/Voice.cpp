@@ -305,11 +305,12 @@ void Voice::noteOn(int midiNote, float velocity, const StaticSpectralFrame &fram
         auto &e = modEnvState_[(size_t)i];
         const auto &p = modEnvParams_[(size_t)i];
         e = AdsrRuntimeState {};
-        const float curveSeconds = std::max(0.001f, p.attack + p.decay + p.release);
-        // In loop mode the whole curve repeats every 1/loopRateHz seconds.
-        e.attackSamples = p.loop
+        // Point-curve modulators play one cycle every 1/loopRateHz seconds (loop
+        // mode repeats it, one-shot plays it once then holds). Legacy ADSR-style
+        // envs (pointCount < 2) keep their attack-time behaviour.
+        e.attackSamples = (p.pointCount >= 2)
             ? std::max(1, int(fs / std::max(0.01f, p.loopRateHz)))
-            : std::max(1, int((p.pointCount >= 2 ? curveSeconds : std::max(0.0f, p.attack)) * fs));
+            : std::max(1, int(std::max(0.0f, p.attack) * fs));
         e.decaySamples = std::max(1, int(std::max(0.0f, p.decay) * fs));
         e.releaseSamples = std::max(1, int(std::max(0.0f, p.release) * fs));
         if(e.attackSamples <= 1)
@@ -322,6 +323,9 @@ void Voice::noteOn(int midiNote, float velocity, const StaticSpectralFrame &fram
             e.state = PartialState::Attack;
         }
     }
+    // Per-voice LFOs retrigger their phase on note-on.
+    lfoVoicePhase_.fill(0.0f);
+    lfoVoiceLevel_.fill(0.0f);
     modEnvLevel_.fill(0.0f);
 
     for(int i = 0; i < kMaxPartials; ++i)
@@ -409,6 +413,7 @@ void Voice::updateControl(const StaticSpectralFrame &frame,
                           const AdsrParams &adsr,
                           const std::array<AdsrParams, kMaxAmpEnvs> &ampEnvs,
                           const std::array<MatrixEnvParams, kMaxModEnvs> &matrixEnvs,
+                          const std::array<LfoParams, kMaxLfos> &lfos,
                           const UnisonParams &unison,
                           const std::array<RenderTrackRuntime, kMaxSourceTracks> &trackRuntime,
                           int renderTrackCount,
@@ -447,6 +452,23 @@ void Voice::updateControl(const StaticSpectralFrame &frame,
         st.attackSamples = std::max(1, int((p.pointCount >= 2 ? curveSeconds : std::max(0.0f, p.attack)) * fs));
         st.decaySamples = std::max(1, int(std::max(0.0f, p.decay) * fs));
         st.releaseSamples = std::max(1, int(std::max(0.0f, p.release) * fs));
+    }
+
+    // Per-voice LFOs (unified modulators): advance each phase by this control block
+    // and sample its waveform. loop=true repeats; loop=false is a one-shot envelope.
+    voiceLfoParams_ = lfos;
+    for(int i = 0; i < kMaxLfos; ++i)
+    {
+        const auto &lp = voiceLfoParams_[(size_t)i];
+        const float inc = std::max(0.0f, lp.frequencyHz) * float(blockSize) / fs;
+        float ph = lfoVoicePhase_[(size_t)i] + inc;
+        if(lp.loop) ph -= std::floor(ph);
+        else        ph = std::min(ph, 1.0f);
+        lfoVoicePhase_[(size_t)i] = ph;
+        float x = ph + lp.phase0;
+        if(lp.loop) x -= std::floor(x);
+        else        x = std::clamp(x, 0.0f, 1.0f);
+        lfoVoiceLevel_[(size_t)i] = Lfo::shapeOutput(lp, x);
     }
 
     // Legacy fixed-generator path still uses global unison. Source-track mode
@@ -1274,8 +1296,9 @@ bool Voice::debugVerifyDecayTransient()
         std::fill(left.begin(), left.end(), 0.0f);
         std::fill(right.begin(), right.end(), 0.0f);
         std::array<RenderTrackRuntime, kMaxSourceTracks> runtime {};
-        voice.updateControl(frame, matrixOut, adsr, ampEnvs, matrixEnvs, unison, runtime, 0, RenderQualityMode::Normal, 1.0f,
-                            chunk);
+        std::array<LfoParams, kMaxLfos> noLfos {};
+        voice.updateControl(frame, matrixOut, adsr, ampEnvs, matrixEnvs, noLfos, unison, runtime, 0,
+                            RenderQualityMode::Normal, 1.0f, chunk);
         voice.renderAdd(left.data(), right.data(), chunk);
         for(int i = 0; i < chunk; ++i)
         {

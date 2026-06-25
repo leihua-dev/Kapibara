@@ -185,14 +185,15 @@ const char *sourceName(synth::ModSource s)
     switch(s)
     {
         case synth::ModSource::None: return "None";
-        case synth::ModSource::Lfo1: return "LFO1";
-        case synth::ModSource::Lfo2: return "LFO2";
-        case synth::ModSource::Lfo3: return "LFO3";
-        case synth::ModSource::Lfo4: return "LFO4";
-        case synth::ModSource::Env1: return "ENV1";
-        case synth::ModSource::Env2: return "ENV2";
-        case synth::ModSource::Env3: return "ENV3";
-        case synth::ModSource::Env4: return "ENV4";
+        // Unified modulators: Lfo1-4 / Env1-4 are presented as MOD1-8.
+        case synth::ModSource::Lfo1: return "MOD1";
+        case synth::ModSource::Lfo2: return "MOD2";
+        case synth::ModSource::Lfo3: return "MOD3";
+        case synth::ModSource::Lfo4: return "MOD4";
+        case synth::ModSource::Env1: return "MOD5";
+        case synth::ModSource::Env2: return "MOD6";
+        case synth::ModSource::Env3: return "MOD7";
+        case synth::ModSource::Env4: return "MOD8";
         case synth::ModSource::Velocity: return "Velocity";
         case synth::ModSource::KeyTrack: return "Key";
         case synth::ModSource::Random: return "Random";
@@ -4694,74 +4695,48 @@ class KapibaraUI final : public UI
 
     void drawMatrixModulators(const Rect &r)
     {
-        // One unified row of modulator slots: LFO1-4 (looping shapes) then
-        // ENV1-4 (point curves). The graph below shows whichever is selected.
+        // Unified modulator slots (MOD1-8). Every slot is a per-voice point curve
+        // with a Mode toggle: LOOP repeats it (LFO), ENV plays it once (envelope).
         const int nLfo = synth::kMaxLfos;
-        const int nEnv = synth::kMaxModEnvs;
-        const int nSlots = nLfo + nEnv;
+        const int nSlots = nLfo + synth::kMaxModEnvs;
         const float bw = (r.w - float(nSlots - 1) * 4.0f) / float(nSlots);
         selectedMatrixModSlot_ = clampi(selectedMatrixModSlot_, 0, nSlots - 1);
-        for(int i = 0; i < nLfo; ++i)
+        for(int i = 0; i < nSlots; ++i)
         {
-            lfoSelectRects_[(size_t)i] = { r.x + float(i) * (bw + 4.0f), r.y, bw, 24.0f };
-            drawButton(lfoSelectRects_[(size_t)i], buttonText("LFO%d", i + 1), selectedMatrixModSlot_ == i);
+            const Rect b { r.x + float(i) * (bw + 4.0f), r.y, bw, 24.0f };
+            if(i < nLfo) lfoSelectRects_[(size_t)i] = b;
+            else         envSelectRects_[(size_t)(i - nLfo)] = b;
+            drawButton(b, buttonText("MOD%d", i + 1), selectedMatrixModSlot_ == i);
         }
-        for(int i = 0; i < nEnv; ++i)
+        // Keep the per-type selection indices in sync for the accessors / push.
+        if(curCurveIsLfo()) selectedLfo_ = selectedMatrixModSlot_;
+        else                selectedEnv_ = selectedMatrixModSlot_ - nLfo;
+        // Point-curve mode is always on for unified modulators.
+        if(curCurveIsLfo() && !lfos_[(size_t)selectedLfo_].usePoints)
         {
-            envSelectRects_[(size_t)i] = { r.x + float(nLfo + i) * (bw + 4.0f), r.y, bw, 24.0f };
-            drawButton(envSelectRects_[(size_t)i], buttonText("ENV%d", i + 1), selectedMatrixModSlot_ == nLfo + i);
+            lfos_[(size_t)selectedLfo_].usePoints = true;
+            pushLfoOnly();
         }
 
-        const bool isEnv = selectedMatrixModSlot_ >= nLfo;
         useUiFont();
         uiFontSize(7.5f);
         textAlign(ALIGN_LEFT | ALIGN_TOP);
         fillColor(DesignTokens::textSecondary());
+        text(r.x, r.y + 34.0f, "double-click = add / remove point   ·   Ctrl-drag = bend   ·   Shift = no snap", nullptr);
 
-        if(isEnv)
-        {
-            // ENV slot: per-voice point curve with a Mode toggle (Env / Loop).
-            selectedEnv_ = selectedMatrixModSlot_ - nLfo;
-            auto &env = envs_[(size_t)selectedEnv_];
-            text(r.x, r.y + 34.0f, "double-click = add / remove point   ·   Ctrl-drag = bend   ·   Shift = no snap", nullptr);
-            modModeRect_ = { r.x + r.w - 132.0f, r.y + 28.0f, 132.0f, 20.0f };
-            drawButton(modModeRect_, env.loop ? "Mode: LOOP" : "Mode: ENV", env.loop);
-            const float knobH = env.loop ? 54.0f : 0.0f;
-            const float curveBottom = (r.y + r.h) - (env.loop ? knobH + 8.0f : 0.0f);
-            matrixEnvCurveRect_ = { r.x, r.y + 52.0f, r.w, std::max(60.0f, curveBottom - (r.y + 52.0f)) };
-            drawMatrixEnvCurve(matrixEnvCurveRect_, env.points.data(), env.pointCount, DesignTokens::accentGreen());
-            if(env.loop)
-            {
-                modEnvRateRect_ = { r.x, r.y + r.h - knobH, (r.w - 8.0f) / 2.0f, 48.0f };
-                drawKnob(modEnvRateRect_, "Rate", env.loopRateHz / 20.0f, env.loopRateHz);
-            }
-            else
-            {
-                modEnvRateRect_ = {};
-            }
-        }
-        else
-        {
-            modModeRect_ = {};
-            modEnvRateRect_ = {};
-            text(r.x, r.y + 34.0f, "LFO · global loop   ·   double-click = add / remove point   ·   Ctrl-drag = bend   ·   Shift = no snap", nullptr);
-            // LFO slot: looping point curve (custom waveform) + Rate / Phase.
-            selectedLfo_ = selectedMatrixModSlot_;
-            auto &lfo = lfos_[(size_t)selectedLfo_];
-            if(!lfo.usePoints) { lfo.usePoints = true; pushLfoOnly(); }  // adopt point mode in this editor
-            const float knobH = 54.0f;
-            const float curveBottom = (r.y + r.h) - knobH - 8.0f;
-            matrixEnvCurveRect_ = { r.x, r.y + 50.0f, r.w, std::max(60.0f, curveBottom - (r.y + 50.0f)) };
-            drawMatrixEnvCurve(matrixEnvCurveRect_, lfo.points.data(), lfo.pointCount, DesignTokens::accentCyan());
-            const float lfoKnobW = (r.w - 8.0f) / 2.0f;
-            const float lfoKnobY = r.y + r.h - knobH;
-            lfoFreqRect_  = { r.x,                    lfoKnobY, lfoKnobW, 48.0f };
-            lfoPhaseRect_ = { r.x + lfoKnobW + 8.0f,  lfoKnobY, lfoKnobW, 48.0f };
-            lfoRhoRect_   = {};
-            lfoShapeRect_ = {};
-            drawKnob(lfoFreqRect_,  "Rate",  lfo.frequencyHz / 20.0f, lfo.frequencyHz);
-            drawKnob(lfoPhaseRect_, "Phase", lfo.phase0, lfo.phase0);
-        }
+        bool &loopRef = curCurveLoop();
+        float &rateRef = curCurveRate();
+        modModeRect_ = { r.x + r.w - 132.0f, r.y + 28.0f, 132.0f, 20.0f };
+        drawButton(modModeRect_, loopRef ? "Mode: LOOP" : "Mode: ENV", loopRef);
+
+        const float knobH = 54.0f;
+        const float curveBottom = (r.y + r.h) - knobH - 8.0f;
+        matrixEnvCurveRect_ = { r.x, r.y + 52.0f, r.w, std::max(60.0f, curveBottom - (r.y + 52.0f)) };
+        drawMatrixEnvCurve(matrixEnvCurveRect_, curCurvePoints(), curCurveCount(),
+                           loopRef ? DesignTokens::accentCyan() : DesignTokens::accentGreen());
+        modEnvRateRect_ = { r.x, r.y + r.h - knobH, (r.w - 8.0f) / 2.0f, 48.0f };
+        drawKnob(modEnvRateRect_, "Rate", rateRef / 20.0f, rateRef);
+        lfoFreqRect_ = {}; lfoPhaseRect_ = {}; lfoRhoRect_ = {}; lfoShapeRect_ = {};
     }
 
     void drawMatrixAmpEnv(const Rect &r)
@@ -7331,11 +7306,11 @@ class KapibaraUI final : public UI
         }
         if(modModeRect_.contains(x, y))
         {
-            env.loop = !env.loop;   // ENV slot: toggle one-shot <-> loop
-            pushEnvOnly();
+            curCurveLoop() = !curCurveLoop();   // unified slot: toggle loop <-> env
+            pushCurCurve();
             return true;
         }
-        if(modEnvRateRect_.contains(x, y)) return setDragKnob(DragTarget::ModEnvRate, env.loopRateHz / 20.0f);
+        if(modEnvRateRect_.contains(x, y)) return setDragKnob(DragTarget::ModEnvRate, clampf(curCurveRate() / 20.0f, 0.0f, 1.0f));
         if(lfoFreqRect_.contains(x, y))  return setDragKnob(DragTarget::LfoFreq,  lfo.frequencyHz / 20.0f);
         if(lfoPhaseRect_.contains(x, y)) return setDragKnob(DragTarget::LfoPhase, lfo.phase0);
         if(lfoRhoRect_.contains(x, y))   return setDragKnob(DragTarget::LfoRho,   lfo.rhoLfo);
@@ -7855,7 +7830,7 @@ class KapibaraUI final : public UI
                 }
                 break;
             case DragTarget::LfoFreq: lfo.frequencyHz = knobNorm() * 20.0f; pushLfoOnly(); break;
-            case DragTarget::ModEnvRate: env.loopRateHz = std::max(0.05f, knobNorm() * 20.0f); pushEnvOnly(); break;
+            case DragTarget::ModEnvRate: curCurveRate() = std::max(0.05f, knobNorm() * 20.0f); pushCurCurve(); break;
             case DragTarget::AmpAdsrSeg:
             {
                 auto &ae = ampEnvs_[(size_t)selectedAmpEnv_];
@@ -8079,6 +8054,18 @@ class KapibaraUI final : public UI
     {
         if(curCurveIsLfo()) pushLfoOnly();
         else                pushEnvOnly();
+    }
+    bool &curCurveLoop()
+    {
+        if(curCurveIsLfo())
+            return lfos_[(size_t)clampi(selectedMatrixModSlot_, 0, synth::kMaxLfos - 1)].loop;
+        return envs_[(size_t)clampi(selectedMatrixModSlot_ - synth::kMaxLfos, 0, synth::kMaxModEnvs - 1)].loop;
+    }
+    float &curCurveRate()
+    {
+        if(curCurveIsLfo())
+            return lfos_[(size_t)clampi(selectedMatrixModSlot_, 0, synth::kMaxLfos - 1)].frequencyHz;
+        return envs_[(size_t)clampi(selectedMatrixModSlot_ - synth::kMaxLfos, 0, synth::kMaxModEnvs - 1)].loopRateHz;
     }
     static float snapEnvValue(float v, bool isX)
     {

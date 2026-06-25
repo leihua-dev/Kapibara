@@ -268,7 +268,8 @@ void MatrixEngine::evaluateForVoice(MatrixVoiceOutput &out,
                                     const int *trackBegin,
                                     const int *trackEnd,
                                     int trackCount,
-                                    const std::array<float, kMaxAmpEnvs> *ampEnvLevels) const
+                                    const std::array<float, kMaxAmpEnvs> *ampEnvLevels,
+                                    const std::array<float, kMaxLfos> *lfoVoiceLevels) const
 {
     initMatrixOutput(out);
 
@@ -286,7 +287,13 @@ void MatrixEngine::evaluateForVoice(MatrixVoiceOutput &out,
 
     auto sourceValue = [&](ModSource s, int partialIndex) -> float {
         if(s >= ModSource::Lfo1 && s <= ModSource::Lfo4)
-            return lfoLastValue_[(size_t)((int)s - (int)ModSource::Lfo1)];
+        {
+            const int idx = (int)s - (int)ModSource::Lfo1;
+            // Unified per-voice LFOs (note-triggered); fall back to the legacy
+            // global LFO value if no per-voice levels were supplied.
+            return lfoVoiceLevels != nullptr ? (*lfoVoiceLevels)[(size_t)idx]
+                                             : lfoLastValue_[(size_t)idx];
+        }
         if(s >= ModSource::Env1 && s <= ModSource::Env4)
         {
             const int idx = (int)s - (int)ModSource::Env1;
