@@ -65,7 +65,7 @@ enum class DragTarget
     MetaFrameScan, MetaWaveform, MetaHarmonicRatio, MetaHarmonicAmp, MetaHarmonicPhase,
     PartialTableAmp, PartialTablePhase,
     LfoFreq, LfoPhase, LfoRho,
-    EnvPointA, EnvPointB, EnvCurveA, MatrixEnvCurve, MatrixEnvSeg, HarmonicEditor, MetaTimeEditor, MetaSpectrumEditor,
+    EnvPointA, EnvPointB, EnvCurveA, MatrixEnvCurve, MatrixEnvSeg, ModEnvRate, HarmonicEditor, MetaTimeEditor, MetaSpectrumEditor,
     RuleDepth, RuleBandLo, RuleBandHi,
     ModDepth,
     ChaosRate, ChaosAmount, ShapePhase, ShapeRho, ShapeUp, ShapeDown,
@@ -4676,6 +4676,7 @@ class KapibaraUI final : public UI
         for(auto &rc : ampEnvTabRects_) rc = {};
         lfoShapeRect_ = {}; lfoFreqRect_ = {}; lfoPhaseRect_ = {}; lfoRhoRect_ = {};
         lfoEnableRect_ = {}; envEnableRect_ = {}; adsrSourceRect_ = {};
+        modModeRect_ = {}; modEnvRateRect_ = {};
         envPointARect_ = {}; envPointBRect_ = {}; envCurveARect_ = {}; matrixEnvCurveRect_ = {};
         attackRect_ = {}; decayRect_ = {}; sustainRect_ = {}; releaseRect_ = {};
         ruleEnableRect_ = {}; ruleSourceRect_ = {}; ruleDestRect_ = {}; ruleWeightRect_ = {};
@@ -4715,21 +4716,34 @@ class KapibaraUI final : public UI
         uiFontSize(7.5f);
         textAlign(ALIGN_LEFT | ALIGN_TOP);
         fillColor(DesignTokens::textSecondary());
-        text(r.x, r.y + 34.0f, isEnv
-                 ? "ENV (one-shot)   ·   double-click = add / remove point   ·   Ctrl-drag = bend   ·   Shift = no snap"
-                 : "LFO (looping)   ·   double-click = add / remove point   ·   Ctrl-drag = bend   ·   Shift = no snap",
-             nullptr);
 
         if(isEnv)
         {
-            // ENV slot: one-shot point curve.
+            // ENV slot: per-voice point curve with a Mode toggle (Env / Loop).
             selectedEnv_ = selectedMatrixModSlot_ - nLfo;
             auto &env = envs_[(size_t)selectedEnv_];
-            matrixEnvCurveRect_ = { r.x, r.y + 50.0f, r.w, std::max(60.0f, (r.y + r.h) - (r.y + 50.0f)) };
+            text(r.x, r.y + 34.0f, "double-click = add / remove point   ·   Ctrl-drag = bend   ·   Shift = no snap", nullptr);
+            modModeRect_ = { r.x + r.w - 132.0f, r.y + 28.0f, 132.0f, 20.0f };
+            drawButton(modModeRect_, env.loop ? "Mode: LOOP" : "Mode: ENV", env.loop);
+            const float knobH = env.loop ? 54.0f : 0.0f;
+            const float curveBottom = (r.y + r.h) - (env.loop ? knobH + 8.0f : 0.0f);
+            matrixEnvCurveRect_ = { r.x, r.y + 52.0f, r.w, std::max(60.0f, curveBottom - (r.y + 52.0f)) };
             drawMatrixEnvCurve(matrixEnvCurveRect_, env.points.data(), env.pointCount, DesignTokens::accentGreen());
+            if(env.loop)
+            {
+                modEnvRateRect_ = { r.x, r.y + r.h - knobH, (r.w - 8.0f) / 2.0f, 48.0f };
+                drawKnob(modEnvRateRect_, "Rate", env.loopRateHz / 20.0f, env.loopRateHz);
+            }
+            else
+            {
+                modEnvRateRect_ = {};
+            }
         }
         else
         {
+            modModeRect_ = {};
+            modEnvRateRect_ = {};
+            text(r.x, r.y + 34.0f, "LFO · global loop   ·   double-click = add / remove point   ·   Ctrl-drag = bend   ·   Shift = no snap", nullptr);
             // LFO slot: looping point curve (custom waveform) + Rate / Phase.
             selectedLfo_ = selectedMatrixModSlot_;
             auto &lfo = lfos_[(size_t)selectedLfo_];
@@ -5623,18 +5637,23 @@ class KapibaraUI final : public UI
     void drawAdsrCurve(const Rect &r, const synth::AdsrParams &env)
     {
         drawPlotBackground(r, 5, 4);
-        const float a = std::max(0.01f, env.attack);
-        const float d = std::max(0.01f, env.decay);
-        const float rr = std::max(0.01f, env.release);
-        const float sum = a + d + rr + 0.5f;
+        // Times can be exactly 0 (e.g. instant attack). Segment x positions are
+        // mapped into [x0, xR] so a 0-length stage sits exactly at its start edge
+        // instead of overshooting backwards.
+        const float a = std::max(0.0f, env.attack);
+        const float d = std::max(0.0f, env.decay);
+        const float rel = std::max(0.0f, env.release);
+        const float sustainSpan = 0.35f;  // fixed visual width for the held sustain
+        const float sum = std::max(1.0e-3f, a + d + rel + sustainSpan);
         const float x0 = r.x + 10.0f;
-        const float xA = r.x + r.w * (a / sum);
-        const float xD = r.x + r.w * ((a + d) / sum);
-        const float xS = r.x + r.w * ((a + d + 0.5f) / sum);
         const float xR = r.x + r.w - 10.0f;
+        const float plotW = xR - x0;
+        const float xA = x0 + plotW * (a / sum);
+        const float xD = x0 + plotW * ((a + d) / sum);
+        const float xS = x0 + plotW * ((a + d + sustainSpan) / sum);
         const float y0 = r.y + r.h - 8.0f;
         const float y1 = r.y + 8.0f;
-        const float yS = r.y + r.h - 8.0f - env.sustain * (r.h - 16.0f);
+        const float yS = y0 - env.sustain * (r.h - 16.0f);
 
         beginPath();
         moveTo(x0, y0);
@@ -5655,6 +5674,22 @@ class KapibaraUI final : public UI
         strokeColor(DesignTokens::accentGreen());
         strokeWidth(2.0f);
         stroke();
+
+        // Time scale: boundary guide lines + per-stage duration labels (seconds).
+        useUiFont();
+        uiFontSize(8.0f);
+        const Color tcol = DesignTokens::divider().withAlpha(0.65f);
+        const auto stageLabel = [&](float xpos, char tag, float secs, bool rightAlign) {
+            strokeLine(xpos, r.y + 4.0f, xpos, r.y + r.h - 4.0f, tcol, 1.0f);
+            char buf[16];
+            std::snprintf(buf, sizeof(buf), "%c %.3gs", tag, double(secs));
+            textAlign((rightAlign ? ALIGN_RIGHT : ALIGN_LEFT) | ALIGN_TOP);
+            fillColor(DesignTokens::textSecondary());
+            text(xpos + (rightAlign ? -3.0f : 3.0f), r.y + 4.0f, buf, nullptr);
+        };
+        stageLabel(xA, 'A', a, false);
+        stageLabel(xD, 'D', d, false);
+        stageLabel(xR, 'R', rel, true);
     }
 
     void drawMatrixEnvCurve(const Rect &r, const synth::MatrixEnvPoint *points, int pointCount,
@@ -7250,6 +7285,13 @@ class KapibaraUI final : public UI
         }
 
         // Matrix / LFO / ENV / Rules
+        if(modModeRect_.contains(x, y))
+        {
+            env.loop = !env.loop;   // ENV slot: toggle one-shot <-> loop
+            pushEnvOnly();
+            return true;
+        }
+        if(modEnvRateRect_.contains(x, y)) return setDragKnob(DragTarget::ModEnvRate, env.loopRateHz / 20.0f);
         if(lfoFreqRect_.contains(x, y))  return setDragKnob(DragTarget::LfoFreq,  lfo.frequencyHz / 20.0f);
         if(lfoPhaseRect_.contains(x, y)) return setDragKnob(DragTarget::LfoPhase, lfo.phase0);
         if(lfoRhoRect_.contains(x, y))   return setDragKnob(DragTarget::LfoRho,   lfo.rhoLfo);
@@ -7769,6 +7811,7 @@ class KapibaraUI final : public UI
                 }
                 break;
             case DragTarget::LfoFreq: lfo.frequencyHz = knobNorm() * 20.0f; pushLfoOnly(); break;
+            case DragTarget::ModEnvRate: env.loopRateHz = std::max(0.05f, knobNorm() * 20.0f); pushEnvOnly(); break;
             case DragTarget::LfoPhase: lfo.phase0 = knobNorm(); pushLfoOnly(); break;
             case DragTarget::LfoRho: lfo.rhoLfo = knobNorm(); pushLfoOnly(); break;
             case DragTarget::EnvPointA: env.points[1].y = knobNorm(); pushEnvOnly(); break;
@@ -9089,6 +9132,7 @@ class KapibaraUI final : public UI
     int selectedEnvPoint_ = -1;
     int selectedMatrixModSlot_ = 0;  // unified matrix LFO1-4 (0-3) / ENV1-4 (4-7) selection
     int envDragSeg_ = -1;            // segment whose curvature is being Ctrl-dragged
+    Rect modModeRect_ {}, modEnvRateRect_ {};
     int mouseKey_ = -1;
     std::array<bool, 128> computerKeys_ {};
     std::array<int, 512> pressedKeycodeNotes_ {};

@@ -174,6 +174,10 @@ struct MatrixEnvParams
     float etaD = 4.0f;
     float etaR = 4.0f;
     int pointCount = 4;
+    // Loop mode turns the one-shot point curve into a per-voice looping shape that
+    // repeats at loopRateHz (an "LFO" triggered by the note instead of free-running).
+    bool loop = false;
+    float loopRateHz = 2.0f;
     std::array<MatrixEnvPoint, kMaxMatrixEnvPoints> points {
         MatrixEnvPoint { 0.0f, 0.0f, 0.0f },
         MatrixEnvPoint { 0.02f, 1.0f, 0.0f },

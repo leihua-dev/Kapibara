@@ -306,7 +306,10 @@ void Voice::noteOn(int midiNote, float velocity, const StaticSpectralFrame &fram
         const auto &p = modEnvParams_[(size_t)i];
         e = AdsrRuntimeState {};
         const float curveSeconds = std::max(0.001f, p.attack + p.decay + p.release);
-        e.attackSamples = std::max(1, int((p.pointCount >= 2 ? curveSeconds : std::max(0.0f, p.attack)) * fs));
+        // In loop mode the whole curve repeats every 1/loopRateHz seconds.
+        e.attackSamples = p.loop
+            ? std::max(1, int(fs / std::max(0.01f, p.loopRateHz)))
+            : std::max(1, int((p.pointCount >= 2 ? curveSeconds : std::max(0.0f, p.attack)) * fs));
         e.decaySamples = std::max(1, int(std::max(0.0f, p.decay) * fs));
         e.releaseSamples = std::max(1, int(std::max(0.0f, p.release) * fs));
         if(e.attackSamples <= 1)
@@ -452,9 +455,22 @@ void Voice::updateControl(const StaticSpectralFrame &frame,
         updateUnisonLayout(unison);
 
     const int waveCount = wavetable_ != nullptr ? wavetable_->partialCount : frame.partialCount;
-    activeCount_ = std::clamp(std::min(frame.partialCount, waveCount), 1, kMaxWavetablePartials);
+    const int targetActiveCount = std::clamp(std::min(frame.partialCount, waveCount), 1, kMaxWavetablePartials);
+    int renderActiveCount = targetActiveCount;
+    if(controlsPrimed_ && targetActiveCount < activeCount_)
+    {
+        bool tailSilent = true;
+        for(int i = targetActiveCount; i < activeCount_; ++i)
+            if(std::abs(ampCur_[(size_t)i]) > 1.0e-6f)
+            {
+                tailSilent = false;
+                break;
+            }
+        renderActiveCount = tailSilent ? targetActiveCount : activeCount_;
+    }
+    activeCount_ = std::clamp(renderActiveCount, 1, kMaxWavetablePartials);
 
-    for(int i = 0; i < activeCount_; ++i)
+    for(int i = 0; i < targetActiveCount; ++i)
     {
         const auto *wave = wavetable_ != nullptr ? &wavetable_->partials[(size_t)i] : nullptr;
         morphTarget_[(size_t)i] = wave != nullptr && wave->usesMetaWavetable
@@ -517,8 +533,9 @@ void Voice::updateControl(const StaticSpectralFrame &frame,
         }
     }
 
-    // Decay any inactive (i >= activeCount_) leftover gracefully.
-    for(int i = activeCount_; i < kMaxPartials; ++i)
+    // Decay any inactive leftover gracefully. This keeps live PartialCount
+    // reductions from hard-cutting existing note partials at the control block.
+    for(int i = targetActiveCount; i < kMaxPartials; ++i)
     {
         ampStep_[i] = -ampCur_[i] * invBlock;
         freqStep_[i] = 0.0f;
@@ -662,14 +679,14 @@ void Voice::renderAdd(float *left, float *right, int numSamples)
             const float depth = clampf(m.depth, 0.0f, 1.0f);
             if(m.type == SourceModType::PM)
             {
-                const float idx = depth * 8.0f; // radians at full depth
+                const float idx = depth * 24.0f; // radians at full depth (wide range)
                 for(int s = 0; s < numSamples; ++s)
                     pmScratch_[(size_t)s] += idx * 0.5f * (mL[s] + mR[s]);
                 hasPm = true;
             }
             else if(m.type == SourceModType::FM)
             {
-                const float devHz = depth * 1500.0f; // peak deviation
+                const float devHz = depth * 8000.0f; // peak deviation (wide range)
                 double acc = 0.0;
                 for(int s = 0; s < numSamples; ++s)
                 {
@@ -820,9 +837,12 @@ void Voice::beginPartialRender(int numSamples)
                     ++st.stageSample;
                     if(st.stageSample >= st.attackSamples)
                     {
-                        st.value = matrixEnvBreakpointEval(p, 1.0f);
                         st.stageSample = 0;
-                        st.state = PartialState::Sustain;
+                        if(!p.loop)  // loop mode replays the curve instead of holding
+                        {
+                            st.value = matrixEnvBreakpointEval(p, 1.0f);
+                            st.state = PartialState::Sustain;
+                        }
                     }
                     break;
                 }
@@ -913,7 +933,7 @@ void Voice::beginPartialRender(int numSamples)
             const auto &p = modEnvParams_[(size_t)e];
             const float raw = advanceMatrixEnv(modEnvState_[(size_t)e], p);
             envScratch_[(size_t)e][(size_t)s] = raw;
-            modEnvLevel_[(size_t)e] = p.enabled ? raw : 0.0f;
+            modEnvLevel_[(size_t)e] = raw; // ENVs always active (no enable gate)
         }
         for(int e = 0; e < kMaxAmpEnvs; ++e)
         {
@@ -979,7 +999,7 @@ void Voice::renderPartialRangeRaw(float *left, float *right, int numSamples, int
             const bool useMetaWavetable = wave != nullptr && wave->usesMetaWavetable;
             if(useMetaWavetable)
                 morphCur_[(size_t)i] += (morphTarget_[(size_t)i] - morphCur_[(size_t)i]) * morphSmoothingCoeff_;
-            if(wave != nullptr && !wave->enabled)
+            if(wave != nullptr && !wave->enabled && std::abs(ampCur_[(size_t)i]) < 1.0e-9f)
                 continue;
 
             const bool trackMode = wavetable_ != nullptr && wavetable_->trackCount > 0;
