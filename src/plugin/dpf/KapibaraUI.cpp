@@ -417,6 +417,7 @@ class KapibaraUI final : public UI
         drawModeMenu();
         drawModSourceMenu();
         drawWavetableImportMenu();
+        drawGridAxisPicker();
         drawInsertDragGhost();
         restore();
     }
@@ -742,6 +743,21 @@ class KapibaraUI final : public UI
                 repaint();
                 return true;
             }
+            // Right-click a grid axis label → remove that source/destination row/col.
+            for(size_t s = 0; s < gridSrcLabelRects_.size() && s < gridSources_.size(); ++s)
+                if(gridSrcLabelRects_[s].contains(x, y))
+                {
+                    gridSources_.erase(gridSources_.begin() + long(s));
+                    repaint();
+                    return true;
+                }
+            for(size_t d = 0; d < gridDestLabelRects_.size() && d < gridDests_.size(); ++d)
+                if(gridDestLabelRects_[d].contains(x, y))
+                {
+                    gridDests_.erase(gridDests_.begin() + long(d));
+                    repaint();
+                    return true;
+                }
             // Right-click a strip MOD slot → pick / change the modulation source
             for(const auto &hit : modHits_)
                 if(hit.rect.contains(x, y))
@@ -4647,6 +4663,14 @@ class KapibaraUI final : public UI
 
         // Only the active sub-view repopulates its hit rects — clear them all first.
         matrixGridCells_.clear();
+        if(matrixTab_ != 0)
+        {
+            gridSrcLabelRects_.clear();
+            gridDestLabelRects_.clear();
+            gridAddSrcRect_ = {};
+            gridAddDstRect_ = {};
+            gridPickerMode_ = 0;
+        }
         for(auto &rc : lfoSelectRects_) rc = {};
         for(auto &rc : envSelectRects_) rc = {};
         for(auto &rc : ampEnvTabRects_) rc = {};
@@ -4740,108 +4764,174 @@ class KapibaraUI final : public UI
         drawAdsrCurve({ r.x, r.y + 92.0f, r.w, std::max(60.0f, (r.y + r.h) - (r.y + 92.0f)) }, ampEnv);
     }
 
-    static constexpr synth::ModSource kGridSources[] = {
+    static constexpr synth::ModSource kGridSourcePool[] = {
         synth::ModSource::Lfo1, synth::ModSource::Lfo2, synth::ModSource::Lfo3, synth::ModSource::Lfo4,
         synth::ModSource::Env1, synth::ModSource::Env2, synth::ModSource::Env3, synth::ModSource::Env4,
-        synth::ModSource::Velocity, synth::ModSource::KeyTrack
+        synth::ModSource::Velocity, synth::ModSource::KeyTrack, synth::ModSource::Random, synth::ModSource::Chaos,
+        synth::ModSource::Adsr1, synth::ModSource::Adsr2, synth::ModSource::Adsr3, synth::ModSource::Adsr4
     };
-    static constexpr synth::ModDestination kGridDests[] = {
+    static constexpr synth::ModDestination kGridDestPool[] = {
         synth::ModDestination::Amp, synth::ModDestination::Freq, synth::ModDestination::Phase,
-        synth::ModDestination::MetaMorph, synth::ModDestination::MetaWarp, synth::ModDestination::TrackPan
+        synth::ModDestination::MetaMorph, synth::ModDestination::MetaWarp, synth::ModDestination::MetaPan,
+        synth::ModDestination::TrackGain, synth::ModDestination::TrackPan,
+        synth::ModDestination::PitchOct, synth::ModDestination::PitchSem, synth::ModDestination::PitchFine
     };
 
-    // Interactive modulation matrix: rows = sources, cols = destinations, a circular
-    // amount node at each routed cell. Click empty = create, drag node = depth,
-    // right-click = clear. Routes are scoped to the selected track.
+    void drawMatrixGridNode(const Rect &cell, const synth::MatrixRule *rule)
+    {
+        const float ncx = cell.x + cell.w * 0.5f;
+        const float ncy = cell.y + cell.h * 0.5f;
+        if(rule == nullptr)
+        {
+            beginPath();
+            circle(ncx, ncy, 1.6f);
+            fillColor(DesignTokens::divider());
+            fill();
+            return;
+        }
+        const float nr = std::min(cell.w, cell.h) * 0.36f;
+        const float amt = clampf(std::abs(rule->depth) / modulationDepthLimit(rule->dest), 0.0f, 1.0f);
+        const Color col = rule->depth >= 0.0f ? DesignTokens::accentCyan() : DesignTokens::accentGreen();
+        beginPath();
+        circle(ncx, ncy, nr);
+        fillColor(col.withAlpha(0.16f));
+        fill();
+        strokeColor(DesignTokens::divider());
+        strokeWidth(2.0f);
+        stroke();
+        lineCap(ROUND);
+        beginPath();
+        const float a0 = -kPi * 0.5f;
+        arc(ncx, ncy, nr, a0, a0 + 2.0f * kPi * std::max(0.02f, amt), CW);
+        strokeColor(col);
+        strokeWidth(2.4f);
+        stroke();
+        lineCap(BUTT);
+        char buf[12];
+        std::snprintf(buf, sizeof(buf), "%+.1f", double(rule->depth));
+        uiFontSize(8.0f);
+        textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
+        fillColor(DesignTokens::textPrimary());
+        text(ncx, ncy, buf, nullptr);
+    }
+
+    // Interactive modulation matrix. Rows/columns are user-chosen: add via the "+"
+    // buttons, remove by right-clicking an axis label. A circular amount node sits
+    // at each routed cell — click empty to route, drag a node for depth, right-click
+    // a node to clear. Routes are scoped to the selected track.
     void drawMatrixGrid(const Rect &r)
     {
-        constexpr int nS = int(sizeof(kGridSources) / sizeof(kGridSources[0]));
-        constexpr int nD = int(sizeof(kGridDests) / sizeof(kGridDests[0]));
         const auto *track = currentTrack();
+        const int nS = int(gridSources_.size());
+        const int nD = int(gridDests_.size());
 
         useUiFont();
         uiFontSize(7.5f);
         textAlign(ALIGN_LEFT | ALIGN_TOP);
         fillColor(DesignTokens::textSecondary());
-        text(r.x, r.y, "click = route   ·   drag node = depth   ·   right-click = clear", nullptr);
+        text(r.x, r.y, "click = route  ·  drag = depth  ·  right-click node = clear  ·  right-click label = remove axis", nullptr);
 
-        const float labelW = 52.0f;
-        const float headH = 14.0f;
+        const float labelW = 58.0f;
+        const float headH = 16.0f;
         const float gridX = r.x + labelW;
-        const float gridY = r.y + 18.0f + headH;
-        const float gridW = r.w - labelW;
-        const float gridH = (r.y + r.h) - gridY;
-        const float cellW = gridW / float(nD);
-        const float cellH = gridH / float(nS);
+        const float topY = r.y + 16.0f;
+        const float gridY = topY + headH;
+        const float addW = 26.0f;
+        const float availW = (r.x + r.w) - gridX - addW;
+        const float availH = (r.y + r.h) - gridY - 22.0f;
+        const float cellW = clampf(availW / float(std::max(1, nD)), 32.0f, 110.0f);
+        const float cellH = clampf(availH / float(std::max(1, nS)), 24.0f, 46.0f);
 
-        // Destination column headers.
+        gridSrcLabelRects_.clear();
+        gridDestLabelRects_.clear();
+
+        // Destination headers + "+" add-destination button.
         uiFontSize(8.0f);
         textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
-        fillColor(DesignTokens::textPrimary());
         for(int d = 0; d < nD; ++d)
-            text(gridX + cellW * (float(d) + 0.5f), r.y + 18.0f + headH * 0.5f, destName(kGridDests[d]), nullptr);
+        {
+            const Rect hr { gridX + cellW * float(d), topY, cellW, headH };
+            gridDestLabelRects_.push_back(hr);
+            fillColor(DesignTokens::textPrimary());
+            text(hr.x + hr.w * 0.5f, hr.y + hr.h * 0.5f, destName(gridDests_[(size_t)d]), nullptr);
+        }
+        gridAddDstRect_ = { gridX + cellW * float(nD) + 2.0f, topY, addW - 4.0f, headH };
+        drawButton(gridAddDstRect_, "+", gridPickerMode_ == 2);
 
+        // Source row labels + "+" add-source button.
         for(int s = 0; s < nS; ++s)
         {
-            const float rowCy = gridY + cellH * (float(s) + 0.5f);
+            const Rect lr { r.x, gridY + cellH * float(s), labelW - 4.0f, cellH };
+            gridSrcLabelRects_.push_back(lr);
             uiFontSize(8.0f);
             textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
             fillColor(DesignTokens::textSecondary());
-            text(r.x, rowCy, sourceName(kGridSources[s]), nullptr);
+            text(lr.x + 2.0f, lr.y + lr.h * 0.5f, sourceName(gridSources_[(size_t)s]), nullptr);
+        }
+        gridAddSrcRect_ = { r.x, gridY + cellH * float(nS) + 2.0f, labelW - 4.0f, 20.0f };
+        drawButton(gridAddSrcRect_, "+ src", gridPickerMode_ == 1);
+
+        // Cells.
+        matrixGridCells_.clear();
+        for(int s = 0; s < nS; ++s)
             for(int d = 0; d < nD; ++d)
             {
                 const Rect cell { gridX + cellW * float(d), gridY + cellH * float(s), cellW, cellH };
-                matrixGridCells_.push_back(MatrixCell { cell, kGridSources[s], kGridDests[d] });
+                matrixGridCells_.push_back(MatrixCell { cell, gridSources_[(size_t)s], gridDests_[(size_t)d] });
                 beginPath();
                 rect(cell.x + 1.0f, cell.y + 1.0f, cell.w - 2.0f, cell.h - 2.0f);
                 strokeColor(DesignTokens::divider().withAlpha(0.5f));
                 strokeWidth(1.0f);
                 stroke();
-
                 const synth::MatrixRule *rule = nullptr;
                 if(track != nullptr)
                     for(const auto &ru : rules_)
-                        if(ru.enabled && ru.source == kGridSources[s] && ru.dest == kGridDests[d]
+                        if(ru.enabled && ru.source == gridSources_[(size_t)s] && ru.dest == gridDests_[(size_t)d]
                            && ru.targetTrackId == track->id) { rule = &ru; break; }
-
-                const float ncx = cell.x + cell.w * 0.5f;
-                const float ncy = cell.y + cell.h * 0.5f;
-                if(rule != nullptr)
-                {
-                    const float nr = std::min(cell.w, cell.h) * 0.36f;
-                    const float amt = clampf(std::abs(rule->depth) / modulationDepthLimit(rule->dest), 0.0f, 1.0f);
-                    const bool pos = rule->depth >= 0.0f;
-                    const Color col = pos ? DesignTokens::accentCyan() : DesignTokens::accentGreen();
-                    beginPath();
-                    circle(ncx, ncy, nr);
-                    fillColor(col.withAlpha(0.16f));
-                    fill();
-                    strokeColor(DesignTokens::divider());
-                    strokeWidth(2.0f);
-                    stroke();
-                    lineCap(ROUND);
-                    beginPath();
-                    const float a0 = -kPi * 0.5f;
-                    arc(ncx, ncy, nr, a0, a0 + 2.0f * kPi * std::max(0.02f, amt), CW);
-                    strokeColor(col);
-                    strokeWidth(2.4f);
-                    stroke();
-                    lineCap(BUTT);
-                    char buf[12];
-                    std::snprintf(buf, sizeof(buf), "%+.1f", double(rule->depth));
-                    uiFontSize(8.0f);
-                    textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
-                    fillColor(DesignTokens::textPrimary());
-                    text(ncx, ncy, buf, nullptr);
-                }
-                else
-                {
-                    beginPath();
-                    circle(ncx, ncy, 1.6f);
-                    fillColor(DesignTokens::divider());
-                    fill();
-                }
+                drawMatrixGridNode(cell, rule);
             }
+    }
+
+    void drawGridAxisPicker()
+    {
+        gridPickerItemRects_.clear();
+        gridPickerPoolIdx_.clear();
+        if(gridPickerMode_ == 0)
+            return;
+        const bool srcMode = gridPickerMode_ == 1;
+        const int poolN = srcMode ? int(sizeof(kGridSourcePool) / sizeof(kGridSourcePool[0]))
+                                  : int(sizeof(kGridDestPool) / sizeof(kGridDestPool[0]));
+        std::vector<int> avail;
+        for(int i = 0; i < poolN; ++i)
+        {
+            const bool taken = srcMode
+                ? std::find(gridSources_.begin(), gridSources_.end(), kGridSourcePool[i]) != gridSources_.end()
+                : std::find(gridDests_.begin(), gridDests_.end(), kGridDestPool[i]) != gridDests_.end();
+            if(!taken)
+                avail.push_back(i);
+        }
+        const float rowH = 20.0f;
+        const float w = 140.0f;
+        const float h = std::max(rowH, rowH * float(avail.size())) + 8.0f;
+        const float px = clampf(gridPickerX_, 4.0f, float(uiW()) - w - 4.0f);
+        const float py = clampf(gridPickerY_, 4.0f, float(uiH()) - h - 4.0f);
+        drawPanel({ px, py, w, h }, rgba(0x10171df8), rgba(0x5b7380ff));
+        useUiFont();
+        uiFontSize(11.0f);
+        textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+        for(size_t k = 0; k < avail.size(); ++k)
+        {
+            const Rect it { px + 4.0f, py + 4.0f + rowH * float(k), w - 8.0f, rowH - 2.0f };
+            gridPickerItemRects_.push_back(it);
+            gridPickerPoolIdx_.push_back(avail[k]);
+            fillColor(DesignTokens::textPrimary());
+            const char *nm = srcMode ? sourceName(kGridSourcePool[avail[k]]) : destName(kGridDestPool[avail[k]]);
+            text(it.x + 8.0f, it.y + it.h * 0.5f, nm, nullptr);
+        }
+        if(avail.empty())
+        {
+            fillColor(DesignTokens::textSecondary());
+            text(px + 8.0f, py + 4.0f + rowH * 0.5f, "(all added)", nullptr);
         }
     }
 
@@ -6456,6 +6546,23 @@ class KapibaraUI final : public UI
                 repaint();
                 return true;
             }
+        // Grid axis picker (open): pick an item, or click outside to dismiss.
+        if(gridPickerMode_ != 0)
+        {
+            for(size_t k = 0; k < gridPickerItemRects_.size(); ++k)
+                if(gridPickerItemRects_[k].contains(x, y))
+                {
+                    const int idx = gridPickerPoolIdx_[k];
+                    if(gridPickerMode_ == 1) gridSources_.push_back(kGridSourcePool[idx]);
+                    else                     gridDests_.push_back(kGridDestPool[idx]);
+                    gridPickerMode_ = 0;
+                    repaint();
+                    return true;
+                }
+            gridPickerMode_ = 0;
+            repaint();
+            return true;
+        }
         // Matrix dashboard tab switch (GRID / MODULATORS / AMP ENV).
         for(int i = 0; i < int(matrixTabRects_.size()); ++i)
             if(matrixTabRects_[(size_t)i].contains(x, y))
@@ -6464,6 +6571,23 @@ class KapibaraUI final : public UI
                 repaint();
                 return true;
             }
+        // Grid axis "+" add buttons.
+        if(gridAddSrcRect_.contains(x, y))
+        {
+            gridPickerMode_ = 1;
+            gridPickerX_ = gridAddSrcRect_.x;
+            gridPickerY_ = gridAddSrcRect_.y + 22.0f;
+            repaint();
+            return true;
+        }
+        if(gridAddDstRect_.contains(x, y))
+        {
+            gridPickerMode_ = 2;
+            gridPickerX_ = gridAddDstRect_.x;
+            gridPickerY_ = gridAddDstRect_.y + 18.0f;
+            repaint();
+            return true;
+        }
         // Matrix grid node create / depth-drag.
         if(handleMatrixGridPress(x, y))
             return true;
@@ -9089,6 +9213,14 @@ class KapibaraUI final : public UI
     std::array<Rect, 3> matrixTabRects_ {};
     struct MatrixCell { Rect rect; synth::ModSource src; synth::ModDestination dst; };
     std::vector<MatrixCell> matrixGridCells_;
+    // User-chosen grid axes (start with a small default; add/remove via the grid).
+    std::vector<synth::ModSource> gridSources_ { synth::ModSource::Lfo1, synth::ModSource::Env1 };
+    std::vector<synth::ModDestination> gridDests_ { synth::ModDestination::Amp, synth::ModDestination::Freq };
+    std::vector<Rect> gridSrcLabelRects_, gridDestLabelRects_, gridPickerItemRects_;
+    std::vector<int> gridPickerPoolIdx_;
+    Rect gridAddSrcRect_ {}, gridAddDstRect_ {};
+    int gridPickerMode_ = 0;  // 0=closed 1=pick source 2=pick destination
+    float gridPickerX_ = 0.0f, gridPickerY_ = 0.0f;
     std::array<Rect, synth::kMaxWavetablePartials> partialKnobRects_ {};
     std::array<Rect, 4> sourceCountRects_ {};
     std::array<Rect, synth::kMaxSourceTracks> sourceChainRects_ {};
