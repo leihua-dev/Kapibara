@@ -68,6 +68,8 @@ void Lfo::reset(float phase) { xi_ = frac01(phase); shCounter_ = 0; }
 
 float Lfo::shapeOutput(const LfoParams &p, float xi)
 {
+    if(p.usePoints)
+        return pointCurveEval(p.points.data(), p.pointCount, xi) * 2.0f - 1.0f; // [0,1] -> [-1,1]
     switch(p.shape)
     {
         case LfoShape::Asymmetric:
@@ -94,7 +96,7 @@ float Lfo::tick(const LfoParams &p, int samples)
     const float dphi = float(p.frequencyHz * double(samples) / sampleRate_);
     xi_ = frac01(xi_ + dphi);
 
-    if(p.shape == LfoShape::SampleHold)
+    if(!p.usePoints && p.shape == LfoShape::SampleHold)
     {
         const int interval = std::max(1, int(sampleRate_ / std::max(0.001f, p.frequencyHz)));
         shCounter_ += samples;
@@ -179,10 +181,9 @@ void MatrixEngine::advanceControl(int samples)
 {
     for(int i = 0; i < kMaxLfos; ++i)
     {
-        if(lfoParams_[(size_t)i].enabled)
-            lfoLastValue_[(size_t)i] = lfos_[(size_t)i].tick(lfoParams_[(size_t)i], samples);
-        else
-            lfoLastValue_[(size_t)i] = 0.0f;
+        // LFOs are always running (no enable gate); they are cheap and the UI
+        // no longer exposes an on/off toggle.
+        lfoLastValue_[(size_t)i] = lfos_[(size_t)i].tick(lfoParams_[(size_t)i], samples);
     }
 
     if(!chaosParams_.enabled)
@@ -266,7 +267,8 @@ void MatrixEngine::evaluateForVoice(MatrixVoiceOutput &out,
                                     const uint32_t *trackIds,
                                     const int *trackBegin,
                                     const int *trackEnd,
-                                    int trackCount) const
+                                    int trackCount,
+                                    const std::array<float, kMaxAmpEnvs> *ampEnvLevels) const
 {
     initMatrixOutput(out);
 
@@ -288,7 +290,12 @@ void MatrixEngine::evaluateForVoice(MatrixVoiceOutput &out,
         if(s >= ModSource::Env1 && s <= ModSource::Env4)
         {
             const int idx = (int)s - (int)ModSource::Env1;
-            return envParams_[(size_t)idx].enabled ? clampf(envLevels[(size_t)idx], 0.0f, 1.0f) : 0.0f;
+            return clampf(envLevels[(size_t)idx], 0.0f, 1.0f); // ENVs always active
+        }
+        if(s >= ModSource::Adsr1 && s <= ModSource::Adsr4)
+        {
+            const int idx = (int)s - (int)ModSource::Adsr1;
+            return ampEnvLevels != nullptr ? clampf((*ampEnvLevels)[(size_t)idx], 0.0f, 1.0f) : 0.0f;
         }
         switch(s)
         {
@@ -393,15 +400,18 @@ void MatrixEngine::evaluateForVoice(MatrixVoiceOutput &out,
     }
 }
 
-float MatrixEngine::globalModSource(ModSource s, float adsrRep, const std::array<float, kMaxModEnvs> &envRep) const
+float MatrixEngine::globalModSource(ModSource s, float adsrRep, const std::array<float, kMaxModEnvs> &envRep,
+                                    const std::array<float, kMaxAmpEnvs> &ampRep) const
 {
     if(s >= ModSource::Lfo1 && s <= ModSource::Lfo4)
         return lfoLastValue_[(size_t)((int)s - (int)ModSource::Lfo1)];
     if(s >= ModSource::Env1 && s <= ModSource::Env4)
     {
         const int idx = (int)s - (int)ModSource::Env1;
-        return envParams_[(size_t)idx].enabled ? clampf(envRep[(size_t)idx], 0.0f, 1.0f) : 0.0f;
+        return clampf(envRep[(size_t)idx], 0.0f, 1.0f); // ENVs always active
     }
+    if(s >= ModSource::Adsr1 && s <= ModSource::Adsr4)
+        return clampf(ampRep[(size_t)((int)s - (int)ModSource::Adsr1)], 0.0f, 1.0f);
     switch(s)
     {
         case ModSource::Adsr:  return clampf(adsrRep, 0.0f, 1.0f);

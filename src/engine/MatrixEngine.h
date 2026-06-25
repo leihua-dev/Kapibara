@@ -30,6 +30,51 @@ enum class LfoShape : uint8_t
     SampleHold = 4
 };
 
+// Breakpoint point shared by Matrix ENVs and custom (point-curve) LFOs.
+static constexpr int kMaxMatrixEnvPoints = 16;
+
+struct MatrixEnvPoint
+{
+    float x = 0.0f;
+    float y = 0.0f;
+    float curve = 0.0f;
+
+    constexpr MatrixEnvPoint() = default;
+    constexpr MatrixEnvPoint(float xIn, float yIn, float curveIn)
+        : x(xIn), y(yIn), curve(curveIn)
+    {
+    }
+};
+
+inline float matrixEnvSegmentValue(const MatrixEnvPoint &a, const MatrixEnvPoint &b, float t)
+{
+    t = std::clamp(t, 0.0f, 1.0f);
+    const float curve = std::clamp(a.curve, -1.0f, 1.0f);
+    const float shaped = curve >= 0.0f ? std::pow(t, 1.0f + curve * 4.0f)
+                                       : 1.0f - std::pow(1.0f - t, 1.0f - curve * 4.0f);
+    return a.y + (b.y - a.y) * shaped;
+}
+
+// Evaluate a breakpoint curve (sorted by x) at x in [0,1] -> [0,1].
+inline float pointCurveEval(const MatrixEnvPoint *points, int pointCount, float x)
+{
+    const int count = std::clamp(pointCount, 2, kMaxMatrixEnvPoints);
+    x = std::clamp(x, 0.0f, 1.0f);
+    if(x <= points[0].x)
+        return std::clamp(points[0].y, 0.0f, 1.0f);
+    for(int i = 0; i + 1 < count; ++i)
+    {
+        const auto &a = points[(size_t)i];
+        const auto &b = points[(size_t)i + 1];
+        if(x <= b.x || i + 2 == count)
+        {
+            const float span = std::max(0.0001f, b.x - a.x);
+            return std::clamp(matrixEnvSegmentValue(a, b, (x - a.x) / span), 0.0f, 1.0f);
+        }
+    }
+    return std::clamp(points[(size_t)count - 1].y, 0.0f, 1.0f);
+}
+
 struct LfoParams
 {
     bool enabled = false;
@@ -39,6 +84,16 @@ struct LfoParams
     float rhoLfo = 0.5f;     // rho_lfo asymmetry in (0, 1)
     float pUp = 1.0f;        // p_u
     float pDown = 1.0f;      // p_d
+    // Custom point-curve mode: when usePoints is set the LFO reads this
+    // breakpoint curve as its looping waveform instead of `shape`.
+    bool usePoints = false;
+    int pointCount = 4;
+    std::array<MatrixEnvPoint, kMaxMatrixEnvPoints> points {
+        MatrixEnvPoint { 0.0f, 0.5f, 0.0f },
+        MatrixEnvPoint { 0.25f, 1.0f, 0.0f },
+        MatrixEnvPoint { 0.5f, 0.5f, 0.0f },
+        MatrixEnvPoint { 1.0f, 0.5f, 0.0f }
+    };
 };
 
 enum class ChaosNoiseType : uint8_t
@@ -94,21 +149,6 @@ enum class EnvCurve : uint8_t
 
 float envCurveEval(EnvCurve mode, float tau, float eta); // F~(tau; mode, eta)
 
-static constexpr int kMaxMatrixEnvPoints = 16;
-
-struct MatrixEnvPoint
-{
-    float x = 0.0f;
-    float y = 0.0f;
-    float curve = 0.0f;
-
-    constexpr MatrixEnvPoint() = default;
-    constexpr MatrixEnvPoint(float xIn, float yIn, float curveIn)
-        : x(xIn), y(yIn), curve(curveIn)
-    {
-    }
-};
-
 struct AdsrParams
 {
     float attack = 0.005f;
@@ -142,32 +182,9 @@ struct MatrixEnvParams
     };
 };
 
-inline float matrixEnvSegmentValue(const MatrixEnvPoint &a, const MatrixEnvPoint &b, float t)
-{
-    t = std::clamp(t, 0.0f, 1.0f);
-    const float curve = std::clamp(a.curve, -1.0f, 1.0f);
-    const float shaped = curve >= 0.0f ? std::pow(t, 1.0f + curve * 4.0f)
-                                       : 1.0f - std::pow(1.0f - t, 1.0f - curve * 4.0f);
-    return a.y + (b.y - a.y) * shaped;
-}
-
 inline float matrixEnvBreakpointEval(const MatrixEnvParams &p, float x)
 {
-    const int count = std::clamp(p.pointCount, 2, kMaxMatrixEnvPoints);
-    x = std::clamp(x, 0.0f, 1.0f);
-    if(x <= p.points[0].x)
-        return std::clamp(p.points[0].y, 0.0f, 1.0f);
-    for(int i = 0; i + 1 < count; ++i)
-    {
-        const auto &a = p.points[(size_t)i];
-        const auto &b = p.points[(size_t)i + 1];
-        if(x <= b.x || i + 2 == count)
-        {
-            const float span = std::max(0.0001f, b.x - a.x);
-            return std::clamp(matrixEnvSegmentValue(a, b, (x - a.x) / span), 0.0f, 1.0f);
-        }
-    }
-    return std::clamp(p.points[(size_t)count - 1].y, 0.0f, 1.0f);
+    return pointCurveEval(p.points.data(), p.pointCount, x);
 }
 
 // -----------------------------------------------------------------------------
@@ -181,10 +198,11 @@ enum class ModSource : uint8_t
     Velocity = 9,
     KeyTrack = 10,
     Random = 11,
-    Adsr = 12,
+    Adsr = 12,            // legacy: average amp env
     GeneratorSelf = 13,
     Chaos = 14,
-    Shape = 15
+    Shape = 15,
+    Adsr1 = 16, Adsr2, Adsr3, Adsr4  // the four shared Amp ADSR envelopes, individually
 };
 
 enum class ModDestination : uint8_t
@@ -319,11 +337,13 @@ class MatrixEngine
                           const uint32_t *trackIds = nullptr,
                           const int *trackBegin = nullptr,
                           const int *trackEnd = nullptr,
-                          int trackCount = 0) const;
+                          int trackCount = 0,
+                          const std::array<float, kMaxAmpEnvs> *ampEnvLevels = nullptr) const;
 
     // Global (per-strip, control-rate) value of a modulation source. Per-voice-only
     // sources (velocity/key/random) return 0; ADSR/ENV use the passed representatives.
-    float globalModSource(ModSource s, float adsrRep, const std::array<float, kMaxModEnvs> &envRep) const;
+    float globalModSource(ModSource s, float adsrRep, const std::array<float, kMaxModEnvs> &envRep,
+                          const std::array<float, kMaxAmpEnvs> &ampRep) const;
 
   private:
     static float weightFn(const MatrixRule &r, int i, const StaticSpectralFrame &frame);

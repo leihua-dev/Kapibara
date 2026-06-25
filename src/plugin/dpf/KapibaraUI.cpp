@@ -714,7 +714,7 @@ class KapibaraUI final : public UI
                && matrixEnvDirty_)
             {
                 matrixEnvDirty_ = false;
-                pushEnvOnly();
+                pushCurCurve();
             }
             // Flush the exact final value. During drag, PartialBank Partials and
             // Inharmonic are already pushed at UI-frame cadence for live notes.
@@ -4715,34 +4715,37 @@ class KapibaraUI final : public UI
         uiFontSize(7.5f);
         textAlign(ALIGN_LEFT | ALIGN_TOP);
         fillColor(DesignTokens::textSecondary());
-        const Rect graph { r.x, r.y + 50.0f, r.w, (r.y + r.h) - (r.y + 50.0f) };
+        text(r.x, r.y + 34.0f, isEnv
+                 ? "ENV (one-shot)   ·   double-click = add / remove point   ·   Ctrl-drag = bend   ·   Shift = no snap"
+                 : "LFO (looping)   ·   double-click = add / remove point   ·   Ctrl-drag = bend   ·   Shift = no snap",
+             nullptr);
 
         if(isEnv)
         {
+            // ENV slot: one-shot point curve.
             selectedEnv_ = selectedMatrixModSlot_ - nLfo;
             auto &env = envs_[(size_t)selectedEnv_];
-            text(r.x, r.y + 34.0f, "double-click = add / remove point   ·   Ctrl-drag = bend   ·   Shift = no snap", nullptr);
-            matrixEnvCurveRect_ = { graph.x, graph.y, graph.w, std::max(60.0f, graph.h) };
-            drawMatrixEnvCurve(matrixEnvCurveRect_, env);
+            matrixEnvCurveRect_ = { r.x, r.y + 50.0f, r.w, std::max(60.0f, (r.y + r.h) - (r.y + 50.0f)) };
+            drawMatrixEnvCurve(matrixEnvCurveRect_, env.points.data(), env.pointCount, DesignTokens::accentGreen());
         }
         else
         {
+            // LFO slot: looping point curve (custom waveform) + Rate / Phase.
             selectedLfo_ = selectedMatrixModSlot_;
             auto &lfo = lfos_[(size_t)selectedLfo_];
-            lfoShapeRect_ = { graph.x, r.y + 30.0f, std::min(graph.w, 240.0f), 22.0f };
-            std::snprintf(scratch_, sizeof(scratch_), "Shape: %s", lfoShapeName(lfo.shape));
-            drawButton(lfoShapeRect_, scratch_, false);
-            const float curveTop = r.y + 58.0f;
+            if(!lfo.usePoints) { lfo.usePoints = true; pushLfoOnly(); }  // adopt point mode in this editor
             const float knobH = 54.0f;
-            drawLfoCurve({ graph.x, curveTop, graph.w, std::max(50.0f, (r.y + r.h) - curveTop - knobH - 8.0f) }, lfo);
-            const float lfoKnobW = (r.w - 16.0f) / 3.0f;
+            const float curveBottom = (r.y + r.h) - knobH - 8.0f;
+            matrixEnvCurveRect_ = { r.x, r.y + 50.0f, r.w, std::max(60.0f, curveBottom - (r.y + 50.0f)) };
+            drawMatrixEnvCurve(matrixEnvCurveRect_, lfo.points.data(), lfo.pointCount, DesignTokens::accentCyan());
+            const float lfoKnobW = (r.w - 8.0f) / 2.0f;
             const float lfoKnobY = r.y + r.h - knobH;
-            lfoFreqRect_  = { r.x,                            lfoKnobY, lfoKnobW, 48.0f };
-            lfoPhaseRect_ = { r.x + lfoKnobW + 8.0f,          lfoKnobY, lfoKnobW, 48.0f };
-            lfoRhoRect_   = { r.x + 2.0f * (lfoKnobW + 8.0f), lfoKnobY, lfoKnobW, 48.0f };
+            lfoFreqRect_  = { r.x,                    lfoKnobY, lfoKnobW, 48.0f };
+            lfoPhaseRect_ = { r.x + lfoKnobW + 8.0f,  lfoKnobY, lfoKnobW, 48.0f };
+            lfoRhoRect_   = {};
+            lfoShapeRect_ = {};
             drawKnob(lfoFreqRect_,  "Rate",  lfo.frequencyHz / 20.0f, lfo.frequencyHz);
             drawKnob(lfoPhaseRect_, "Phase", lfo.phase0, lfo.phase0);
-            drawKnob(lfoRhoRect_,   "Rho",   lfo.rhoLfo, lfo.rhoLfo);
         }
     }
 
@@ -5654,7 +5657,8 @@ class KapibaraUI final : public UI
         stroke();
     }
 
-    void drawMatrixEnvCurve(const Rect &r, const synth::MatrixEnvParams &env)
+    void drawMatrixEnvCurve(const Rect &r, const synth::MatrixEnvPoint *points, int pointCount,
+                            Color lineColor = DesignTokens::accentGreen())
     {
         drawPanel(r, DesignTokens::controlBackground(), DesignTokens::border());
         beginPath();
@@ -5676,11 +5680,11 @@ class KapibaraUI final : public UI
         }
         resetScissor();
         beginPath();
-        const int count = clampi(env.pointCount, 2, synth::kMaxMatrixEnvPoints);
+        const int count = clampi(pointCount, 2, synth::kMaxMatrixEnvPoints);
         for(int s = 0; s < 80; ++s)
         {
             const float x = float(s) / 79.0f;
-            const float yv = synth::matrixEnvBreakpointEval(env, x);
+            const float yv = synth::pointCurveEval(points, count, x);
             const float px = r.x + 8.0f + x * (r.w - 16.0f);
             const float py = r.y + r.h - 5.0f - yv * (r.h - 10.0f);
             if(s == 0) moveTo(px, py); else lineTo(px, py);
@@ -5688,23 +5692,23 @@ class KapibaraUI final : public UI
         lineTo(r.x + r.w - 8.0f, r.y + r.h - 5.0f);
         lineTo(r.x + 8.0f, r.y + r.h - 5.0f);
         closePath();
-        fillColor(DesignTokens::accentGreen().withAlpha(0.08f));
+        fillColor(lineColor.withAlpha(0.08f));
         fill();
         beginPath();
         for(int s = 0; s < 80; ++s)
         {
             const float x = float(s) / 79.0f;
-            const float yv = synth::matrixEnvBreakpointEval(env, x);
+            const float yv = synth::pointCurveEval(points, count, x);
             const float px = r.x + 8.0f + x * (r.w - 16.0f);
             const float py = r.y + r.h - 5.0f - yv * (r.h - 10.0f);
             if(s == 0) moveTo(px, py); else lineTo(px, py);
         }
-        strokeColor(DesignTokens::accentGreen());
+        strokeColor(lineColor);
         strokeWidth(2.0f);
         stroke();
         for(int i = 0; i < count; ++i)
         {
-            const auto &pt = env.points[(size_t)i];
+            const auto &pt = points[(size_t)i];
             const float px = r.x + 8.0f + clampf(pt.x, 0.0f, 1.0f) * (r.w - 16.0f);
             const float py = r.y + r.h - 5.0f - clampf(pt.y, 0.0f, 1.0f) * (r.h - 10.0f);
             beginPath();
@@ -7254,18 +7258,19 @@ class KapibaraUI final : public UI
         if(envCurveARect_.contains(x, y)) return setDragKnob(DragTarget::EnvCurveA, (env.points[1].curve + 1.0f) * 0.5f);
         if(matrixEnvCurveRect_.contains(x, y))
         {
-            auto &e = envs_[(size_t)selectedEnv_];
-            e.pointCount = clampi(e.pointCount, 2, synth::kMaxMatrixEnvPoints);
+            auto *pts = curCurvePoints();
+            int &countRef = curCurveCount();
+            countRef = clampi(countRef, 2, synth::kMaxMatrixEnvPoints);
             const int hit = matrixEnvPointAt(x, y);
             // Double-click: remove a middle point, or add one on empty curve.
             if(currentClickIsDouble_)
             {
-                if(hit > 0 && hit < e.pointCount - 1)
+                if(hit > 0 && hit < countRef - 1)
                     deleteMatrixEnvPoint(hit);
                 else if(hit < 0)
                     addMatrixEnvPoint(x, y);
                 matrixEnvDirty_ = true;
-                pushEnvOnly();
+                pushCurCurve();
                 return true;
             }
             // Ctrl-drag a segment → bend (per-segment curvature).
@@ -7278,12 +7283,15 @@ class KapibaraUI final : public UI
                     selectedEnvPoint_ = seg;
                     dragTarget_ = DragTarget::MatrixEnvSeg;
                     dragStartY_ = y;
-                    dragStartDepth_ = e.points[(size_t)seg].curve;
+                    dragStartDepth_ = pts[seg].curve;
                     return true;
                 }
             }
-            // Otherwise grab the point under the cursor (or nearest) and drag it.
+            // Single click selects the point under the cursor; empty space just
+            // deselects (no teleport — drag an existing point to move it).
             selectedEnvPoint_ = hit;
+            if(hit < 0)
+                return true;
             return setDragAbs(DragTarget::MatrixEnvCurve);
         }
         // Route-FX insert knobs (flattened editor)
@@ -7342,8 +7350,10 @@ class KapibaraUI final : public UI
         // Absolute horizontal position (scrollbars, waveform editors, bar charts)
         const auto normIn = [&](const Rect &r) { return clampf((x - r.x) / std::max(1.0f, r.w), 0.0f, 1.0f); };
         // Vertical delta-based knob: drag up = increase (200 px = full range, fine with modifier)
+        // Sensitivity is in screen pixels (×uiRenderScale_) so knobs feel the same
+        // regardless of window size — ~200 screen px for the full range.
         const auto knobNorm = [&]() -> float {
-            return clampf(dragStartNorm_ + (dragStartY_ - y) / 200.0f, 0.0f, 1.0f);
+            return clampf(dragStartNorm_ + (dragStartY_ - y) * uiRenderScale_ / 200.0f, 0.0f, 1.0f);
         };
         auto &lfo = lfos_[(size_t)selectedLfo_];
         auto &env = envs_[(size_t)selectedEnv_];
@@ -7767,10 +7777,10 @@ class KapibaraUI final : public UI
             case DragTarget::MatrixEnvCurve: editMatrixEnvCurve(x, y); break;
             case DragTarget::MatrixEnvSeg:
             {
-                auto &e = envs_[(size_t)selectedEnv_];
-                if(envDragSeg_ >= 0 && envDragSeg_ < e.pointCount)
+                auto *pts = curCurvePoints();
+                if(envDragSeg_ >= 0 && envDragSeg_ < curCurveCount())
                 {
-                    e.points[(size_t)envDragSeg_].curve = clampf(dragStartDepth_ + (dragStartY_ - y) / 90.0f, -1.0f, 1.0f);
+                    pts[envDragSeg_].curve = clampf(dragStartDepth_ + (dragStartY_ - y) * uiRenderScale_ / 90.0f, -1.0f, 1.0f);
                     matrixEnvDirty_ = true;
                 }
                 break;
@@ -7952,7 +7962,27 @@ class KapibaraUI final : public UI
             pushMetaPartial();
     }
 
-    // ---- Matrix ENV point-editor helpers ----
+    // ---- Modulator point-curve editor helpers ----
+    // The MODULATORS graph edits whichever slot is selected: an ENV (envs_) or a
+    // custom-curve LFO (lfos_). These accessors resolve to the active slot's curve.
+    bool curCurveIsLfo() const { return selectedMatrixModSlot_ < synth::kMaxLfos; }
+    synth::MatrixEnvPoint *curCurvePoints()
+    {
+        if(curCurveIsLfo())
+            return lfos_[(size_t)clampi(selectedMatrixModSlot_, 0, synth::kMaxLfos - 1)].points.data();
+        return envs_[(size_t)clampi(selectedMatrixModSlot_ - synth::kMaxLfos, 0, synth::kMaxModEnvs - 1)].points.data();
+    }
+    int &curCurveCount()
+    {
+        if(curCurveIsLfo())
+            return lfos_[(size_t)clampi(selectedMatrixModSlot_, 0, synth::kMaxLfos - 1)].pointCount;
+        return envs_[(size_t)clampi(selectedMatrixModSlot_ - synth::kMaxLfos, 0, synth::kMaxModEnvs - 1)].pointCount;
+    }
+    void pushCurCurve()
+    {
+        if(curCurveIsLfo()) pushLfoOnly();
+        else                pushEnvOnly();
+    }
     static float snapEnvValue(float v, bool isX)
     {
         const float step = isX ? (1.0f / 16.0f) : (1.0f / 8.0f);
@@ -7974,96 +8004,84 @@ class KapibaraUI final : public UI
     {
         return clampf(1.0f - (y - (matrixEnvCurveRect_.y + 5.0f)) / std::max(1.0f, matrixEnvCurveRect_.h - 10.0f), 0.0f, 1.0f);
     }
-    int matrixEnvPointAt(float x, float y) const
+    int matrixEnvPointAt(float x, float y)
     {
-        const auto &env = envs_[(size_t)selectedEnv_];
-        const int count = clampi(env.pointCount, 2, synth::kMaxMatrixEnvPoints);
+        const auto *pts = curCurvePoints();
+        const int count = clampi(curCurveCount(), 2, synth::kMaxMatrixEnvPoints);
         for(int i = 0; i < count; ++i)
-            if(std::hypot(x - matrixEnvPx(env.points[(size_t)i].x), y - matrixEnvPy(env.points[(size_t)i].y)) <= 8.0f)
+            if(std::hypot(x - matrixEnvPx(pts[i].x), y - matrixEnvPy(pts[i].y)) <= 8.0f)
                 return i;
         return -1;
     }
-    int matrixEnvSegmentAt(float x) const
+    int matrixEnvSegmentAt(float x)
     {
-        const auto &env = envs_[(size_t)selectedEnv_];
-        const int count = clampi(env.pointCount, 2, synth::kMaxMatrixEnvPoints);
+        const auto *pts = curCurvePoints();
+        const int count = clampi(curCurveCount(), 2, synth::kMaxMatrixEnvPoints);
         const float nx = matrixEnvNx(x);
         for(int i = 0; i + 1 < count; ++i)
-            if(nx <= env.points[(size_t)i + 1].x || i + 2 == count)
+            if(nx <= pts[i + 1].x || i + 2 == count)
                 return i;
         return -1;
     }
     void addMatrixEnvPoint(float x, float y)
     {
-        auto &env = envs_[(size_t)selectedEnv_];
-        int count = clampi(env.pointCount, 2, synth::kMaxMatrixEnvPoints);
+        auto *pts = curCurvePoints();
+        int &countRef = curCurveCount();
+        int count = clampi(countRef, 2, synth::kMaxMatrixEnvPoints);
         if(count >= synth::kMaxMatrixEnvPoints)
             return;
         float nx = matrixEnvNx(x);
         float ny = matrixEnvNy(y);
         if(!shiftDown_) { nx = snapEnvValue(nx, true); ny = snapEnvValue(ny, false); }
         int idx = 1;
-        while(idx < count && env.points[(size_t)idx].x < nx)
+        while(idx < count && pts[idx].x < nx)
             ++idx;
         idx = clampi(idx, 1, count - 1);
         for(int i = count; i > idx; --i)
-            env.points[(size_t)i] = env.points[(size_t)i - 1];
-        env.points[(size_t)idx] = synth::MatrixEnvPoint { nx, ny, 0.0f };
-        env.pointCount = count + 1;
+            pts[i] = pts[i - 1];
+        pts[idx] = synth::MatrixEnvPoint { nx, ny, 0.0f };
+        countRef = count + 1;
         selectedEnvPoint_ = idx;
     }
     void deleteMatrixEnvPoint(int idx)
     {
-        auto &env = envs_[(size_t)selectedEnv_];
-        int count = clampi(env.pointCount, 2, synth::kMaxMatrixEnvPoints);
+        auto *pts = curCurvePoints();
+        int &countRef = curCurveCount();
+        int count = clampi(countRef, 2, synth::kMaxMatrixEnvPoints);
         if(idx <= 0 || idx >= count - 1 || count <= 2)
             return;  // keep the two endpoints
         for(int i = idx; i < count - 1; ++i)
-            env.points[(size_t)i] = env.points[(size_t)i + 1];
-        env.pointCount = count - 1;
+            pts[i] = pts[i + 1];
+        countRef = count - 1;
         selectedEnvPoint_ = -1;
     }
 
     void editMatrixEnvCurve(float x, float y)
     {
-        auto &env = envs_[(size_t)selectedEnv_];
-        env.pointCount = clampi(env.pointCount, 2, synth::kMaxMatrixEnvPoints);
+        auto *pts = curCurvePoints();
+        int &countRef = curCurveCount();
+        countRef = clampi(countRef, 2, synth::kMaxMatrixEnvPoints);
+        if(selectedEnvPoint_ < 0 || selectedEnvPoint_ >= countRef)
+            return;  // only an explicitly-grabbed point moves (no teleport)
         float nx = matrixEnvNx(x);
         float ny = matrixEnvNy(y);
         if(!shiftDown_) { nx = snapEnvValue(nx, true); ny = snapEnvValue(ny, false); }
 
-        if(selectedEnvPoint_ < 0 || selectedEnvPoint_ >= env.pointCount)
-        {
-            float best = 1.0e9f;
-            selectedEnvPoint_ = 0;
-            for(int i = 0; i < env.pointCount; ++i)
-            {
-                const float dx = env.points[(size_t)i].x - nx;
-                const float dy = env.points[(size_t)i].y - ny;
-                const float d = dx * dx + dy * dy;
-                if(d < best)
-                {
-                    best = d;
-                    selectedEnvPoint_ = i;
-                }
-            }
-        }
-
-        auto &pt = env.points[(size_t)selectedEnvPoint_];
+        auto &pt = pts[selectedEnvPoint_];
         if(selectedEnvPoint_ == 0)
         {
             pt.x = 0.0f;
             pt.y = ny;
         }
-        else if(selectedEnvPoint_ == env.pointCount - 1)
+        else if(selectedEnvPoint_ == countRef - 1)
         {
             pt.x = 1.0f;
             pt.y = ny;
         }
         else
         {
-            const float lo = env.points[(size_t)selectedEnvPoint_ - 1].x + 0.01f;
-            const float hi = env.points[(size_t)selectedEnvPoint_ + 1].x - 0.01f;
+            const float lo = pts[selectedEnvPoint_ - 1].x + 0.01f;
+            const float hi = pts[selectedEnvPoint_ + 1].x - 0.01f;
             pt.x = clampf(nx, lo, hi);
             pt.y = ny;
         }
