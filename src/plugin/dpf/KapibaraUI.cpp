@@ -65,7 +65,7 @@ enum class DragTarget
     MetaFrameScan, MetaWaveform, MetaHarmonicRatio, MetaHarmonicAmp, MetaHarmonicPhase,
     PartialTableAmp, PartialTablePhase,
     LfoFreq, LfoPhase, LfoRho,
-    EnvPointA, EnvPointB, EnvCurveA, MatrixEnvCurve, HarmonicEditor, MetaTimeEditor, MetaSpectrumEditor,
+    EnvPointA, EnvPointB, EnvCurveA, MatrixEnvCurve, MatrixEnvSeg, HarmonicEditor, MetaTimeEditor, MetaSpectrumEditor,
     RuleDepth, RuleBandLo, RuleBandHi,
     ModDepth,
     ChaosRate, ChaosAmount, ShapePhase, ShapeRho, ShapeUp, ShapeDown,
@@ -709,7 +709,8 @@ class KapibaraUI final : public UI
             }
             // Env-curve edits are published once on release (drag stays smooth — the
             // per-motion full-snapshot publish was the source of the lag).
-            if(dragTarget_ == DragTarget::MatrixEnvCurve && matrixEnvDirty_)
+            if((dragTarget_ == DragTarget::MatrixEnvCurve || dragTarget_ == DragTarget::MatrixEnvSeg)
+               && matrixEnvDirty_)
             {
                 matrixEnvDirty_ = false;
                 pushEnvOnly();
@@ -883,6 +884,8 @@ class KapibaraUI final : public UI
     {
         const float x = (static_cast<float>(ev.pos.getX()) - lbX_) / uiRenderScale_;
         const float y = (static_cast<float>(ev.pos.getY()) - lbY_) / uiRenderScale_;
+        // Keep snap modifier live during a drag (Shift to disable grid snap).
+        shiftDown_ = (ev.mod & kModifierShift) != 0;
 
         if(insertPending_)
         {
@@ -4665,54 +4668,76 @@ class KapibaraUI final : public UI
 
     void drawMatrixModulators(const Rect &r)
     {
-        for(int i = 0; i < synth::kMaxLfos; ++i)
+        // One unified row of modulator slots: LFO1-4 (looping shapes) then
+        // ENV1-4 (point curves). The graph below shows whichever is selected.
+        const int nLfo = synth::kMaxLfos;
+        const int nEnv = synth::kMaxModEnvs;
+        const int nSlots = nLfo + nEnv;
+        const float bw = (r.w - float(nSlots - 1) * 4.0f) / float(nSlots);
+        selectedMatrixModSlot_ = clampi(selectedMatrixModSlot_, 0, nSlots - 1);
+        for(int i = 0; i < nLfo; ++i)
         {
-            lfoSelectRects_[(size_t)i] = { r.x + float(i) * (r.w / synth::kMaxLfos), r.y, r.w / synth::kMaxLfos - 4.0f, 24.0f };
-            drawButton(lfoSelectRects_[(size_t)i], buttonText("LFO%d", i + 1), selectedLfo_ == i);
+            lfoSelectRects_[(size_t)i] = { r.x + float(i) * (bw + 4.0f), r.y, bw, 24.0f };
+            drawButton(lfoSelectRects_[(size_t)i], buttonText("LFO%d", i + 1), selectedMatrixModSlot_ == i);
         }
-        for(int i = 0; i < synth::kMaxModEnvs; ++i)
+        for(int i = 0; i < nEnv; ++i)
         {
-            envSelectRects_[(size_t)i] = { r.x + float(i) * (r.w / synth::kMaxModEnvs), r.y + 28.0f, r.w / synth::kMaxModEnvs - 4.0f, 24.0f };
-            drawButton(envSelectRects_[(size_t)i], buttonText("ENV%d", i + 1), selectedEnv_ == i);
+            envSelectRects_[(size_t)i] = { r.x + float(nLfo + i) * (bw + 4.0f), r.y, bw, 24.0f };
+            drawButton(envSelectRects_[(size_t)i], buttonText("ENV%d", i + 1), selectedMatrixModSlot_ == nLfo + i);
         }
-        auto &lfo = lfos_[(size_t)selectedLfo_];
-        auto &env = envs_[(size_t)selectedEnv_];
-        lfoShapeRect_ = { r.x, r.y + 56.0f, r.w, 24.0f };
-        std::snprintf(scratch_, sizeof(scratch_), "Shape: %s", lfoShapeName(lfo.shape));
-        drawButton(lfoShapeRect_, scratch_, false);
-        drawLfoCurve({ r.x, r.y + 84.0f, r.w, 70.0f }, lfo);
-        const float lfoKnobW = (r.w - 16.0f) / 3.0f;
-        const float lfoKnobY = r.y + 162.0f;
-        lfoFreqRect_  = { r.x,                            lfoKnobY, lfoKnobW, 48.0f };
-        lfoPhaseRect_ = { r.x + lfoKnobW + 8.0f,          lfoKnobY, lfoKnobW, 48.0f };
-        lfoRhoRect_   = { r.x + 2.0f * (lfoKnobW + 8.0f), lfoKnobY, lfoKnobW, 48.0f };
-        drawKnob(lfoFreqRect_,  "Rate",  lfo.frequencyHz / 20.0f, lfo.frequencyHz);
-        drawKnob(lfoPhaseRect_, "Phase", lfo.phase0, lfo.phase0);
-        drawKnob(lfoRhoRect_,   "Rho",   lfo.rhoLfo, lfo.rhoLfo);
-        drawSectionTitle(r.x, r.y + 222.0f, buttonText("Matrix ENV%d (drag curve)", selectedEnv_ + 1));
-        matrixEnvCurveRect_ = { r.x, r.y + 246.0f, r.w, std::max(40.0f, (r.y + r.h) - (r.y + 246.0f)) };
-        drawMatrixEnvCurve(matrixEnvCurveRect_, env);
+
+        const bool isEnv = selectedMatrixModSlot_ >= nLfo;
+        useUiFont();
+        uiFontSize(7.5f);
+        textAlign(ALIGN_LEFT | ALIGN_TOP);
+        fillColor(DesignTokens::textSecondary());
+        const Rect graph { r.x, r.y + 50.0f, r.w, (r.y + r.h) - (r.y + 50.0f) };
+
+        if(isEnv)
+        {
+            selectedEnv_ = selectedMatrixModSlot_ - nLfo;
+            auto &env = envs_[(size_t)selectedEnv_];
+            text(r.x, r.y + 34.0f, "double-click = add / remove point   ·   Ctrl-drag = bend   ·   Shift = no snap", nullptr);
+            matrixEnvCurveRect_ = { graph.x, graph.y, graph.w, std::max(60.0f, graph.h) };
+            drawMatrixEnvCurve(matrixEnvCurveRect_, env);
+        }
+        else
+        {
+            selectedLfo_ = selectedMatrixModSlot_;
+            auto &lfo = lfos_[(size_t)selectedLfo_];
+            lfoShapeRect_ = { graph.x, r.y + 30.0f, std::min(graph.w, 240.0f), 22.0f };
+            std::snprintf(scratch_, sizeof(scratch_), "Shape: %s", lfoShapeName(lfo.shape));
+            drawButton(lfoShapeRect_, scratch_, false);
+            const float curveTop = r.y + 58.0f;
+            const float knobH = 54.0f;
+            drawLfoCurve({ graph.x, curveTop, graph.w, std::max(50.0f, (r.y + r.h) - curveTop - knobH - 8.0f) }, lfo);
+            const float lfoKnobW = (r.w - 16.0f) / 3.0f;
+            const float lfoKnobY = r.y + r.h - knobH;
+            lfoFreqRect_  = { r.x,                            lfoKnobY, lfoKnobW, 48.0f };
+            lfoPhaseRect_ = { r.x + lfoKnobW + 8.0f,          lfoKnobY, lfoKnobW, 48.0f };
+            lfoRhoRect_   = { r.x + 2.0f * (lfoKnobW + 8.0f), lfoKnobY, lfoKnobW, 48.0f };
+            drawKnob(lfoFreqRect_,  "Rate",  lfo.frequencyHz / 20.0f, lfo.frequencyHz);
+            drawKnob(lfoPhaseRect_, "Phase", lfo.phase0, lfo.phase0);
+            drawKnob(lfoRhoRect_,   "Rho",   lfo.rhoLfo, lfo.rhoLfo);
+        }
     }
 
     void drawMatrixAmpEnv(const Rect &r)
     {
-        drawSectionTitle(r.x, r.y, "Amp ADSR (drag a tab to route)");
         static constexpr const char *ampEnvTabs[] = { "ENV1", "ENV2", "ENV3", "ENV4" };
-        drawTabBar({ r.x, r.y + 28.0f, std::min(r.w, 320.0f), 24.0f }, ampEnvTabs, synth::kMaxAmpEnvs,
+        drawTabBar({ r.x, r.y, std::min(r.w, 320.0f), 24.0f }, ampEnvTabs, synth::kMaxAmpEnvs,
                    selectedAmpEnv_, ampEnvTabRects_.data());
         auto &ampEnv = ampEnvs_[(size_t)selectedAmpEnv_];
-        drawLabelBox({ r.x, r.y + 58.0f, std::min(r.w, 220.0f), 22.0f },
-                     buttonText("Used by %d tracks", envUseCount(selectedAmpEnv_)));
         const float kw = (r.w - 18.0f) * 0.25f;
-        attackRect_  = { r.x,                      r.y + 92.0f, kw, 44.0f };
-        decayRect_   = { r.x + kw + 6.0f,          r.y + 92.0f, kw, 44.0f };
-        sustainRect_ = { r.x + (kw + 6.0f) * 2.0f, r.y + 92.0f, kw, 44.0f };
-        releaseRect_ = { r.x + (kw + 6.0f) * 3.0f, r.y + 92.0f, kw, 44.0f };
+        attackRect_  = { r.x,                      r.y + 38.0f, kw, 44.0f };
+        decayRect_   = { r.x + kw + 6.0f,          r.y + 38.0f, kw, 44.0f };
+        sustainRect_ = { r.x + (kw + 6.0f) * 2.0f, r.y + 38.0f, kw, 44.0f };
+        releaseRect_ = { r.x + (kw + 6.0f) * 3.0f, r.y + 38.0f, kw, 44.0f };
         drawKnob(attackRect_,  "A", ampEnv.attack  / 5.0f, ampEnv.attack);
         drawKnob(decayRect_,   "D", ampEnv.decay   / 5.0f, ampEnv.decay);
         drawKnob(sustainRect_, "S", ampEnv.sustain, ampEnv.sustain);
         drawKnob(releaseRect_, "R", ampEnv.release / 8.0f, ampEnv.release);
-        drawAdsrCurve({ r.x, r.y + 146.0f, r.w, std::max(60.0f, (r.y + r.h) - (r.y + 146.0f)) }, ampEnv);
+        drawAdsrCurve({ r.x, r.y + 92.0f, r.w, std::max(60.0f, (r.y + r.h) - (r.y + 92.0f)) }, ampEnv);
     }
 
     static constexpr synth::ModSource kGridSources[] = {
@@ -5541,7 +5566,25 @@ class KapibaraUI final : public UI
 
     void drawMatrixEnvCurve(const Rect &r, const synth::MatrixEnvParams &env)
     {
-        drawPlotBackground(r, 6, 4);
+        drawPanel(r, DesignTokens::controlBackground(), DesignTokens::border());
+        beginPath();
+        roundedRect(r.x + 4.0f, r.y + 4.0f, r.w - 8.0f, r.h - 8.0f, DesignTokens::controlRadius);
+        fillColor(DesignTokens::appBackground().withAlpha(0.35f));
+        fill();
+        // Snap grid (16 x 8), aligned to the point coordinate mapping.
+        scissor(r.x + 2.0f, r.y + 2.0f, r.w - 4.0f, r.h - 4.0f);
+        const Color gridCol = DesignTokens::divider().withAlpha(0.35f);
+        for(int i = 1; i < 16; ++i)
+        {
+            const float gx = r.x + 8.0f + (float(i) / 16.0f) * (r.w - 16.0f);
+            strokeLine(gx, r.y + 5.0f, gx, r.y + r.h - 5.0f, gridCol, 1.0f);
+        }
+        for(int i = 1; i < 8; ++i)
+        {
+            const float gy = r.y + r.h - 5.0f - (float(i) / 8.0f) * (r.h - 10.0f);
+            strokeLine(r.x + 8.0f, gy, r.x + r.w - 8.0f, gy, gridCol, 1.0f);
+        }
+        resetScissor();
         beginPath();
         const int count = clampi(env.pointCount, 2, synth::kMaxMatrixEnvPoints);
         for(int s = 0; s < 80; ++s)
@@ -6833,6 +6876,7 @@ class KapibaraUI final : public UI
             if(lfoSelectRects_[(size_t)i].contains(x, y))
             {
                 selectedLfo_ = i;
+                selectedMatrixModSlot_ = i;
                 beginModRouteDrag(static_cast<synth::ModSource>(int(synth::ModSource::Lfo1) + i),
                                   lfoSelectRects_[(size_t)i], x, y);
                 return true;
@@ -6841,6 +6885,7 @@ class KapibaraUI final : public UI
             if(envSelectRects_[(size_t)i].contains(x, y))
             {
                 selectedEnv_ = i;
+                selectedMatrixModSlot_ = synth::kMaxLfos + i;
                 beginModRouteDrag(static_cast<synth::ModSource>(int(synth::ModSource::Env1) + i),
                                   envSelectRects_[(size_t)i], x, y);
                 return true;
@@ -7085,7 +7130,36 @@ class KapibaraUI final : public UI
         if(envCurveARect_.contains(x, y)) return setDragKnob(DragTarget::EnvCurveA, (env.points[1].curve + 1.0f) * 0.5f);
         if(matrixEnvCurveRect_.contains(x, y))
         {
-            selectedEnvPoint_ = -1;
+            auto &e = envs_[(size_t)selectedEnv_];
+            e.pointCount = clampi(e.pointCount, 2, synth::kMaxMatrixEnvPoints);
+            const int hit = matrixEnvPointAt(x, y);
+            // Double-click: remove a middle point, or add one on empty curve.
+            if(currentClickIsDouble_)
+            {
+                if(hit > 0 && hit < e.pointCount - 1)
+                    deleteMatrixEnvPoint(hit);
+                else if(hit < 0)
+                    addMatrixEnvPoint(x, y);
+                matrixEnvDirty_ = true;
+                pushEnvOnly();
+                return true;
+            }
+            // Ctrl-drag a segment → bend (per-segment curvature).
+            if(ctrlDown_)
+            {
+                const int seg = matrixEnvSegmentAt(x);
+                if(seg >= 0)
+                {
+                    envDragSeg_ = seg;
+                    selectedEnvPoint_ = seg;
+                    dragTarget_ = DragTarget::MatrixEnvSeg;
+                    dragStartY_ = y;
+                    dragStartDepth_ = e.points[(size_t)seg].curve;
+                    return true;
+                }
+            }
+            // Otherwise grab the point under the cursor (or nearest) and drag it.
+            selectedEnvPoint_ = hit;
             return setDragAbs(DragTarget::MatrixEnvCurve);
         }
         // Route-FX insert knobs (flattened editor)
@@ -7567,6 +7641,16 @@ class KapibaraUI final : public UI
             case DragTarget::EnvPointB: env.points[2].y = knobNorm(); pushEnvOnly(); break;
             case DragTarget::EnvCurveA: env.points[1].curve = knobNorm() * 2.0f - 1.0f; pushEnvOnly(); break;
             case DragTarget::MatrixEnvCurve: editMatrixEnvCurve(x, y); break;
+            case DragTarget::MatrixEnvSeg:
+            {
+                auto &e = envs_[(size_t)selectedEnv_];
+                if(envDragSeg_ >= 0 && envDragSeg_ < e.pointCount)
+                {
+                    e.points[(size_t)envDragSeg_].curve = clampf(dragStartDepth_ + (dragStartY_ - y) / 90.0f, -1.0f, 1.0f);
+                    matrixEnvDirty_ = true;
+                }
+                break;
+            }
             case DragTarget::RuleDepth: rule.depth = knobNorm() * 24.0f - 12.0f; pushRuleOnly(); break;
             case DragTarget::ModDepth:
                 rule.depth = clampf(dragStartDepth_ + (dragStartY_ - y) * dragDepthLimit_ / 80.0f,
@@ -7744,12 +7828,85 @@ class KapibaraUI final : public UI
             pushMetaPartial();
     }
 
+    // ---- Matrix ENV point-editor helpers ----
+    static float snapEnvValue(float v, bool isX)
+    {
+        const float step = isX ? (1.0f / 16.0f) : (1.0f / 8.0f);
+        return clampf(std::round(v / step) * step, 0.0f, 1.0f);
+    }
+    float matrixEnvPx(float nx) const
+    {
+        return matrixEnvCurveRect_.x + 8.0f + clampf(nx, 0.0f, 1.0f) * (matrixEnvCurveRect_.w - 16.0f);
+    }
+    float matrixEnvPy(float ny) const
+    {
+        return matrixEnvCurveRect_.y + matrixEnvCurveRect_.h - 5.0f - clampf(ny, 0.0f, 1.0f) * (matrixEnvCurveRect_.h - 10.0f);
+    }
+    float matrixEnvNx(float x) const
+    {
+        return clampf((x - (matrixEnvCurveRect_.x + 8.0f)) / std::max(1.0f, matrixEnvCurveRect_.w - 16.0f), 0.0f, 1.0f);
+    }
+    float matrixEnvNy(float y) const
+    {
+        return clampf(1.0f - (y - (matrixEnvCurveRect_.y + 5.0f)) / std::max(1.0f, matrixEnvCurveRect_.h - 10.0f), 0.0f, 1.0f);
+    }
+    int matrixEnvPointAt(float x, float y) const
+    {
+        const auto &env = envs_[(size_t)selectedEnv_];
+        const int count = clampi(env.pointCount, 2, synth::kMaxMatrixEnvPoints);
+        for(int i = 0; i < count; ++i)
+            if(std::hypot(x - matrixEnvPx(env.points[(size_t)i].x), y - matrixEnvPy(env.points[(size_t)i].y)) <= 8.0f)
+                return i;
+        return -1;
+    }
+    int matrixEnvSegmentAt(float x) const
+    {
+        const auto &env = envs_[(size_t)selectedEnv_];
+        const int count = clampi(env.pointCount, 2, synth::kMaxMatrixEnvPoints);
+        const float nx = matrixEnvNx(x);
+        for(int i = 0; i + 1 < count; ++i)
+            if(nx <= env.points[(size_t)i + 1].x || i + 2 == count)
+                return i;
+        return -1;
+    }
+    void addMatrixEnvPoint(float x, float y)
+    {
+        auto &env = envs_[(size_t)selectedEnv_];
+        int count = clampi(env.pointCount, 2, synth::kMaxMatrixEnvPoints);
+        if(count >= synth::kMaxMatrixEnvPoints)
+            return;
+        float nx = matrixEnvNx(x);
+        float ny = matrixEnvNy(y);
+        if(!shiftDown_) { nx = snapEnvValue(nx, true); ny = snapEnvValue(ny, false); }
+        int idx = 1;
+        while(idx < count && env.points[(size_t)idx].x < nx)
+            ++idx;
+        idx = clampi(idx, 1, count - 1);
+        for(int i = count; i > idx; --i)
+            env.points[(size_t)i] = env.points[(size_t)i - 1];
+        env.points[(size_t)idx] = synth::MatrixEnvPoint { nx, ny, 0.0f };
+        env.pointCount = count + 1;
+        selectedEnvPoint_ = idx;
+    }
+    void deleteMatrixEnvPoint(int idx)
+    {
+        auto &env = envs_[(size_t)selectedEnv_];
+        int count = clampi(env.pointCount, 2, synth::kMaxMatrixEnvPoints);
+        if(idx <= 0 || idx >= count - 1 || count <= 2)
+            return;  // keep the two endpoints
+        for(int i = idx; i < count - 1; ++i)
+            env.points[(size_t)i] = env.points[(size_t)i + 1];
+        env.pointCount = count - 1;
+        selectedEnvPoint_ = -1;
+    }
+
     void editMatrixEnvCurve(float x, float y)
     {
         auto &env = envs_[(size_t)selectedEnv_];
         env.pointCount = clampi(env.pointCount, 2, synth::kMaxMatrixEnvPoints);
-        const float nx = clampf((x - (matrixEnvCurveRect_.x + 8.0f)) / std::max(1.0f, matrixEnvCurveRect_.w - 16.0f), 0.0f, 1.0f);
-        const float ny = clampf(1.0f - (y - (matrixEnvCurveRect_.y + 5.0f)) / std::max(1.0f, matrixEnvCurveRect_.h - 10.0f), 0.0f, 1.0f);
+        float nx = matrixEnvNx(x);
+        float ny = matrixEnvNy(y);
+        if(!shiftDown_) { nx = snapEnvValue(nx, true); ny = snapEnvValue(ny, false); }
 
         if(selectedEnvPoint_ < 0 || selectedEnvPoint_ >= env.pointCount)
         {
@@ -8788,6 +8945,8 @@ class KapibaraUI final : public UI
     bool ctrlDown_ = false;
     int selectedMetaHarmonic_ = 0;
     int selectedEnvPoint_ = -1;
+    int selectedMatrixModSlot_ = 0;  // unified matrix LFO1-4 (0-3) / ENV1-4 (4-7) selection
+    int envDragSeg_ = -1;            // segment whose curvature is being Ctrl-dragged
     int mouseKey_ = -1;
     std::array<bool, 128> computerKeys_ {};
     std::array<int, 512> pressedKeycodeNotes_ {};
