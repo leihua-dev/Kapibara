@@ -4335,25 +4335,25 @@ class KapibaraUI final : public UI
         drawPitchControl(metaFinRect_, "FIN", int(slot.pitchFin), false);
         drawPitchControlF(metaCrsRect_, "CRS", slot.pitchCrs);
 
-        // Anchor the bottom control row to the panel bottom and let the spectrum/
-        // waveform display grow to fill everything between the pitch row and the
-        // knobs, so the panel never leaves a dead zone at large heights.
-        const float controlRowH = 36.0f;
-        const float controlY = r.y + r.h - controlRowH;
+        // Waveform display on the left; Warp mode + Morph/Warp/Phase/Pan as a
+        // vertical knob column on the right (reference-style).
+        const float colW = 116.0f;
         const float waveformTop = r.y + 62.0f;
-        const float waveformHeight = std::max(60.0f, controlY - 8.0f - waveformTop);
-        metaWaveformRect_ = { r.x, waveformTop, r.w, waveformHeight };
+        const float waveformBottom = r.y + r.h;
+        const float waveformW = std::max(120.0f, r.w - colW - 12.0f);
+        metaWaveformRect_ = { r.x, waveformTop, waveformW, std::max(60.0f, waveformBottom - waveformTop) };
         drawMeta3DWaveform(metaWaveformRect_, slot, selectedTrack_);
-        const float controlGap = 5.0f;
-        const float controlW = (r.w - controlGap * 4.0f) / 5.0f;
+
+        const float cx = r.x + waveformW + 12.0f;
+        float ky = waveformTop;
         metaFrameCountRect_ = {};  // Frames 控件从主界面移除
-        metaMorphRect_ = { r.x, controlY, controlW, 36.0f };
-        metaWarpModeRect_ = { metaMorphRect_.x + controlW + controlGap, controlY, controlW, 36.0f };
-        metaWarpAmountRect_ = { metaWarpModeRect_.x + controlW + controlGap, controlY, controlW, 36.0f };
-        metaPhaseRect_ = { metaWarpAmountRect_.x + controlW + controlGap, controlY, controlW, 36.0f };
-        metaPanRect_ = { metaPhaseRect_.x + controlW + controlGap, controlY, controlW, 36.0f };
-        drawKnob(metaMorphRect_, "Morph", slot.morph, slot.morph);
+        metaWarpModeRect_   = { cx, ky, colW, 26.0f }; ky += 32.0f;
+        metaMorphRect_      = { cx, ky, colW, 38.0f }; ky += 42.0f;
+        metaWarpAmountRect_ = { cx, ky, colW, 38.0f }; ky += 42.0f;
+        metaPhaseRect_      = { cx, ky, colW, 38.0f }; ky += 42.0f;
+        metaPanRect_        = { cx, ky, colW, 38.0f };
         drawButton(metaWarpModeRect_, warpModeName(slot.warpMode), false);
+        drawKnob(metaMorphRect_, "Morph", slot.morph, slot.morph);
         drawKnob(metaWarpAmountRect_, "Warp", (slot.warpAmount + 1.0f) * 0.5f, slot.warpAmount);
         drawKnob(metaPhaseRect_, "Phase", (slot.phase + kPi) / (2.0f * kPi), slot.phase);
         drawKnob(metaPanRect_, "Pan", (slot.pan + 1.0f) * 0.5f, slot.pan);
