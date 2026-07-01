@@ -1,0 +1,183 @@
+#pragma once
+
+#include "ModCurve.h"
+#include "AdsrEnv.h"
+#include "dsp/SpectralFrame.h"
+
+#include <array>
+#include <cstdint>
+
+namespace synth
+{
+
+// -----------------------------------------------------------------------------
+// Modulation sources and destinations
+// -----------------------------------------------------------------------------
+enum class ModSource : uint8_t
+{
+    None = 0,
+    Lfo1 = 1, Lfo2, Lfo3, Lfo4,
+    Env1 = 5, Env2, Env3, Env4,
+    Velocity = 9,
+    KeyTrack = 10,
+    Random = 11,
+    Adsr = 12,
+    GeneratorSelf = 13,
+    Chaos = 14,
+    Shape = 15,
+    Adsr1 = 16, Adsr2, Adsr3, Adsr4
+};
+
+enum class ModDestination : uint8_t
+{
+    Amp = 0,
+    Freq = 1,
+    Phase = 2,
+    DecayTime = 3,
+    SpectralDecay = 4,
+    TrackGain = 5,
+    TrackPan,
+    PitchOct,
+    PitchSem,
+    PitchFine,
+    PitchCrs,
+    MetaMorph,
+    MetaWarp,
+    MetaPan,
+    InsertP0,
+    InsertP1,
+    InsertP2,
+    InsertP3
+};
+
+constexpr int kModDestinationCount = int(ModDestination::InsertP3) + 1;
+
+constexpr int kMaxModInserts = 8;
+constexpr int kInsertModParams = 4;
+inline int insertModIndex(int insertIdx, int param) { return insertIdx * kInsertModParams + param; }
+
+inline int insertModParamForDest(ModDestination d)
+{
+    switch(d)
+    {
+        case ModDestination::InsertP0: return 0;
+        case ModDestination::InsertP1: return 1;
+        case ModDestination::InsertP2: return 2;
+        case ModDestination::InsertP3: return 3;
+        default: return -1;
+    }
+}
+
+enum class WeightMode : uint8_t
+{
+    All = 0,
+    LowPartials = 1,
+    HighPartials = 2,
+    GroupLow = 3,
+    GroupMid = 4,
+    GroupHigh = 5,
+    BandIndex = 6
+};
+
+// -----------------------------------------------------------------------------
+// A single modulation routing rule
+// -----------------------------------------------------------------------------
+struct MatrixRule
+{
+    bool enabled = false;
+    ModSource source = ModSource::None;
+    ModDestination dest = ModDestination::Amp;
+    float depth = 0.0f;
+    WeightMode weight = WeightMode::All;
+    int bandLo = 0;
+    int bandHi = kMaxPartials;
+    uint32_t targetTrackId = 0;
+    int targetSlot = 0;
+};
+
+// -----------------------------------------------------------------------------
+// Per-voice output buffers consumed by Voice during audio rendering
+// -----------------------------------------------------------------------------
+struct MatrixVoiceOutput
+{
+    std::array<float, kMaxPartials> mAmp {};
+    std::array<float, kMaxPartials> mFreq {};
+    std::array<float, kMaxPartials> dPhase {};
+    std::array<float, kMaxPartials> dPan {};
+    std::array<float, kMaxPartials> dMorph {};
+    std::array<float, kMaxPartials> dWarp {};
+};
+
+inline void initMatrixOutput(MatrixVoiceOutput &o)
+{
+    o.mAmp.fill(1.0f);
+    o.mFreq.fill(1.0f);
+    o.dPhase.fill(0.0f);
+    o.dPan.fill(0.0f);
+    o.dMorph.fill(0.0f);
+    o.dWarp.fill(0.0f);
+}
+
+// -----------------------------------------------------------------------------
+// ModMatrix: shared LFO/Chaos state + per-voice modulation evaluation
+// -----------------------------------------------------------------------------
+class ModMatrix
+{
+  public:
+    void prepare(double sampleRate);
+    void reset();
+
+    void setParams(const std::array<ModSlotParams, kMaxModSlots> &slots,
+                   const std::array<MatrixRule, kMaxMatrixRules> &rules,
+                   const ChaosParams &chaos,
+                   const ShapeSourceParams &shape);
+
+    void setModSlotParams(int idx, const ModSlotParams &p);
+    ModSlotParams getModSlotParams(int idx) const;
+    void setChaosParams(const ChaosParams &p);
+    ChaosParams getChaosParams() const;
+    void setShapeSourceParams(const ShapeSourceParams &p);
+    ShapeSourceParams getShapeSourceParams() const;
+
+    void setRule(int idx, const MatrixRule &r);
+    MatrixRule getRule(int idx) const;
+
+    void advanceControl(int samples);
+
+    void evaluateForVoice(MatrixVoiceOutput &out,
+                          const StaticSpectralFrame &frame,
+                          float velocity,
+                          float keyTrack01,
+                          float adsrLevel,
+                          const std::array<float, kMaxModSlots> &slotLevels,
+                          float randPerVoice,
+                          const uint32_t *trackIds = nullptr,
+                          const int *trackBegin = nullptr,
+                          const int *trackEnd = nullptr,
+                          int trackCount = 0,
+                          const std::array<float, kMaxAmpEnvs> *ampEnvLevels = nullptr) const;
+
+    float globalModSource(ModSource s, float adsrRep, const std::array<float, kMaxModSlots> &slotRep,
+                          const std::array<float, kMaxAmpEnvs> &ampRep) const;
+
+  private:
+    static float weightFn(const MatrixRule &r, int i, const StaticSpectralFrame &frame);
+    static float shapeOutput(const ShapeSourceParams &p, float x);
+
+    std::array<ModSlotParams, kMaxModSlots> slotParams_ {};
+    std::array<float, kMaxModSlots> slotPhase_ {};
+    std::array<float, kMaxModSlots> slotValue_ {};
+    std::array<MatrixRule, kMaxMatrixRules> rules_ {};
+    ChaosParams chaosParams_ {};
+    ShapeSourceParams shapeParams_ {};
+    float chaosValue_ = 0.0f;
+    float chaosTarget_ = 0.0f;
+    float crackleState_ = 0.371f;
+    int chaosCounter_ = 0;
+    double sampleRate_ = 48000.0;
+};
+
+// Backward-compat alias so callers that still say MatrixEngine compile unchanged.
+using MatrixEngine = ModMatrix;
+
+} // namespace synth

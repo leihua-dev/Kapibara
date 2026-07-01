@@ -2,7 +2,8 @@
 
 #include "engine/MatrixEngine.h"
 #include "dsp/InsertEffects.h"
-#include "model/SpectralFrame.h"
+#include "dsp/RouteGraph.h"
+#include "dsp/SpectralFrame.h"
 
 #include <array>
 #include <cmath>
@@ -13,6 +14,9 @@
 
 namespace synth
 {
+
+constexpr int kMaxPerVoiceFilters = 4;
+constexpr int kMaxStripInserts = 8;
 
 enum class FreqShape : uint8_t
 {
@@ -38,9 +42,13 @@ struct UnisonParams
     uint32_t phaseSeed = 17u;
 };
 
-constexpr int kMaxWavetablePartials = 64;
+constexpr int kMaxWavetablePartials = 64; // per-source-track partial slot count (per-bank max)
+// Size of the shared cross-track partial pool the engine renders into. Decoupled
+// from the per-bank max so many tracks can each carry their partials without
+// starving each other; bounded by the spectral-frame ceiling (kMaxPartials).
+constexpr int kMaxRenderPartials = kMaxPartials;
 constexpr int kEditableMetaPartials = 8;
-constexpr int kMaxSourceTracks = 16;
+constexpr int kMaxSourceTracks = 12;
 constexpr int kWavetableSize = 2048;
 constexpr int kMaxWavetableFrames = 512;
 constexpr int kDefaultWavetableFrames = 16;
@@ -188,6 +196,10 @@ struct WavetablePartialSlot
     float ratio = 1.0f;   // 合成引擎使用的频率乘数，由oct/sem/fin/crs合成
     float amp = 1.0f;
     float phase = 0.0f;
+    // Serum-style per-note phase randomization ratio [0,1]. 0 = start phase locked to
+    // `phase`; 1 = fully random start phase each note-on (all unison voices share the
+    // note's draw). Only meta oscillators use it.
+    float phaseRandom = 0.0f;
     float pan = 0.0f;
     int frameCount = 1;
     float morph = 0.0f;
@@ -217,6 +229,12 @@ struct WavetableSeedParams
     int partialCount = 1;
     FreqShape freqShape = FreqShape::Harmonic;
     float inharmonicAmount = 0.0f;
+    // PartialBank frame table: each frame maps harmonics[0..63] to the 64 additive
+    // partials' amp/phase. This intentionally reuses the Meta wavetable harmonic
+    // file format; only the first 64 harmonics are used by PartialBank.
+    int frameCount = 1;
+    float morph = 0.0f;
+    WavetableFrameStorage frames {};
     std::array<WavetablePartialSlot, kMaxWavetablePartials> partials {};
 
     WavetableSeedParams();
@@ -246,27 +264,126 @@ struct SourceTrackParams
     float subLevel = 0.0f;
     SampleNoiseMode sampleNoiseMode = SampleNoiseMode::Noise;
     float noiseColor = 0.5f;
+    int perVoiceFilterCount = 0;
+    std::array<SourceFilterParams, kMaxPerVoiceFilters> perVoiceFilters {};
+    int perVoiceFilterOrderCount = 0;
+    std::array<uint8_t, kMaxPerVoiceFilters> perVoiceFilterOrder {};
     // Unbounded per-strip insert chain; each effect carries its own parameters.
     std::vector<InsertEffect> inserts {};
+    // Route-graph-driven insert ordering. If insertOrderCount > 0 the engine
+    // applies only the listed indices (0-based into inserts) in that order.
+    // insertOrderCount == 0 means the router has not wired any inserts → bypass all.
+    int insertOrderCount = 0;
+    std::array<uint8_t, kMaxStripInserts> insertOrder {};
+    bool connectedToMaster = false; // true only when route graph wires reach MASTER
     std::array<SourceModEntry, kMaxTrackMods> mods {}; // source-as-modulator entries
 };
 
-// A UI group rendered as its own bus: members are summed, then the group's insert chain runs.
+// Source-router merge group: members are summed into one bus. Bus FX live in
+// each source's strip grid, not on the merge group itself.
 struct SourceGroupDef
 {
     std::vector<uint32_t> memberTrackIds;
-    std::vector<InsertEffect> inserts;
+};
+
+// ---------------------------------------------------------------------------
+// Compiled per-voice routing graph.
+//
+// The route-graph UI lets sources, per-voice filter nodes, strip nodes and
+// MASTER be wired arbitrarily. The audio engine evaluates the *per-voice* part
+// of that graph as a real DAG inside each voice: a filter node sums all its
+// inputs and filters once; a track's strip bus sums every per-voice node wired
+// into it. (Strip inserts + master mix still run per-track-bus downstream.)
+//
+// A plain linear chain (source → filter → … → strip) compiles to exactly the
+// same signal flow the engine produced before, so existing patches are
+// unchanged; only true merges (multiple outputs into one node) differ.
+struct RouteNodeRef
+{
+    // 0 = source track (id = trackId), 1 = per-voice filter (id = slot),
+    // 2 = amp-env route node instance (id = node index 0..kMaxAmpEnvRouteNodes-1),
+    // 3 = utility node (id = util node index 0..kMaxUtilNodes-1)
+    uint8_t kind = 0;
+    uint32_t id = 0;
+};
+
+constexpr int kMaxAmpEnvRouteNodes = 16;
+constexpr int kMaxUtilNodes = 16;
+constexpr int kMaxRouteInputs = kMaxSourceTracks + kMaxPerVoiceFilters + kMaxAmpEnvRouteNodes + kMaxUtilNodes;
+
+// A utility node (component output-router): level + pan, and an optional custom
+// band-pass (keep only [bandLoHz, bandHiHz]).
+struct RouteUtilParams
+{
+    float level = 1.0f;
+    float pan = 0.0f;
+    float bandLoHz = 20.0f;
+    float bandHiHz = 20000.0f;
+    bool  bandOn = false;
+};
+
+// Carries only graph *topology*. Filter params travel via the per-track runtime
+// (globally shared), so realtime knob drags don't need to rebuild the route.
+struct CompiledPerVoiceRoute
+{
+    bool valid = false;                 // false → engine uses the legacy per-track chains
+    int  filterCount = 0;               // number of active filter slots
+
+    // Filter nodes, in topological evaluation order (inputs computed first).
+    int filterOrderCount = 0;
+    std::array<uint8_t, kMaxPerVoiceFilters> filterOrder {};
+    std::array<uint8_t, kMaxPerVoiceFilters> filterInputCount {};
+    std::array<std::array<RouteNodeRef, kMaxRouteInputs>, kMaxPerVoiceFilters> filterInputs {};
+
+    // Amp-env route nodes: many graph nodes can reference the same AE1..AE4
+    // parameter slot, but each node has independent graph inputs/output.
+    int ampEnvNodeCount = 0;
+    std::array<uint8_t, kMaxAmpEnvRouteNodes> ampEnvSlot {};
+    std::array<uint8_t, kMaxAmpEnvRouteNodes> ampEnvInputCount {};
+    std::array<std::array<RouteNodeRef, kMaxRouteInputs>, kMaxAmpEnvRouteNodes> ampEnvInputs {};
+
+    // Utility nodes (component output-router): apply level/pan/band to the sum of
+    // their inputs. Each component's structure compiles into these.
+    int utilCount = 0;
+    std::array<RouteUtilParams, kMaxUtilNodes> utilParams {};
+    std::array<uint8_t, kMaxUtilNodes> utilInputCount {};
+    std::array<std::array<RouteNodeRef, kMaxRouteInputs>, kMaxUtilNodes> utilInputs {};
+
+    // Unified topological eval order over filter + amp-env + utility nodes (inputs first).
+    int evalOrderCount = 0;
+    std::array<RouteNodeRef, kMaxPerVoiceFilters + kMaxAmpEnvRouteNodes + kMaxUtilNodes> evalOrder {};
+
+    // Per route track slot: true if this source reaches an amp-env node downstream,
+    // so the implicit source amp-env is bypassed (the node applies it instead).
+    std::array<uint8_t, kMaxSourceTracks> sourceEnvBypass {};
+
+    // Per-track strip-bus feeders (which per-voice nodes flow into each track's
+    // bus, before that track's strip inserts). Indexed by route track slot;
+    // trackId[] maps the slot to a concrete track so the voice can resolve it to
+    // its current render index (mute/solo may reorder render tracks).
+    int trackCount = 0;
+    std::array<uint32_t, kMaxSourceTracks> trackId {};
+    std::array<uint8_t, kMaxSourceTracks> busInputCount {};
+    std::array<std::array<RouteNodeRef, kMaxRouteInputs>, kMaxSourceTracks> busInputs {};
 };
 
 struct RenderTrackRuntime
 {
     uint32_t trackId = 0;
     GeneratorSourceParams strip {};
+    bool muted = false;
     int ampEnvIndex = 0;
     UnisonParams unison {};
     SourceTrackOutputMode outputMode = SourceTrackOutputMode::Audio;
     std::array<SourceModEntry, kMaxTrackMods> mods {};
+    int perVoiceFilterCount = 0;
+    std::array<SourceFilterParams, kMaxPerVoiceFilters> perVoiceFilters {};
+    int perVoiceFilterOrderCount = 0;
+    std::array<uint8_t, kMaxPerVoiceFilters> perVoiceFilterOrder {};
     std::vector<InsertEffect> inserts {}; // this strip's own insert chain
+    int insertOrderCount = 0;
+    std::array<uint8_t, kMaxStripInserts> insertOrder {};
+    bool connectedToMaster = false;
 };
 
 struct WavetablePartialRenderData
@@ -293,7 +410,8 @@ struct WavetableSeedRenderState
 {
     int partialCount = 1;
     int sourceCount = 1;
-    std::array<WavetablePartialRenderData, kMaxWavetablePartials> partials {};
+    // Concatenated partials across all tracks (the shared render pool).
+    std::array<WavetablePartialRenderData, kMaxRenderPartials> partials {};
     int trackCount = 0;
     std::array<int, kMaxSourceTracks> trackBegin {};
     std::array<int, kMaxSourceTracks> trackEnd {};
@@ -330,6 +448,8 @@ void rebakeWavetableSeedMetaPartial(const WavetableSeedParams &params, int sourc
                                     WavetableSeedRenderState &out);
 void refreshWavetableSeedRuntime(const WavetableSeedParams &params, int sourceCount, WavetableSeedRenderState &out);
 bool loadWavetableFrameFromWav(const std::string &path, WavetableFrame &frame);
+// Decode a WAV impulse response down-mixed to mono (full length, not resampled).
+bool loadImpulseResponseMono(const std::string &path, std::vector<float> &out, uint32_t &srcRate);
 int loadWavetableFramesFromWav(const std::string &path, WavetablePartialSlot &slot, int startFrame = 0);
 WavetableImportResult importWavetableFramesFromWav(const std::string &path, WavetablePartialSlot &slot,
                                                     int startFrame, const WavetableImportOptions &options);
@@ -360,5 +480,8 @@ class GeneratorBank
     void generate(const SourceGenParams &p, StaticSpectralFrame &out) const;
     void generateTimeline(const SourceGenParams &p, SpectralTimeline &out) const;
 };
+
+void buildBasicSeed(const SourceTrackParams &track, WavetableSeedParams &seed);
+void buildNoiseSeed(const SourceTrackParams &track, WavetableSeedParams &seed);
 
 } // namespace synth

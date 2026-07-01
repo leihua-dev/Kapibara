@@ -44,6 +44,24 @@ inline void processDelay(float *L, float *R, int n, double sampleRate,
     dp.tone     = std::max(0.05f, std::min(1.0f, dp.tone + modOff[3]));
     const int d = std::clamp(int(dp.timeMs * 0.001f * float(sampleRate)), 1, size - 1);
     const float fb = dp.feedback, mix = dp.mix, toneA = dp.tone;
+    if(dp.pingpong)
+    {
+        // Ping-pong: feedback crosses channels so echoes bounce L<->R.
+        for(int s = 0; s < n; ++s)
+        {
+            int r = st.write - d; if(r < 0) r += size;
+            const float dlyL = st.bufL[(size_t)r], dlyR = st.bufR[(size_t)r];
+            st.toneL += toneA * (dlyL - st.toneL);
+            st.toneR += toneA * (dlyR - st.toneR);
+            // input sums to one side, feedback swaps sides
+            st.bufL[(size_t)st.write] = L[s] + st.toneR * fb;
+            st.bufR[(size_t)st.write] = R[s] + st.toneL * fb;
+            L[s] += dlyL * mix;
+            R[s] += dlyR * mix;
+            if(++st.write >= size) st.write = 0;
+        }
+        return;
+    }
     for(int s = 0; s < n; ++s)
     {
         int r = st.write - d; if(r < 0) r += size;

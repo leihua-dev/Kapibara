@@ -7,7 +7,8 @@ DPF standalone
   -> SynthCore             (orchestrator + snapshot)
        -> MatrixEngine     (LFO / ENV / matrix rules)
        -> Voice x16        (wavetable oscillators + unison)
-       -> Effects          (tone FX)
+       -> Strip Grid       (per-source bus inserts)
+       -> MasterEffects    (tone FX)
   -> Output
 ```
 
@@ -15,18 +16,14 @@ DPF standalone
 
 ```
 src/
-├── model/          pure data — no audio processing
-│   ├── SpectralFrame.h       StaticSpectralFrame (ν, amp, x, μ),
-│   │                         SpectralTimeline, architectural constants
-│   └── CompositionModel.h    SeedPatch (serialisable preset),
-│                             parameter lock scopes (Global/Seed/Note)
 ├── dsp/            signal processing algorithms
+│   ├── SpectralFrame.h       StaticSpectralFrame, SpectralTimeline,
+│   │                         architectural constants
 │   ├── Generators.h/.cpp     wavetable engine: FFT synthesis, WAV import,
 │   │                         mip-level bake, frame interpolation, spectral morph
-│   ├── Operators.h/.cpp      non-destructive spectral operators:
-│   │                         PartialMask, AmpScalePerGroup, FrequencyJitter,
-│   │                         SpectralTilt, HarmonicLock
-│   └── Effects.h/.cpp        3-band EQ, multi-mode filter (LP/HP/BP),
+│   ├── InsertEffects.h       strip-grid insert parameters and DSP helpers
+│   ├── RouteGraph.h          lightweight route graph node/wire types
+│   └── MasterEffects.h/.cpp  3-band EQ, multi-mode filter (LP/HP/BP),
 │                             per-channel state, drive/resonance/mix
 ├── engine/         runtime audio engine
 │   ├── MatrixEngine.h/.cpp   4 LFOs (asymmetric/sine/square/tri/S&H),
@@ -41,19 +38,21 @@ src/
     ├── DistrhoPluginInfo.h   DPF metadata, NanoVG/OpenGL3 settings
     ├── KapibaraPlugin.*  DPF synth shell, MIDI→SynthCore bridge,
     │                           audio run(), preset save/load
-    └── KapibaraUI.cpp    NanoVG top-level UI: Source Rack, strip rack,
-                                Matrix area, preset menu, bottom keyboard
+    └── ui/               NanoVG UI: editor, Source Router, Per-Voice Grid,
+                                Strip Grid, Matrix area, preset menu, keyboard
 ```
 
 ## Plugin Shell
 
 `KapibaraPlugin` owns one `SynthCore` instance. It maps incoming DPF MIDI note events to `SynthCore::noteOn()` / `noteOff()`, exposes UI update methods for parameter changes, and calls `SynthCore::renderBlock()` from DPF `run()`.
 
-`KapibaraUI` is a NanoVG single-screen UI. It draws: toolbar and preset menu, left source-track list, center type-specific editor, right strip rack, bottom Matrix area, Panic/status controls, and the bottom keyboard.
+`KapibaraUI` is a NanoVG single-screen UI. It draws: toolbar and preset menu,
+the type-specific editor, Matrix area, bottom Source Router / Per-Voice Grid /
+Strip Grid, Panic/status controls, and the bottom keyboard.
 
 ## Seed Model
 
-`SeedPatch` is the current sound-state boundary, defined in `model/CompositionModel.h`. Track types are `Partial Bank`, `Meta Oscillator`, `Basic Oscillator`, and `Sample / Noise`. Each track owns sound data plus gain, pan, send, mute/solo, output mode, and a reference to one of four shared Amp ADSR entries. The four drawable Matrix ENV sources form a separate modulation bank.
+`SeedPatch` is the current sound-state boundary, defined in `engine/SeedPatch.h`. Track types are `Partial Bank`, `Meta Oscillator`, `Basic Oscillator`, and `Sample / Noise`. Each track owns sound data plus gain, pan, send, mute/solo, output mode, strip-grid inserts, and a reference to one of four shared Amp ADSR entries. The four drawable Matrix ENV sources form a separate modulation bank.
 
 UI edits reach `SynthCore` through `KapibaraPlugin` on the UI thread. Audio rendering reads immutable `RenderSnapshot` objects published by `SynthCore::publishSnapshotNoLock()`.
 
@@ -64,9 +63,10 @@ UI edits reach `SynthCore` through `KapibaraPlugin` on the UI thread. Audio rend
 Audio rendering (in `SynthCore::renderBlock()`):
 1. Drain pending MIDI note events from the lock-free queue.
 2. Render active voices (`Voice::render()`), each reading the current snapshot.
-3. Apply per-track strip/filter state.
-4. Apply Seed tone FX (`Effects`).
-5. Apply output gain and safety limiting.
+3. Apply per-track per-voice filter state inside `Voice`.
+4. Accumulate voices into source buses, then apply strip-grid inserts.
+5. Apply Seed tone FX (`MasterEffects`).
+6. Apply output gain and safety limiting.
 
 `Mod Only` tracks are excluded from the main audio sum.
 
@@ -85,4 +85,4 @@ None of these steps run inside the audio callback.
 
 ## Persistence
 
-DPF preset save/load lives in `KapibaraPlugin`. Legacy v4 preset format is readable through migration into Source Tracks; the current in-memory model is track-first.
+DPF preset save/load lives in `KapibaraPlugin`. Legacy v4 preset format is readable through migration into Source Tracks; the current in-memory model is track-first. Preset v6 adds Partial Bank frame tables (`bankframes` / `bankframe`) so the additive 64-partial amp/phase morph state is persistent.

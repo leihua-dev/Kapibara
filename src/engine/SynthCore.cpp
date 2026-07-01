@@ -13,7 +13,9 @@ constexpr int kSeedControlBlockSize = 64;
 
 StaticSpectralFrame clampedFrame(StaticSpectralFrame frame)
 {
-    frame.partialCount = std::clamp(frame.partialCount, 1, kMaxWavetablePartials);
+    // This is the concatenated multi-track render frame, so it is bounded by the
+    // shared render pool, not the per-bank slot count.
+    frame.partialCount = std::clamp(frame.partialCount, 1, kMaxRenderPartials);
     return frame;
 }
 
@@ -146,6 +148,7 @@ SourceTrackParams makeDefaultTrack(SourceTrackType type, uint32_t id, const char
     t.pan = 0.0f;
     t.strip.gain = 1.0f;
     t.strip.pan = 0.0f;
+    t.perVoiceFilterCount = 0;
     t.ampEnvIndex = 0;
     t.unison.voices = 1;
     t.unison.detuneCents = 12.0f;
@@ -177,73 +180,6 @@ SourceTrackParams makeDefaultTrack(SourceTrackType type, uint32_t id, const char
     return t;
 }
 
-void buildBasicSeed(const SourceTrackParams &track, WavetableSeedParams &seed)
-{
-    seed = WavetableSeedParams {};
-    const auto setPartial = [&](int i, float ratio, float amp) {
-        if(i < 0 || i >= kMaxWavetablePartials)
-            return;
-        auto &p = seed.partials[(size_t)i];
-        p.enabled = true;
-        p.ratio = ratio;
-        p.amp = amp;
-        p.phase = 0.0f;
-    };
-
-    switch(track.basicShape)
-    {
-        case BasicOscillatorShape::Sine:
-            seed.partialCount = 1;
-            setPartial(0, 1.0f, 1.0f);
-            break;
-        case BasicOscillatorShape::Sub:
-            seed.partialCount = 2;
-            setPartial(0, 0.5f, 1.0f);
-            setPartial(1, 1.0f, std::clamp(track.subLevel, 0.0f, 1.0f));
-            break;
-        case BasicOscillatorShape::Saw:
-            seed.partialCount = 32;
-            for(int i = 0; i < seed.partialCount; ++i)
-                setPartial(i, float(i + 1), 1.0f / float(i + 1));
-            break;
-        case BasicOscillatorShape::Triangle:
-            seed.partialCount = 31;
-            for(int i = 0; i < seed.partialCount; i += 2)
-            {
-                const int n = i + 1;
-                const float sign = ((n - 1) / 2) & 1 ? -1.0f : 1.0f;
-                setPartial(i, float(n), std::abs(sign / float(n * n)));
-                seed.partials[(size_t)i].phase = sign < 0.0f ? 3.14159265358979323846f : 0.0f;
-            }
-            break;
-        case BasicOscillatorShape::Pulse:
-            seed.partialCount = 32;
-            for(int i = 0; i < seed.partialCount; ++i)
-            {
-                const float n = float(i + 1);
-                const float duty = std::clamp(track.pulseWidth, 0.05f, 0.95f);
-                setPartial(i, n, std::abs(std::sin(3.14159265358979323846f * n * duty) / n));
-            }
-            break;
-    }
-}
-
-void buildNoiseSeed(const SourceTrackParams &track, WavetableSeedParams &seed)
-{
-    seed = WavetableSeedParams {};
-    seed.partialCount = 48;
-    const float color = std::clamp(track.noiseColor, 0.0f, 1.0f);
-    for(int i = 0; i < seed.partialCount; ++i)
-    {
-        auto &p = seed.partials[(size_t)i];
-        const float n = float(i + 1);
-        p.enabled = true;
-        p.ratio = n * (1.0f + 0.013f * float((i * 37) % 11));
-        p.amp = std::pow(n, -color);
-        p.phase = std::fmod(float(i * 97), 360.0f) * 0.01745329252f;
-        p.pan = ((i & 1) ? 0.35f : -0.35f);
-    }
-}
 
 WavetableSeedParams seedForTrack(const SourceTrackParams &track)
 {
@@ -335,7 +271,6 @@ void SynthCore::refreshGeneratorFrameNoLock()
     }
     auto timeline = std::make_shared<SpectralTimeline>();
     generator.generateTimeline(source.gen, *timeline);
-    source.chain.apply(*timeline);
     source.frame = timeline->frameCount > 0 ? timeline->frames[0] : StaticSpectralFrame {};
     source.timeline = timeline;
 }
@@ -412,16 +347,53 @@ void SynthCore::rebuildTrackRenderStateNoLock(bool rebakeTables)
     baked->trackBegin.fill(0);
     baked->trackEnd.fill(0);
 
-    const bool anySolo = std::any_of(source.gen.tracks.begin(), source.gen.tracks.end(),
-                                     [](const SourceTrackParams &t) { return t.solo; });
+    // Fair-share the shared partial pool (kMaxRenderPartials) across active
+    // tracks via water-filling, so one track (e.g. a PartialBank maxed to 64)
+    // can't starve the others — meta/basic/noise only need a few partials each.
+    // When total demand fits, every track gets its full count (no change).
+    std::array<int, kMaxSourceTracks> partialCap {};
+    {
+        std::array<int, kMaxSourceTracks> demand {};
+        int n = 0;
+        for(const auto &track : source.gen.tracks)
+        {
+            if(n >= kMaxSourceTracks) break;
+            demand[(size_t)n] = std::clamp(seedForTrack(track).partialCount, 1, kMaxWavetablePartials);
+            ++n;
+        }
+        int remaining = kMaxRenderPartials;
+        std::array<bool, kMaxSourceTracks> done {};
+        while(remaining > 0)
+        {
+            int unsat = 0;
+            for(int i = 0; i < n; ++i)
+                if(!done[(size_t)i] && partialCap[(size_t)i] < demand[(size_t)i]) ++unsat;
+            if(unsat == 0) break;
+            const int share = remaining / unsat;
+            if(share == 0)
+            {
+                for(int i = 0; i < n && remaining > 0; ++i)
+                    if(!done[(size_t)i] && partialCap[(size_t)i] < demand[(size_t)i])
+                        { ++partialCap[(size_t)i]; --remaining; }
+                break;
+            }
+            for(int i = 0; i < n; ++i)
+                if(!done[(size_t)i] && partialCap[(size_t)i] < demand[(size_t)i])
+                {
+                    const int give = std::min(share, demand[(size_t)i] - partialCap[(size_t)i]);
+                    partialCap[(size_t)i] += give;
+                    remaining -= give;
+                    if(partialCap[(size_t)i] == demand[(size_t)i]) done[(size_t)i] = true;
+                }
+        }
+    }
+
     int partialOffset = 0;
     int renderTrack = 0;
     for(const auto &track : source.gen.tracks)
     {
-        if(renderTrack >= kMaxSourceTracks || partialOffset >= kMaxWavetablePartials)
+        if(renderTrack >= kMaxSourceTracks || partialOffset >= kMaxRenderPartials)
             break;
-        if(track.mute || (anySolo && !track.solo))
-            continue;
 
         auto seed = seedForTrack(track);
         seed.partialCount = std::clamp(seed.partialCount, 1, kMaxWavetablePartials);
@@ -461,7 +433,9 @@ void SynthCore::rebuildTrackRenderStateNoLock(bool rebakeTables)
         }
 
         const int begin = partialOffset;
-        const int copyCount = std::min(frame.partialCount, kMaxWavetablePartials - partialOffset);
+        // renderTrack is the active-track index here, matching the water-fill pass.
+        const int cap = partialCap[(size_t)renderTrack];
+        const int copyCount = std::min({ frame.partialCount, cap, kMaxRenderPartials - partialOffset });
         for(int i = 0; i < copyCount; ++i)
         {
             const int dst = partialOffset + i;
@@ -470,6 +444,7 @@ void SynthCore::rebuildTrackRenderStateNoLock(bool rebakeTables)
             mixed.x[(size_t)dst] = frame.x[(size_t)i];
             mixed.mu[(size_t)dst] = frame.mu[(size_t)i];
             mixed.phaseLocked[(size_t)dst] = frame.phaseLocked[(size_t)i];
+            mixed.phaseRandom[(size_t)dst] = frame.phaseRandom[(size_t)i];
             mixed.phaseDriftHz[(size_t)dst] = frame.phaseDriftHz[(size_t)i];
             mixed.phaseJitter[(size_t)dst] = frame.phaseJitter[(size_t)i];
             baked->partials[(size_t)dst] = localWave.partials[(size_t)i];
@@ -487,7 +462,7 @@ void SynthCore::rebuildTrackRenderStateNoLock(bool rebakeTables)
         ++renderTrack;
     }
 
-    mixed.partialCount = std::clamp(partialOffset, 1, kMaxWavetablePartials);
+    mixed.partialCount = std::clamp(partialOffset, 1, kMaxRenderPartials);
     for(int i = mixed.partialCount; i < kMaxPartials; ++i)
     {
         mixed.nu[(size_t)i] = 1.0f;
@@ -495,6 +470,7 @@ void SynthCore::rebuildTrackRenderStateNoLock(bool rebakeTables)
         mixed.x[(size_t)i] = 0.0f;
         mixed.mu[(size_t)i] = 0;
         mixed.phaseLocked[(size_t)i] = 0.0f;
+        mixed.phaseRandom[(size_t)i] = 0.0f;
         mixed.phaseDriftHz[(size_t)i] = 0.0f;
         mixed.phaseJitter[(size_t)i] = 0.0f;
     }
@@ -531,19 +507,25 @@ void SynthCore::publishSnapshotNoLock()
     {
         if(snap->renderTrackCount >= kMaxSourceTracks)
             break;
-        if(track.mute || (anySolo && !track.solo))
-            continue;
         RenderTrackRuntime runtime;
         runtime.trackId = track.id;
         runtime.strip = track.strip;
         runtime.strip.gain = std::clamp(track.gain, 0.0f, 2.0f);
         runtime.strip.pan = std::clamp(track.pan, -1.0f, 1.0f);
+        runtime.muted = track.mute || (anySolo && !track.solo);
         runtime.ampEnvIndex = std::clamp(track.ampEnvIndex, 0, kMaxAmpEnvs - 1);
         runtime.unison = track.unison;
         runtime.unison.voices = std::clamp(runtime.unison.voices, 1, kMaxUnison);
         runtime.outputMode = track.outputMode;
         runtime.mods = track.mods;
+        runtime.perVoiceFilterCount = std::clamp(track.perVoiceFilterCount, 0, kMaxPerVoiceFilters);
+        runtime.perVoiceFilters = track.perVoiceFilters;
+        runtime.perVoiceFilterOrderCount = std::clamp(track.perVoiceFilterOrderCount, 0, kMaxPerVoiceFilters);
+        runtime.perVoiceFilterOrder = track.perVoiceFilterOrder;
         runtime.inserts = track.inserts;
+        runtime.insertOrderCount = std::clamp(track.insertOrderCount, 0, kMaxStripInserts);
+        runtime.insertOrder = track.insertOrder;
+        runtime.connectedToMaster = track.connectedToMaster;
         snap->trackRuntime[(size_t)snap->renderTrackCount] = runtime;
         snap->generatorSources[(size_t)snap->renderTrackCount] = runtime.strip;
         ++snap->renderTrackCount;
@@ -553,25 +535,30 @@ void SynthCore::publishSnapshotNoLock()
             snap->generatorSources[i] = source.gen.sources[i];
     snap->renderQuality = source.gen.renderQuality;
     snap->globalGain = globalGain;
-    snap->lfoParams = lfoParams;
-    snap->matrixEnvParams = matrixEnvParams;
+    snap->modSlotParams = modSlotParams_;
     snap->matrixRules = matrixRules;
     snap->chaosParams = chaosParams;
     snap->shapeSourceParams = shapeSourceParams;
     snap->effectsParams = effectsParams;
     snap->groups = groups_;
+    snap->route = compiledRoute_;
     std::atomic_store_explicit(&renderSnapshot, std::shared_ptr<const RenderSnapshot>(snap), std::memory_order_release);
+}
+
+void SynthCore::setCompiledRoute(const CompiledPerVoiceRoute &route)
+{
+    std::lock_guard<std::mutex> lock(paramMutex);
+    compiledRoute_ = route;
+    publishSnapshotNoLock(); // no rebake
 }
 
 void SynthCore::pushUndoSnapshotNoLock()
 {
     UndoSnapshot s;
     s.gen = source.gen;
-    s.chain = source.chain;
     s.adsr = globalAdsr;
     s.ampEnvParams = ampEnvParams;
-    s.lfoParams = lfoParams;
-    s.matrixEnvParams = matrixEnvParams;
+    s.modSlotParams = modSlotParams_;
     s.matrixRules = matrixRules;
     s.chaosParams = chaosParams;
     s.shapeSourceParams = shapeSourceParams;
@@ -629,6 +616,8 @@ uint32_t SynthCore::addSourceTrack(SourceTrackType type, const std::string &name
 {
     std::lock_guard<std::mutex> lock(paramMutex);
     ensureSourceTracksNoLock();
+    if(source.gen.tracks.size() >= size_t(kMaxSourceTracks))
+        return 0u;
     const uint32_t id = nextTrackId_++;
     source.gen.tracks.push_back(makeDefaultTrack(type, id, name.c_str()));
     rebuildTrackRenderStateNoLock(true);
@@ -677,10 +666,9 @@ void SynthCore::setSourceTrack(uint32_t trackId, const SourceTrackParams &track)
     if(it == source.gen.tracks.end())
         return;
     const bool contentChanged = sourceTrackSoundContentChanged(*it, track);
-    const bool membershipChanged = it->mute != track.mute || it->solo != track.solo;
     *it = track;
     it->id = trackId;
-    if(contentChanged || membershipChanged)
+    if(contentChanged)
     {
         // Only Meta oscillator table-content edits need cached wavetable rebakes.
         // PartialBank Partials/Inharmonic changes are runtime frame changes; rebuild
@@ -699,14 +687,11 @@ void SynthCore::updateMetaTrackRenderParamsNoLock(uint32_t trackId)
     auto it = std::find_if(source.gen.tracks.cbegin(), source.gen.tracks.cend(),
                            [trackId](const SourceTrackParams &t) { return t.id == trackId; });
     if(it == source.gen.tracks.cend()) return;
-    const bool anySolo = std::any_of(source.gen.tracks.begin(), source.gen.tracks.end(),
-                                     [](const SourceTrackParams &t) { return t.solo; });
     int renderIdx = 0;
     bool found = false;
     for(const auto &t : source.gen.tracks)
     {
         if(renderIdx >= kMaxSourceTracks) break;
-        if(t.mute || (anySolo && !t.solo)) continue;
         if(t.id == trackId) { found = true; break; }
         ++renderIdx;
     }
@@ -744,14 +729,11 @@ void SynthCore::setSourceTrackMorphOnly(uint32_t trackId, float morph)
     if(source.wavetable)
     {
         auto newState = std::make_shared<WavetableSeedRenderState>(*source.wavetable);
-        const bool anySolo = std::any_of(source.gen.tracks.begin(), source.gen.tracks.end(),
-                                         [](const SourceTrackParams &t) { return t.solo; });
         int renderIdx = 0;
         bool found = false;
         for(const auto &t : source.gen.tracks)
         {
             if(renderIdx >= kMaxSourceTracks) break;
-            if(t.mute || (anySolo && !t.solo)) continue;
             if(t.id == trackId) { found = true; break; }
             ++renderIdx;
         }
@@ -778,6 +760,19 @@ void SynthCore::setSourceTracks(const std::vector<SourceTrackParams> &tracks)
     nextTrackId_ = std::max(nextTrackId_, maxId + 1u);
     rebuildTrackRenderStateNoLock(true);
     publishSnapshotNoLock();
+}
+
+void SynthCore::setPerVoiceFiltersGlobal(const std::array<SourceFilterParams, kMaxPerVoiceFilters> &filters,
+                                         int count)
+{
+    std::lock_guard<std::mutex> lock(paramMutex);
+    const int n = std::clamp(count, 0, kMaxPerVoiceFilters);
+    for(auto &t : source.gen.tracks)
+    {
+        t.perVoiceFilterCount = n;
+        t.perVoiceFilters = filters;
+    }
+    publishSnapshotNoLock(); // no wavetable rebake → realtime-safe
 }
 
 std::vector<SourceTrackParams> SynthCore::getSourceTracks() const
@@ -1029,23 +1024,6 @@ AdsrParams SynthCore::getAmpEnvParams(int idx) const
 void SynthCore::setSeedAdsrParams(uint64_t, const AdsrParams &a) { setGlobalAdsr(a); }
 AdsrParams SynthCore::getSeedAdsrParams(uint64_t) const { return getGlobalAdsr(); }
 
-void SynthCore::setOperatorChain(const OperatorChain &c)
-{
-    std::lock_guard<std::mutex> lock(paramMutex);
-    source.chain = c;
-    regenerateFrameNoLock();
-    publishSnapshotNoLock();
-}
-
-OperatorChain SynthCore::getOperatorChain() const
-{
-    std::lock_guard<std::mutex> lock(paramMutex);
-    return source.chain;
-}
-
-void SynthCore::setSeedOperatorChain(uint64_t, const OperatorChain &c) { setOperatorChain(c); }
-OperatorChain SynthCore::getSeedOperatorChain(uint64_t) const { return getOperatorChain(); }
-
 void SynthCore::setGlobalGain(float g)
 {
     std::lock_guard<std::mutex> lock(paramMutex);
@@ -1062,63 +1040,34 @@ float SynthCore::getGlobalGain() const
     return globalGain;
 }
 
-void SynthCore::setLfoParams(int idx, const LfoParams &p)
+void SynthCore::setModSlotParams(int idx, const ModSlotParams &p)
 {
-    if(idx < 0 || idx >= kMaxLfos) return;
+    if(idx < 0 || idx >= kMaxModSlots) return;
     std::lock_guard<std::mutex> lock(paramMutex);
-    if(sameBytes(lfoParams[(size_t)idx], p))
+    if(sameBytes(modSlotParams_[(size_t)idx], p))
         return;
-    lfoParams[(size_t)idx] = p;
+    modSlotParams_[(size_t)idx] = p;
     publishSnapshotNoLock();
 }
 
-void SynthCore::setLfoParamsWithUndo(int idx, const LfoParams &p)
+void SynthCore::setModSlotParamsWithUndo(int idx, const ModSlotParams &p)
 {
     std::lock_guard<std::mutex> lock(paramMutex);
-    if(idx < 0 || idx >= kMaxLfos) return;
+    if(idx < 0 || idx >= kMaxModSlots) return;
     pushUndoSnapshotNoLock();
-    lfoParams[(size_t)idx] = p;
+    modSlotParams_[(size_t)idx] = p;
     publishSnapshotNoLock();
 }
 
-LfoParams SynthCore::getLfoParams(int idx) const
+ModSlotParams SynthCore::getModSlotParams(int idx) const
 {
     std::lock_guard<std::mutex> lock(paramMutex);
-    return (idx >= 0 && idx < kMaxLfos) ? lfoParams[(size_t)idx] : LfoParams {};
+    return (idx >= 0 && idx < kMaxModSlots) ? modSlotParams_[(size_t)idx] : ModSlotParams {};
 }
 
-void SynthCore::setSeedLfoParams(uint64_t, int idx, const LfoParams &p) { setLfoParams(idx, p); }
-void SynthCore::setSeedLfoParamsWithUndo(uint64_t, int idx, const LfoParams &p) { setLfoParamsWithUndo(idx, p); }
-LfoParams SynthCore::getSeedLfoParams(uint64_t, int idx) const { return getLfoParams(idx); }
-
-void SynthCore::setMatrixEnvParams(int idx, const MatrixEnvParams &p)
-{
-    if(idx < 0 || idx >= kMaxModEnvs) return;
-    std::lock_guard<std::mutex> lock(paramMutex);
-    if(sameBytes(matrixEnvParams[(size_t)idx], p))
-        return;
-    matrixEnvParams[(size_t)idx] = p;
-    publishSnapshotNoLock();
-}
-
-void SynthCore::setMatrixEnvParamsWithUndo(int idx, const MatrixEnvParams &p)
-{
-    std::lock_guard<std::mutex> lock(paramMutex);
-    if(idx < 0 || idx >= kMaxModEnvs) return;
-    pushUndoSnapshotNoLock();
-    matrixEnvParams[(size_t)idx] = p;
-    publishSnapshotNoLock();
-}
-
-MatrixEnvParams SynthCore::getMatrixEnvParams(int idx) const
-{
-    std::lock_guard<std::mutex> lock(paramMutex);
-    return (idx >= 0 && idx < kMaxModEnvs) ? matrixEnvParams[(size_t)idx] : MatrixEnvParams {};
-}
-
-void SynthCore::setSeedMatrixEnvParams(uint64_t, int idx, const MatrixEnvParams &p) { setMatrixEnvParams(idx, p); }
-void SynthCore::setSeedMatrixEnvParamsWithUndo(uint64_t, int idx, const MatrixEnvParams &p) { setMatrixEnvParamsWithUndo(idx, p); }
-MatrixEnvParams SynthCore::getSeedMatrixEnvParams(uint64_t, int idx) const { return getMatrixEnvParams(idx); }
+void SynthCore::setSeedModSlotParams(uint64_t, int idx, const ModSlotParams &p) { setModSlotParams(idx, p); }
+void SynthCore::setSeedModSlotParamsWithUndo(uint64_t, int idx, const ModSlotParams &p) { setModSlotParamsWithUndo(idx, p); }
+ModSlotParams SynthCore::getSeedModSlotParams(uint64_t, int idx) const { return getModSlotParams(idx); }
 
 void SynthCore::setMatrixRule(int idx, const MatrixRule &r)
 {
@@ -1203,7 +1152,7 @@ void SynthCore::setSeedShapeSourceParams(uint64_t, const ShapeSourceParams &p) {
 void SynthCore::setSeedShapeSourceParamsWithUndo(uint64_t, const ShapeSourceParams &p) { setShapeSourceParamsWithUndo(p); }
 ShapeSourceParams SynthCore::getSeedShapeSourceParams(uint64_t) const { return getShapeSourceParams(); }
 
-void SynthCore::setEffectsParams(const EffectsChainParams &p)
+void SynthCore::setEffectsParams(const MasterEffectsParams &p)
 {
     std::lock_guard<std::mutex> lock(paramMutex);
     if(sameBytes(effectsParams, p))
@@ -1212,14 +1161,14 @@ void SynthCore::setEffectsParams(const EffectsChainParams &p)
     publishSnapshotNoLock();
 }
 
-EffectsChainParams SynthCore::getEffectsParams() const
+MasterEffectsParams SynthCore::getEffectsParams() const
 {
     std::lock_guard<std::mutex> lock(paramMutex);
     return effectsParams;
 }
 
-void SynthCore::setSeedEffectsParams(uint64_t, const EffectsChainParams &p) { setEffectsParams(p); }
-EffectsChainParams SynthCore::getSeedEffectsParams(uint64_t) const { return getEffectsParams(); }
+void SynthCore::setSeedEffectsParams(uint64_t, const MasterEffectsParams &p) { setEffectsParams(p); }
+MasterEffectsParams SynthCore::getSeedEffectsParams(uint64_t) const { return getEffectsParams(); }
 
 void SynthCore::setSourceGroups(const std::vector<SourceGroupDef> &groups)
 {
@@ -1228,8 +1177,9 @@ void SynthCore::setSourceGroups(const std::vector<SourceGroupDef> &groups)
     publishSnapshotNoLock();
 }
 
-// Apply per-strip insert chains to the track buses, fold groups into their own buses,
-// then mix everything (ungrouped strips + group buses) into the output.
+// Apply strip-grid insert chains to source buses, fold router merge groups into
+// their own buses, then mix everything (ungrouped source buses + merged buses)
+// into the output.
 void SynthCore::renderStripBuses(float *left, float *right, int numSamples,
                                  const std::shared_ptr<const RenderSnapshot> &snap)
 {
@@ -1237,32 +1187,34 @@ void SynthCore::renderStripBuses(float *left, float *right, int numSamples,
         return;
     const int rc = std::min(snap->renderTrackCount, kMaxSourceTracks);
 
-    // 1) Per-strip inserts on each track bus (matrix-modulated).
+    // 1) Strip-grid inserts on each source bus (matrix-modulated).
     for(int t = 0; t < rc; ++t)
     {
         const auto &rt = snap->trackRuntime[(size_t)t];
-        if(!rt.inserts.empty())
-            processInsertChain(trackBus_[(size_t)t].l.data(), trackBus_[(size_t)t].r.data(), numSamples,
-                               sampleRate, rt.inserts, trackInsertState_[(size_t)t],
-                               trackInsertMod_[(size_t)t].data(), kInsertModParams);
+        if(!rt.inserts.empty() && rt.insertOrderCount > 0)
+            processInsertChainOrdered(trackBus_[(size_t)t].l.data(), trackBus_[(size_t)t].r.data(), numSamples,
+                                      sampleRate, rt.inserts, trackInsertState_[(size_t)t],
+                                      rt.insertOrder.data(), rt.insertOrderCount,
+                                      trackInsertMod_[(size_t)t].data(), kInsertModParams);
 
-        // Post-insert peak for the UI level meter (ballistic decay so it falls smoothly).
+        // Track level meter: only count signal if this source is wired to master.
         float peak = 0.0f;
-        for(int s = 0; s < numSamples; ++s)
-        {
-            peak = std::max(peak, std::abs(trackBus_[(size_t)t].l[(size_t)s]));
-            peak = std::max(peak, std::abs(trackBus_[(size_t)t].r[(size_t)s]));
-        }
+        if(rt.connectedToMaster)
+            for(int s = 0; s < numSamples; ++s)
+            {
+                peak = std::max(peak, std::abs(trackBus_[(size_t)t].l[(size_t)s]));
+                peak = std::max(peak, std::abs(trackBus_[(size_t)t].r[(size_t)s]));
+            }
         float prev = trackLevel_[(size_t)t].load(std::memory_order_relaxed);
         const float decayed = prev * 0.85f;
         trackLevel_[(size_t)t].store(peak > decayed ? peak : decayed, std::memory_order_relaxed);
     }
 
-    // 2) Group buses: sum member strips, run group inserts, and remember which strips
-    //    are grouped so they aren't also mixed directly.
+    // 2) Router merge buses: sum member sources and remember which sources
+    //    are grouped so they aren't also mixed directly. Merge buses do not
+    //    own inserts; bus-level FX live only in each source's strip grid.
     const int ng = int(snap->groups.size());
     if(int(groupBus_.size()) < ng) groupBus_.resize((size_t)ng);
-    if(int(groupInsertState_.size()) < ng) groupInsertState_.resize((size_t)ng);
     std::array<bool, kMaxSourceTracks> grouped {};
     for(int g = 0; g < ng; ++g)
     {
@@ -1280,16 +1232,15 @@ void SynthCore::renderStripBuses(float *left, float *right, int numSamples,
                         gb.r[(size_t)s] += trackBus_[(size_t)t].r[(size_t)s];
                     }
                 }
-        if(!snap->groups[(size_t)g].inserts.empty())
-            processInsertChain(gb.l.data(), gb.r.data(), numSamples, sampleRate,
-                               snap->groups[(size_t)g].inserts, groupInsertState_[(size_t)g]);
         for(int s = 0; s < numSamples; ++s) { left[s] += gb.l[(size_t)s]; right[s] += gb.r[(size_t)s]; }
     }
 
-    // 3) Mix ungrouped strips directly.
+    // 3) Mix ungrouped source buses directly — only sources wired to MASTER.
     for(int t = 0; t < rc; ++t)
     {
+        const auto &rt = snap->trackRuntime[(size_t)t];
         if(grouped[(size_t)t]) continue;
+        if(!rt.connectedToMaster) continue;
         for(int s = 0; s < numSamples; ++s)
         {
             left[s] += trackBus_[(size_t)t].l[(size_t)s];
@@ -1304,11 +1255,9 @@ void SynthCore::setSeedPatch(const SeedPatch &patch)
     source.presetName = patch.name;
     source.gen = patch.generator;
     ensureSourceTracksNoLock();
-    source.chain = patch.operatorChain;
     globalAdsr = patch.adsr;
     ampEnvParams = patch.ampEnvParams;
-    lfoParams = patch.lfoParams;
-    matrixEnvParams = patch.matrixEnvParams;
+    modSlotParams_ = patch.modSlotParams;
     matrixRules = patch.matrixRules;
     chaosParams = patch.chaosParams;
     shapeSourceParams = patch.shapeSourceParams;
@@ -1323,11 +1272,9 @@ SeedPatch SynthCore::getSeedPatch() const
     SeedPatch patch;
     patch.name = source.presetName;
     patch.generator = source.gen;
-    patch.operatorChain = source.chain;
     patch.adsr = globalAdsr;
     patch.ampEnvParams = ampEnvParams;
-    patch.lfoParams = lfoParams;
-    patch.matrixEnvParams = matrixEnvParams;
+    patch.modSlotParams = modSlotParams_;
     patch.matrixRules = matrixRules;
     patch.chaosParams = chaosParams;
     patch.shapeSourceParams = shapeSourceParams;
@@ -1344,11 +1291,9 @@ bool SynthCore::undoCompositionChange()
     undoStack.pop_back();
     source.gen = s.gen;
     ensureSourceTracksNoLock();
-    source.chain = s.chain;
     globalAdsr = s.adsr;
     ampEnvParams = s.ampEnvParams;
-    lfoParams = s.lfoParams;
-    matrixEnvParams = s.matrixEnvParams;
+    modSlotParams_ = s.modSlotParams;
     matrixRules = s.matrixRules;
     chaosParams = s.chaosParams;
     shapeSourceParams = s.shapeSourceParams;
@@ -1415,7 +1360,7 @@ void SynthCore::renderBlock(float *left, float *right, int numSamples)
                           clampedFrame(sampleTimeline(*snap->timeline, 0.0f)),
                           snap->adsr,
                           snap->ampEnvParams,
-                          snap->matrixEnvParams,
+                          snap->modSlotParams,
                           snap->unison,
                           snap->renderQuality,
                           ++startTickCounter);
@@ -1450,7 +1395,7 @@ void SynthCore::renderBlock(float *left, float *right, int numSamples)
             snap = std::atomic_load_explicit(&renderSnapshot, std::memory_order_acquire);
             if(snap)
             {
-                matrix.setParams(snap->lfoParams, snap->matrixEnvParams, snap->matrixRules,
+                matrix.setParams(snap->modSlotParams, snap->matrixRules,
                                  snap->chaosParams, snap->shapeSourceParams);
                 effects.setParams(snap->effectsParams);
                 matrix.advanceControl(kSeedControlBlockSize);
@@ -1473,7 +1418,7 @@ void SynthCore::renderBlock(float *left, float *right, int numSamples)
             }
             // Per-strip (global) insert modulation: representative ADSR/ENV across voices.
             float adsrRep = 0.0f;
-            std::array<float, kMaxModEnvs> envRep {};
+            std::array<float, kMaxModSlots> slotRep {};
             std::array<float, kMaxAmpEnvs> ampRep {};
             int activeCount = 0;
             for(auto &v : voices)
@@ -1481,15 +1426,15 @@ void SynthCore::renderBlock(float *left, float *right, int numSamples)
                 if(v.isIdle()) continue;
                 ++activeCount;
                 adsrRep += v.averageEnv();
-                const auto &el = v.modEnvLevels();
-                for(int e = 0; e < kMaxModEnvs; ++e) envRep[(size_t)e] += el[(size_t)e];
+                const auto &sl = v.modSlotLevels();
+                for(int e = 0; e < kMaxModSlots; ++e) slotRep[(size_t)e] += sl[(size_t)e];
                 const auto ae = v.ampEnvLevels();
                 for(int e = 0; e < kMaxAmpEnvs; ++e) ampRep[(size_t)e] += ae[(size_t)e];
             }
             if(activeCount > 0)
             {
                 adsrRep /= float(activeCount);
-                for(int e = 0; e < kMaxModEnvs; ++e) envRep[(size_t)e] /= float(activeCount);
+                for(int e = 0; e < kMaxModSlots; ++e) slotRep[(size_t)e] /= float(activeCount);
                 for(int e = 0; e < kMaxAmpEnvs; ++e) ampRep[(size_t)e] /= float(activeCount);
             }
             for(auto &m : trackInsertMod_) m.fill(0.0f);
@@ -1505,7 +1450,7 @@ void SynthCore::renderBlock(float *left, float *right, int numSamples)
                         if(snap->trackRuntime[(size_t)t].trackId == rule.targetTrackId) { rt = t; break; }
                     if(rt < 0) continue;
                     trackInsertMod_[(size_t)rt][(size_t)insertModIndex(rule.targetSlot, param)] +=
-                        rule.depth * matrix.globalModSource(rule.source, adsrRep, envRep, ampRep);
+                        rule.depth * matrix.globalModSource(rule.source, adsrRep, slotRep, ampRep);
                 }
             }
 
@@ -1519,15 +1464,13 @@ void SynthCore::renderBlock(float *left, float *right, int numSamples)
                 v.setWavetableRenderState(snap->wavetable);
                 MatrixVoiceOutput mtx;
                 const auto voiceAmpEnv = v.ampEnvLevels();
-                const auto voiceLfo = v.lfoVoiceLevels();
                 matrix.evaluateForVoice(mtx, frame,
                                         v.velocity(), v.keyTrack01(),
-                                        v.averageEnv(), v.modEnvLevels(),
+                                        v.averageEnv(), v.modSlotLevels(),
                                         float((v.voiceRandomSeed() & 0xFF)) / 255.0f,
                                         matrixTrackIds.data(), matrixTrackBegin.data(), matrixTrackEnd.data(),
-                                        snap->renderTrackCount, &voiceAmpEnv, &voiceLfo);
-                v.updateControl(frame, mtx, snap->adsr, snap->ampEnvParams, snap->matrixEnvParams,
-                                snap->lfoParams,
+                                        snap->renderTrackCount, &voiceAmpEnv);
+                v.updateControl(frame, mtx, snap->adsr, snap->ampEnvParams, snap->modSlotParams,
                                 snap->unison, snap->trackRuntime, snap->renderTrackCount, snap->renderQuality,
                                 snap->globalGain, kSeedControlBlockSize);
             }
@@ -1548,6 +1491,7 @@ void SynthCore::renderBlock(float *left, float *right, int numSamples)
             if(!v.isIdle())
             {
                 v.setTrackBuses(busLptr.data(), busRptr.data());
+                v.setCompiledRoute(snap->route);
                 v.renderAdd(left + written, right + written, chunk);
             }
         renderStripBuses(left + written, right + written, chunk, snap);

@@ -1,6 +1,6 @@
 #pragma once
 
-// Shared model + DSP for the per-strip / per-group insert effect chain.
+// Shared model + DSP for strip-grid insert effect chains.
 // A small global bank of filters (F1..F8) and distortions (D1..D8) is referenced
 // by route inserts on each source track. The UI and the audio engine share these
 // definitions so the displayed curve matches what is heard.
@@ -8,13 +8,29 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
 
 namespace synth
 {
 
+// Precomputed impulse-response for the convolution reverb: the IR split into
+// uniform partitions, each FFT'd to the frequency domain. Immutable + shared by
+// pointer so it can be copied into render snapshots cheaply (audio-thread safe).
+struct ConvIR
+{
+    int hop = 0;      // partition / hop size (power of two)
+    int fftN = 0;     // 2 * hop
+    int parts = 0;    // number of partitions
+    std::vector<float> re; // parts * fftN, partition p spectrum real at p*fftN
+    std::vector<float> im;
+    std::string name;
+};
+
 constexpr int kInsertBankSize = 8;   // F1..F8 and D1..D8
-constexpr int kMaxRouteInserts = 4;  // inserts per chain (track / group)
-constexpr int kMaxRenderInserts = kMaxRouteInserts * 2; // track chain + group chain
+constexpr int kMaxRouteInserts = 4;  // retained compatibility limit for route UI summaries
+constexpr int kMaxRenderInserts = kMaxRouteInserts * 2;
 
 // Order MUST match the UI's FilterAlgo enum.
 enum class InsertFilterAlgo : uint8_t
@@ -57,7 +73,7 @@ struct RouteInsert
     uint8_t index = 0;   // bank slot 0..7
     bool bypass = false; // user can bypass without removing
 };
-enum InsertKind { InsertEmpty = 0, InsertFilter, InsertDist, InsertEq, InsertComp, InsertDelay, InsertReverb };
+enum InsertKind { InsertEmpty = 0, InsertFilter, InsertDist, InsertEq, InsertComp, InsertDelay, InsertReverb, InsertConvReverb, InsertMultiband };
 constexpr int kInsertParamSlots = 8; // matrix-mod params reserved per insert
 
 // ---- Extra effect banks (EQ / Compressor / Delay / Reverb), 8 slots each ----
@@ -81,6 +97,7 @@ struct DelaySlotParams
     float feedback = 0.35f;   // 0..0.95
     float mix = 0.3f;
     float tone = 0.5f;        // 0=dark 1=bright (feedback LP)
+    bool  pingpong = false;   // cross-feed L/R taps for ping-pong echoes
 };
 struct ReverbSlotParams
 {
@@ -89,8 +106,18 @@ struct ReverbSlotParams
     float mix = 0.25f;
     float damp = 0.5f;        // HF damping
 };
+struct ConvSlotParams
+{
+    std::shared_ptr<const ConvIR> ir; // loaded impulse response (null = passthrough)
+    float mix = 0.35f;        // dry/wet
+    float gain = 1.0f;        // wet trim 0..2
+    float predelayMs = 0.0f;  // 0..200
+    std::string irName;       // for UI display + reload
+};
 
-// One effect in a strip/group chain — self-contained (no shared bank, no slot number).
+struct MultibandSlotParams;
+
+// One effect in a strip-grid chain — self-contained (no shared bank, no slot number).
 // Only the active kind's params are used. Chains are unbounded std::vectors.
 struct InsertEffect
 {
@@ -102,6 +129,17 @@ struct InsertEffect
     CompSlotParams comp {};
     DelaySlotParams delay {};
     ReverbSlotParams reverb {};
+    ConvSlotParams conv {};
+    std::shared_ptr<MultibandSlotParams> multiband {};
+};
+
+struct MultibandSlotParams
+{
+    float lowXoverHz = 250.0f;
+    float highXoverHz = 2500.0f;
+    bool bandMute[3] { false, false, false };
+    bool bandSolo[3] { false, false, false };
+    std::vector<InsertEffect> bands[3];
 };
 
 // ---- Source-as-modulator (cross-track) modulation ----

@@ -1,12 +1,11 @@
 #pragma once
 
-#include "model/CompositionModel.h"
-#include "dsp/Effects.h"
+#include "engine/SeedPatch.h"
+#include "dsp/MasterEffects.h"
 #include "dsp/Generators.h"
 #include "dsp/InsertChain.h"
 #include "engine/MatrixEngine.h"
-#include "dsp/Operators.h"
-#include "model/SpectralFrame.h"
+#include "dsp/SpectralFrame.h"
 #include "engine/Voice.h"
 
 #include <array>
@@ -22,7 +21,6 @@ namespace synth
 struct SourceState
 {
     SourceGenParams gen;
-    OperatorChain chain;
     std::shared_ptr<const SpectralTimeline> timeline;
     StaticSpectralFrame frame;
     std::shared_ptr<const WavetableSeedRenderState> wavetable;
@@ -44,13 +42,13 @@ struct RenderSnapshot
     std::array<GeneratorSourceParams, kMaxSourceTracks> generatorSources {};
     RenderQualityMode renderQuality = RenderQualityMode::Normal;
     float globalGain = 0.30f;
-    std::array<LfoParams, kMaxLfos> lfoParams {};
-    std::array<MatrixEnvParams, kMaxModEnvs> matrixEnvParams {};
+    std::array<ModSlotParams, kMaxModSlots> modSlotParams {};
     std::array<MatrixRule, kMaxMatrixRules> matrixRules {};
     ChaosParams chaosParams {};
     ShapeSourceParams shapeSourceParams {};
-    EffectsChainParams effectsParams {};
+    MasterEffectsParams effectsParams {};
     std::vector<SourceGroupDef> groups {}; // per-strip group buses
+    CompiledPerVoiceRoute route {};        // per-voice DAG (filters sum their inputs)
 };
 
 class SynthCore
@@ -73,6 +71,10 @@ class SynthCore
     void setSourceTrack(uint32_t trackId, const SourceTrackParams &track);
     void setSourceTrackMorphOnly(uint32_t trackId, float morph);
     void setSourceTracks(const std::vector<SourceTrackParams> &tracks);
+    // Lightweight update of the globally-shared per-voice filter slots: writes the
+    // filter params onto every track and republishes the snapshot WITHOUT rebaking
+    // wavetables — cheap enough for realtime knob drags.
+    void setPerVoiceFiltersGlobal(const std::array<SourceFilterParams, kMaxPerVoiceFilters> &filters, int count);
     std::vector<SourceTrackParams> getSourceTracks() const;
     void setGeneratorBasicParams(int partialCount, FreqShape freqShape, float inharmonic, int sourceCount,
                                  const UnisonParams &unison);
@@ -98,26 +100,16 @@ class SynthCore
     void setSeedAdsrParams(uint64_t seedPresetId, const AdsrParams &a);
     AdsrParams getSeedAdsrParams(uint64_t seedPresetId) const;
 
-    void setOperatorChain(const OperatorChain &c);
-    OperatorChain getOperatorChain() const;
-    void setSeedOperatorChain(uint64_t seedPresetId, const OperatorChain &c);
-    OperatorChain getSeedOperatorChain(uint64_t seedPresetId) const;
-
     void setGlobalGain(float g);
     float getGlobalGain() const;
 
-    void setLfoParams(int idx, const LfoParams &p);
-    void setLfoParamsWithUndo(int idx, const LfoParams &p);
-    LfoParams getLfoParams(int idx) const;
-    void setSeedLfoParams(uint64_t seedPresetId, int idx, const LfoParams &p);
-    void setSeedLfoParamsWithUndo(uint64_t seedPresetId, int idx, const LfoParams &p);
-    LfoParams getSeedLfoParams(uint64_t seedPresetId, int idx) const;
-    void setMatrixEnvParams(int idx, const MatrixEnvParams &p);
-    void setMatrixEnvParamsWithUndo(int idx, const MatrixEnvParams &p);
-    MatrixEnvParams getMatrixEnvParams(int idx) const;
-    void setSeedMatrixEnvParams(uint64_t seedPresetId, int idx, const MatrixEnvParams &p);
-    void setSeedMatrixEnvParamsWithUndo(uint64_t seedPresetId, int idx, const MatrixEnvParams &p);
-    MatrixEnvParams getSeedMatrixEnvParams(uint64_t seedPresetId, int idx) const;
+    void setModSlotParams(int idx, const ModSlotParams &p);
+    void setModSlotParamsWithUndo(int idx, const ModSlotParams &p);
+    ModSlotParams getModSlotParams(int idx) const;
+    void setSeedModSlotParams(uint64_t seedPresetId, int idx, const ModSlotParams &p);
+    void setSeedModSlotParamsWithUndo(uint64_t seedPresetId, int idx, const ModSlotParams &p);
+    ModSlotParams getSeedModSlotParams(uint64_t seedPresetId, int idx) const;
+
     void setMatrixRule(int idx, const MatrixRule &r);
     void setMatrixRuleWithUndo(int idx, const MatrixRule &r);
     MatrixRule getMatrixRule(int idx) const;
@@ -137,11 +129,13 @@ class SynthCore
     void setSeedShapeSourceParamsWithUndo(uint64_t seedPresetId, const ShapeSourceParams &p);
     ShapeSourceParams getSeedShapeSourceParams(uint64_t seedPresetId) const;
 
-    void setEffectsParams(const EffectsChainParams &p);
-    EffectsChainParams getEffectsParams() const;
+    void setEffectsParams(const MasterEffectsParams &p);
+    MasterEffectsParams getEffectsParams() const;
     void setSourceGroups(const std::vector<SourceGroupDef> &groups);
-    void setSeedEffectsParams(uint64_t seedPresetId, const EffectsChainParams &p);
-    EffectsChainParams getSeedEffectsParams(uint64_t seedPresetId) const;
+    // Per-voice routing DAG compiled from the UI route wires.
+    void setCompiledRoute(const CompiledPerVoiceRoute &route);
+    void setSeedEffectsParams(uint64_t seedPresetId, const MasterEffectsParams &p);
+    MasterEffectsParams getSeedEffectsParams(uint64_t seedPresetId) const;
 
     // Conservative boundary for future DPF-native state/preset support.
     void setSeedPatch(const SeedPatch &patch);
@@ -158,6 +152,12 @@ class SynthCore
         if(trackIdx < 0 || trackIdx >= int(kMaxSourceTracks)) return 0.0f;
         return liveTrackMorph_[(size_t)trackIdx].load(std::memory_order_relaxed);
     }
+    // Post-insert peak level of a strip bus (0..~1), for the UI level meters.
+    float getTrackLevel(int trackIdx) const
+    {
+        if(trackIdx < 0 || trackIdx >= int(kMaxSourceTracks)) return 0.0f;
+        return trackLevel_[(size_t)trackIdx].load(std::memory_order_relaxed);
+    }
 
   private:
     void regenerateFrameNoLock();
@@ -173,37 +173,36 @@ class SynthCore
 
     GeneratorBank generator;
     MatrixEngine matrix;
-    EffectsChain effects;
+    MasterEffectsChain effects;
 
     SourceState source {};
     AdsrParams globalAdsr;
     std::array<AdsrParams, kMaxAmpEnvs> ampEnvParams {};
     float globalGain = 0.30f;
-    std::array<LfoParams, kMaxLfos> lfoParams {};
-    std::array<MatrixEnvParams, kMaxModEnvs> matrixEnvParams {};
+    std::array<ModSlotParams, kMaxModSlots> modSlotParams_ {};
     std::array<MatrixRule, kMaxMatrixRules> matrixRules {};
     ChaosParams chaosParams {};
     ShapeSourceParams shapeSourceParams {};
-    EffectsChainParams effectsParams {};
+    MasterEffectsParams effectsParams {};
     std::vector<SourceGroupDef> groups_ {};
+    CompiledPerVoiceRoute compiledRoute_ {};
 
     struct UndoSnapshot
     {
         SourceGenParams gen;
-        OperatorChain chain;
         AdsrParams adsr;
         std::array<AdsrParams, kMaxAmpEnvs> ampEnvParams {};
-        std::array<LfoParams, kMaxLfos> lfoParams {};
-        std::array<MatrixEnvParams, kMaxModEnvs> matrixEnvParams {};
+        std::array<ModSlotParams, kMaxModSlots> modSlotParams {};
         std::array<MatrixRule, kMaxMatrixRules> matrixRules {};
         ChaosParams chaosParams {};
         ShapeSourceParams shapeSourceParams {};
-        EffectsChainParams effectsParams {};
+        MasterEffectsParams effectsParams {};
     };
     std::vector<UndoSnapshot> undoStack {};
     std::shared_ptr<const RenderSnapshot> renderSnapshot;
 
     std::array<std::atomic<float>, kMaxSourceTracks> liveTrackMorph_ {};
+    std::array<std::atomic<float>, kMaxSourceTracks> trackLevel_ {};
 
     mutable std::mutex paramMutex;
     double sampleRate = 48000.0;
@@ -219,8 +218,7 @@ class SynthCore
     struct StereoBus { std::array<float, kBusBlock> l {}, r {}; };
     std::array<StereoBus, kMaxSourceTracks> trackBus_;            // one bus per source strip
     std::array<InsertChainState, kMaxSourceTracks> trackInsertState_;
-    std::vector<StereoBus> groupBus_;                            // one bus per group
-    std::vector<InsertChainState> groupInsertState_;
+    std::vector<StereoBus> groupBus_;                            // one bus per merge group
     // Matrix→insert modulation, per track: [insertIdx*kInsertModParams + param]
     std::array<std::array<float, kMaxModInserts * kInsertModParams>, kMaxSourceTracks> trackInsertMod_ {};
     void renderStripBuses(float *left, float *right, int numSamples,

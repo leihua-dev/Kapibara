@@ -1,13 +1,13 @@
 #pragma once
 
-#include "model/CompositionModel.h"
 #include "dsp/Generators.h"
 #include "engine/MatrixEngine.h"
-#include "model/SpectralFrame.h"
+#include "dsp/SpectralFrame.h"
 
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <memory>
 
 namespace synth
@@ -36,7 +36,7 @@ class Voice
         const auto i = static_cast<size_t>(partialIdx);
         if(partialIdx < 0 || partialIdx >= kMaxPartials) return 0.0f;
         if(idle_) return 0.0f;
-        return std::clamp(morphCur_[i] + dMorphCur_[i], 0.0f, 1.0f);
+        return std::clamp(morphCur_[i], 0.0f, 1.0f);
     }
     bool isReleasing() const { return releasing_; }
     int getNoteNumber() const { return noteNumber_; }
@@ -46,7 +46,7 @@ class Voice
     void noteOn(int midiNote, float velocity, const StaticSpectralFrame &frame,
                 const AdsrParams &adsr,
                 const std::array<AdsrParams, kMaxAmpEnvs> &ampEnvs,
-                const std::array<MatrixEnvParams, kMaxModEnvs> &matrixEnvs,
+                const std::array<ModSlotParams, kMaxModSlots> &modSlots,
                 const UnisonParams &unison, RenderQualityMode quality, uint64_t tick);
     void noteOff();
     void steal(); // immediate fast release
@@ -57,8 +57,7 @@ class Voice
                        const MatrixVoiceOutput &matrixOut,
                        const AdsrParams &adsr,
                        const std::array<AdsrParams, kMaxAmpEnvs> &ampEnvs,
-                       const std::array<MatrixEnvParams, kMaxModEnvs> &matrixEnvs,
-                       const std::array<LfoParams, kMaxLfos> &lfos,
+                       const std::array<ModSlotParams, kMaxModSlots> &modSlots,
                        const UnisonParams &unison,
                        const std::array<RenderTrackRuntime, kMaxSourceTracks> &trackRuntime,
                        int renderTrackCount,
@@ -73,8 +72,21 @@ class Voice
     {
         std::array<std::array<float, kMaxVoiceRenderBlockSamples>, kMaxSourceTracks> bufL {};
         std::array<std::array<float, kMaxVoiceRenderBlockSamples>, kMaxSourceTracks> bufR {};
+        // Output buffers for per-voice filter nodes when evaluating the route DAG.
+        std::array<std::array<float, kMaxVoiceRenderBlockSamples>, kMaxPerVoiceFilters> filterL {};
+        std::array<std::array<float, kMaxVoiceRenderBlockSamples>, kMaxPerVoiceFilters> filterR {};
+        // Output buffers for amp-env route node instances.
+        std::array<std::array<float, kMaxVoiceRenderBlockSamples>, kMaxAmpEnvRouteNodes> ampEnvL {};
+        std::array<std::array<float, kMaxVoiceRenderBlockSamples>, kMaxAmpEnvRouteNodes> ampEnvR {};
+        // Output buffers for utility nodes (component output-router).
+        std::array<std::array<float, kMaxVoiceRenderBlockSamples>, kMaxUtilNodes> utilL {};
+        std::array<std::array<float, kMaxVoiceRenderBlockSamples>, kMaxUtilNodes> utilR {};
     };
     void setModScratch(ModScratch *s) { modScratch_ = s; }
+
+    // Compiled per-voice routing DAG (filters sum their inputs). Set per block
+    // before renderAdd; empty/invalid → legacy per-track filter chains are used.
+    void setCompiledRoute(const CompiledPerVoiceRoute &r) { route_ = r; }
 
     // Per-strip bus output: voices accumulate each source track into its own bus
     // (pre-zeroed by SynthCore); strip inserts then run on the bus, not per-voice.
@@ -100,8 +112,7 @@ class Voice
     float velocity() const { return velocity_; }
     float keyTrack01() const { return keyTrack01_; }
     float averageEnv() const { return avgEnv_; }
-    const std::array<float, kMaxModEnvs> &modEnvLevels() const { return modEnvLevel_; }
-    const std::array<float, kMaxLfos> &lfoVoiceLevels() const { return lfoVoiceLevel_; }
+    const std::array<float, kMaxModSlots> &modSlotLevels() const { return slotLevel_; }
     std::array<float, kMaxAmpEnvs> ampEnvLevels() const
     {
         std::array<float, kMaxAmpEnvs> v {};
@@ -153,7 +164,7 @@ class Voice
     const WavetableSeedRenderState *wavetable_ = nullptr;
 
     // Audio-rate wavetable phase per unison voice and partial.
-    std::array<std::array<float, kMaxWavetablePartials>, kMaxUnison> thetaTable_ {};
+    std::array<std::array<float, kMaxRenderPartials>, kMaxUnison> thetaTable_ {};
     std::array<float, kMaxPartials> phaseInitTable_ {};
     std::array<float, kMaxUnison> unisonDetuneRatio_ {};
     std::array<float, kMaxUnison> unisonGainL_ {};
@@ -169,8 +180,6 @@ class Voice
     std::array<float, kMaxPartials> dPhaseStep_ {};
     std::array<float, kMaxPartials> dPanCur_ {};
     std::array<float, kMaxPartials> dPanStep_ {};
-    std::array<float, kMaxPartials> dMorphCur_ {};
-    std::array<float, kMaxPartials> dMorphStep_ {};
     std::array<float, kMaxPartials> dWarpCur_ {};
     std::array<float, kMaxPartials> dWarpStep_ {};
     std::array<float, kMaxPartials> phaseDriftCur_ {};
@@ -202,19 +211,29 @@ class Voice
     };
     void processSourceFilter(float *left, float *right, int numSamples, const GeneratorSourceParams &source,
                              SourceFilterRuntime &state, bool applyGainPan = true);
+    void processSourceFilterParams(float *left, float *right, int numSamples, const SourceFilterParams &filter,
+                                   SourceFilterRuntime &state, float gainL = 1.0f, float gainR = 1.0f);
+    void processPerVoiceFilters(float *left, float *right, int numSamples,
+                                const RenderTrackRuntime &runtime, SourceFilterRuntime *states,
+                                bool applyGainPan = true);
+    void evaluateRouteGraph(int numSamples, int sourceCount, const bool *rendered,
+                            const std::function<void(int, const float *, const float *)> &flushTrack);
     void applyGainPan(float *left, float *right, int numSamples, const GeneratorSourceParams &source);
     static void applySourceMod(float *cL, float *cR, const float *mL, const float *mR,
                                int numSamples, SourceModType type, float depth);
-    std::array<SourceFilterRuntime, kMaxSourceTracks> sourceFilterStates_ {};
+    std::array<std::array<SourceFilterRuntime, kMaxPerVoiceFilters>, kMaxSourceTracks> sourceFilterStates_ {};
+    std::array<SourceFilterRuntime, kMaxPerVoiceFilters> filterNodeStates_ {}; // per filter NODE (route DAG)
+    struct UtilBandState { float loL = 0, loR = 0, hiL = 0, hiR = 0; };
+    std::array<UtilBandState, kMaxUtilNodes> utilBandStates_ {}; // per utility node band-pass state
     std::array<GeneratorSourceParams, kMaxSourceTracks> sourceParams_ {};
     std::array<RenderTrackRuntime, kMaxSourceTracks> trackRuntime_ {};
+    CompiledPerVoiceRoute route_ {};
     ModScratch *modScratch_ = nullptr;
     float *const *busL_ = nullptr;  // per-track output buses (owned by SynthCore)
     float *const *busR_ = nullptr;
     std::array<float, kMaxVoiceRenderBlockSamples> pmScratch_ {};      // phase-mod (radians) for FM/PM
     std::array<float, kMaxVoiceRenderBlockSamples> syncMonoScratch_ {}; // mono modulator for hard sync
     int renderTrackCount_ = 0;
-    std::array<std::array<float, kMaxVoiceRenderBlockSamples>, kMaxModEnvs> envScratch_ {};
     std::array<std::array<float, kMaxVoiceRenderBlockSamples>, kMaxAmpEnvs> ampEnvScratch_ {};
     std::array<std::array<float, kMaxVoiceRenderBlockSamples>, kMaxSourceTracks> trackEnvScratch_ {};
     int currentRenderTrack_ = 0;
@@ -232,15 +251,12 @@ class Voice
 
     AdsrRuntimeState ampEnv_;
     std::array<AdsrRuntimeState, kMaxSourceTracks> trackEnvState_ {};
-    std::array<AdsrRuntimeState, kMaxModEnvs> modEnvState_ {};
-    std::array<MatrixEnvParams, kMaxModEnvs> modEnvParams_ {};
-    // Per-voice LFO modulators (unified with ENVs: point curves, looping or one-shot).
-    std::array<LfoParams, kMaxLfos> voiceLfoParams_ {};
-    std::array<float, kMaxLfos> lfoVoicePhase_ {};
-    std::array<float, kMaxLfos> lfoVoiceLevel_ {};
+    // Unified modulator slots: per-voice phase + level (loop or one-shot).
+    std::array<ModSlotParams, kMaxModSlots> slotParams_ {};
+    std::array<float, kMaxModSlots> slotPhase_ {};
+    std::array<float, kMaxModSlots> slotLevel_ {};
     std::array<AdsrRuntimeState, kMaxAmpEnvs> sharedAmpEnvState_ {};
     std::array<AdsrParams, kMaxAmpEnvs> sharedAmpEnvParams_ {};
-    std::array<float, kMaxModEnvs> modEnvLevel_ {};
     float sustain_ = 0.7f;
     float adsrCurve_ = 0.5f;
     AdsrParams frozenAdsr_ {};

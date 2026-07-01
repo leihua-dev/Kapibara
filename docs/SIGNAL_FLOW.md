@@ -7,7 +7,9 @@ MIDI note
   -> RenderSnapshot        (immutable read-only render state)
   -> Voice x N             (wavetable oscillators + unison + per-voice ADSR)
        -> MatrixEngine     (LFO / ENV modulation applied per control-rate block)
-  -> Effects               (Seed tone FX: EQ + filter)
+       -> Per-Voice Grid   (currently Source filter per track)
+  -> Strip Grid            (per-source bus inserts)
+  -> MasterEffects         (Seed tone FX: EQ + filter)
   -> Output gain + safety limiter
 ```
 
@@ -27,9 +29,11 @@ at control-rate boundaries (every 32 samples).
 ## Seed Render State
 
 `SynthCore::publishSnapshotNoLock()` expands the current `SeedPatch`
-(`model/CompositionModel.h`) into one immutable `RenderSnapshot`.
+(`engine/SeedPatch.h`) into one immutable `RenderSnapshot`.
 
-- `Partial Bank` tracks contribute their own additive partial bank.
+- `Partial Bank` tracks contribute their own additive partial bank. The bank can
+  morph between multiple amp/phase frames; each frame maps the first 64
+  harmonics to the 64 partial lanes.
 - `Meta Oscillator` tracks contribute a multi-frame wavetable (baked by
   `dsp/Generators`).
 - `Basic Oscillator` and `Sample / Noise` tracks are converted into bounded
@@ -37,6 +41,9 @@ at control-rate boundaries (every 32 samples).
   16 source tracks).
 
 The flattened wavetable state is read-only during audio rendering.
+Partial Bank count, inharmonic/harmonic-shape edits, and frame morph publish
+updated render snapshots from the UI/control path while dragging; they do not
+bake Meta wavetable table caches in the audio callback.
 
 ## Wavetable Pipeline (UI thread only)
 
@@ -68,7 +75,21 @@ samples):
 `Freq` destination interprets rule depth as octaves (`2^depth`), allowing wide
 pitch sweeps. `Amp` destination is clamped to a non-negative gain multiplier.
 
+## Source Routing And Strip Grid
+
+The lower UI is split into `SOURCE ROUTER | PER-VOICE GRID | STRIP GRID`.
+The source router owns source selection and first-stage merge groups. Merge
+groups only sum member source buses; they do not own hidden insert chains.
+
+The per-voice grid currently exposes a small chain of filter nodes. Their
+parameters live on each track's per-voice filter chain and are processed in
+`Voice` before audio is accumulated into the source bus.
+
+The strip grid owns bus-level insert chains. Existing track inserts are shown
+as strip-grid nodes and are processed by `SynthCore::renderStripBuses()` after
+voice accumulation. The fixed `Master` node represents the final bus output.
+
 ## Output
 
-Seed tone FX (`dsp/Effects`: 3-band EQ + multi-mode filter) process the
+Seed tone FX (`dsp/MasterEffects`: 3-band EQ + multi-mode filter) process the
 rendered voice mix. Global gain and output safety limiting are applied last.

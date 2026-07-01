@@ -53,6 +53,20 @@ inline float warpTablePhase(float tablePosition, WavetableWarpMode mode, float a
     return y * size;
 }
 
+// 4-point Catmull-Rom over frame-table samples. Linear frame morph is only C0 at
+// frame boundaries (the (A,B) pair switches when framePos crosses an integer), so a
+// morph sweep with >2 frames produces slope kinks that read as clicks. Catmull-Rom
+// is C1 across those boundaries. With p0==p1 / p3==p2 at the clamped ends it
+// degrades gracefully toward the linear result.
+inline float catmullRomFrame(float p0, float p1, float p2, float p3, float t)
+{
+    const float a = p1;
+    const float b = 0.5f * (p2 - p0);
+    const float c = p0 - 2.5f * p1 + 2.0f * p2 - 0.5f * p3;
+    const float d = 0.5f * (p3 - p0) + 1.5f * (p1 - p2);
+    return ((d * t + c) * t + b) * t + a;
+}
+
 int wavetableMipLevelForFrequency(float frequencyHz, float sampleRate)
 {
     const float maxHarmonic = (0.475f * sampleRate) / std::max(1.0f, frequencyHz);
@@ -132,7 +146,6 @@ void Voice::prepare(double sr)
     freqCur_.fill(0.0f); freqStep_.fill(0.0f);
     dPhaseCur_.fill(0.0f); dPhaseStep_.fill(0.0f);
     dPanCur_.fill(0.0f); dPanStep_.fill(0.0f);
-    dMorphCur_.fill(0.0f); dMorphStep_.fill(0.0f);
     dWarpCur_.fill(0.0f); dWarpStep_.fill(0.0f);
     phaseDriftCur_.fill(0.0f); phaseDriftStep_.fill(0.0f);
     phaseJitterCur_.fill(0.0f); phaseJitterStep_.fill(0.0f);
@@ -149,9 +162,8 @@ void Voice::prepare(double sr)
     ampEnv_ = AdsrRuntimeState {};
     for(auto &e : trackEnvState_)
         e = AdsrRuntimeState {};
-    modEnvLevel_.fill(0.0f);
-    for(auto &e : modEnvState_)
-        e = AdsrRuntimeState {};
+    slotLevel_.fill(0.0f);
+    slotPhase_.fill(0.0f);
 }
 
 void Voice::updateUnisonLayout(const UnisonParams &unison)
@@ -225,6 +237,10 @@ void Voice::seedPhases(const StaticSpectralFrame &frame, const UnisonParams &uni
             case PhaseInitMode::Locked:      base[i] = frame.phaseLocked[i]; break;
             case PhaseInitMode::Alternating: base[i] = (i & 1) ? kPi : 0.0f; break;
         }
+        // Serum-style phase Rand: blend in a per-note random offset by the ratio. One
+        // draw per partial from the note's shared RNG, so all unison lanes of this note
+        // share the same offset (added into base[i], which is unison-independent).
+        base[i] += clampf(frame.phaseRandom[i], 0.0f, 1.0f) * uni(rngShared);
     }
 
     const int U = std::max(1, unisonCount_);
@@ -234,7 +250,7 @@ void Voice::seedPhases(const StaticSpectralFrame &frame, const UnisonParams &uni
     for(int i = 0; i < kMaxPartials; ++i)
     {
         phaseInitTable_[i] = wrapTablePosition(base[i] * kRadiansToTable);
-        if(i < kMaxWavetablePartials)
+        if(i < kMaxRenderPartials)
         {
             for(auto &lane : thetaTable_)
                 lane[(size_t)i] = 0.0f;
@@ -245,7 +261,7 @@ void Voice::seedPhases(const StaticSpectralFrame &frame, const UnisonParams &uni
 void Voice::noteOn(int midiNote, float velocity, const StaticSpectralFrame &frame,
                    const AdsrParams &adsr,
                    const std::array<AdsrParams, kMaxAmpEnvs> &ampEnvs,
-                   const std::array<MatrixEnvParams, kMaxModEnvs> &matrixEnvs,
+                   const std::array<ModSlotParams, kMaxModSlots> &modSlots,
                    const UnisonParams &unison, RenderQualityMode quality, uint64_t tick)
 {
     static uint32_t s_voiceCounter = 0;
@@ -263,10 +279,12 @@ void Voice::noteOn(int midiNote, float velocity, const StaticSpectralFrame &fram
     morphInitialized_.fill(false);
     renderQuality_ = quality;
     sourceFilterStates_ = {};
+    filterNodeStates_ = {};
+    utilBandStates_ = {};
 
     updateUnisonLayout(unison);
     seedPhases(frame, unison);
-    activeCount_ = std::clamp(frame.partialCount, 1, kMaxWavetablePartials);
+    activeCount_ = std::clamp(frame.partialCount, 1, kMaxRenderPartials);
 
     ampEnv_ = AdsrRuntimeState {};
     frozenAdsr_ = adsr;
@@ -287,7 +305,7 @@ void Voice::noteOn(int midiNote, float velocity, const StaticSpectralFrame &fram
     }
     for(auto &e : trackEnvState_)
         e = AdsrRuntimeState {};
-    modEnvParams_ = matrixEnvs;
+    slotParams_ = modSlots;
     sharedAmpEnvParams_ = ampEnvs;
     for(int i = 0; i < kMaxAmpEnvs; ++i)
     {
@@ -300,33 +318,9 @@ void Voice::noteOn(int midiNote, float velocity, const StaticSpectralFrame &fram
         state.state = state.attackSamples <= 1 ? PartialState::Decay : PartialState::Attack;
         state.value = state.attackSamples <= 1 ? 1.0f : 0.0f;
     }
-    for(int i = 0; i < kMaxModEnvs; ++i)
-    {
-        auto &e = modEnvState_[(size_t)i];
-        const auto &p = modEnvParams_[(size_t)i];
-        e = AdsrRuntimeState {};
-        // Point-curve modulators play one cycle every 1/loopRateHz seconds (loop
-        // mode repeats it, one-shot plays it once then holds). Legacy ADSR-style
-        // envs (pointCount < 2) keep their attack-time behaviour.
-        e.attackSamples = (p.pointCount >= 2)
-            ? std::max(1, int(fs / std::max(0.01f, p.loopRateHz)))
-            : std::max(1, int(std::max(0.0f, p.attack) * fs));
-        e.decaySamples = std::max(1, int(std::max(0.0f, p.decay) * fs));
-        e.releaseSamples = std::max(1, int(std::max(0.0f, p.release) * fs));
-        if(e.attackSamples <= 1)
-        {
-            e.state = PartialState::Decay;
-            e.value = 1.0f;
-        }
-        else
-        {
-            e.state = PartialState::Attack;
-        }
-    }
-    // Per-voice LFOs retrigger their phase on note-on.
-    lfoVoicePhase_.fill(0.0f);
-    lfoVoiceLevel_.fill(0.0f);
-    modEnvLevel_.fill(0.0f);
+    // Retrigger all modulator phases on note-on.
+    slotPhase_.fill(0.0f);
+    slotLevel_.fill(0.0f);
 
     for(int i = 0; i < kMaxPartials; ++i)
     {
@@ -334,7 +328,6 @@ void Voice::noteOn(int midiNote, float velocity, const StaticSpectralFrame &fram
         freqCur_[i] = 0.0f;
         dPhaseCur_[i] = 0.0f;
         dPanCur_[i] = 0.0f;
-        dMorphCur_[i] = 0.0f;
         dWarpCur_[i] = 0.0f;
         phaseDriftCur_[i] = 0.0f;
         phaseJitterCur_[i] = 0.0f;
@@ -342,7 +335,6 @@ void Voice::noteOn(int midiNote, float velocity, const StaticSpectralFrame &fram
         freqStep_[i] = 0.0f;
         dPhaseStep_[i] = 0.0f;
         dPanStep_[i] = 0.0f;
-        dMorphStep_[i] = 0.0f;
         dWarpStep_[i] = 0.0f;
         phaseDriftStep_[i] = 0.0f;
         phaseJitterStep_[i] = 0.0f;
@@ -358,12 +350,6 @@ void Voice::noteOff()
     ampEnv_.releaseFrom = ampEnv_.value;
     ampEnv_.stageSample = 0;
     ampEnv_.state = PartialState::Release;
-    for(auto &e : modEnvState_)
-    {
-        e.releaseFrom = e.value;
-        e.stageSample = 0;
-        e.state = PartialState::Release;
-    }
     for(auto &e : sharedAmpEnvState_)
     {
         e.releaseFrom = e.value;
@@ -384,13 +370,6 @@ void Voice::steal()
     ampEnv_.releaseSamples = std::max(1, int(0.005 * sampleRate_));
     ampEnv_.stageSample = 0;
     ampEnv_.state = PartialState::Release;
-    for(auto &e : modEnvState_)
-    {
-        e.releaseFrom = e.value;
-        e.releaseSamples = ampEnv_.releaseSamples;
-        e.stageSample = 0;
-        e.state = PartialState::Release;
-    }
     for(auto &e : sharedAmpEnvState_)
     {
         e.releaseFrom = e.value;
@@ -412,8 +391,7 @@ void Voice::updateControl(const StaticSpectralFrame &frame,
                           const MatrixVoiceOutput &matrixOut,
                           const AdsrParams &adsr,
                           const std::array<AdsrParams, kMaxAmpEnvs> &ampEnvs,
-                          const std::array<MatrixEnvParams, kMaxModEnvs> &matrixEnvs,
-                          const std::array<LfoParams, kMaxLfos> &lfos,
+                          const std::array<ModSlotParams, kMaxModSlots> &modSlots,
                           const UnisonParams &unison,
                           const std::array<RenderTrackRuntime, kMaxSourceTracks> &trackRuntime,
                           int renderTrackCount,
@@ -443,32 +421,18 @@ void Voice::updateControl(const StaticSpectralFrame &frame,
         state.decaySamples = std::max(1, int(std::max(0.0f, params.decay) * fs));
         state.releaseSamples = std::max(1, int(std::max(0.0f, params.release) * fs));
     }
-    modEnvParams_ = matrixEnvs;
-    for(int i = 0; i < kMaxModEnvs; ++i)
+    // Unified modulator slots: advance per-voice phase and sample the curve.
+    slotParams_ = modSlots;
+    for(int i = 0; i < kMaxModSlots; ++i)
     {
-        auto &st = modEnvState_[(size_t)i];
-        const auto &p = modEnvParams_[(size_t)i];
-        const float curveSeconds = std::max(0.001f, p.attack + p.decay + p.release);
-        st.attackSamples = std::max(1, int((p.pointCount >= 2 ? curveSeconds : std::max(0.0f, p.attack)) * fs));
-        st.decaySamples = std::max(1, int(std::max(0.0f, p.decay) * fs));
-        st.releaseSamples = std::max(1, int(std::max(0.0f, p.release) * fs));
-    }
-
-    // Per-voice LFOs (unified modulators): advance each phase by this control block
-    // and sample its waveform. loop=true repeats; loop=false is a one-shot envelope.
-    voiceLfoParams_ = lfos;
-    for(int i = 0; i < kMaxLfos; ++i)
-    {
-        const auto &lp = voiceLfoParams_[(size_t)i];
-        const float inc = std::max(0.0f, lp.frequencyHz) * float(blockSize) / fs;
-        float ph = lfoVoicePhase_[(size_t)i] + inc;
-        if(lp.loop) ph -= std::floor(ph);
-        else        ph = std::min(ph, 1.0f);
-        lfoVoicePhase_[(size_t)i] = ph;
-        float x = ph + lp.phase0;
-        if(lp.loop) x -= std::floor(x);
-        else        x = std::clamp(x, 0.0f, 1.0f);
-        lfoVoiceLevel_[(size_t)i] = Lfo::shapeOutput(lp, x);
+        const auto &p = slotParams_[(size_t)i];
+        if(!p.enabled) { slotLevel_[(size_t)i] = 0.0f; continue; }
+        const float inc = std::max(0.0f, p.rateHz) * float(blockSize) / fs;
+        float ph = slotPhase_[(size_t)i] + inc;
+        if(p.loop) ph -= std::floor(ph);
+        else       ph = std::min(ph, 1.0f);
+        slotPhase_[(size_t)i] = ph;
+        slotLevel_[(size_t)i] = pointCurveEval(p.points.data(), p.pointCount, ph) * 2.0f - 1.0f;
     }
 
     // Legacy fixed-generator path still uses global unison. Source-track mode
@@ -477,7 +441,7 @@ void Voice::updateControl(const StaticSpectralFrame &frame,
         updateUnisonLayout(unison);
 
     const int waveCount = wavetable_ != nullptr ? wavetable_->partialCount : frame.partialCount;
-    const int targetActiveCount = std::clamp(std::min(frame.partialCount, waveCount), 1, kMaxWavetablePartials);
+    const int targetActiveCount = std::clamp(std::min(frame.partialCount, waveCount), 1, kMaxRenderPartials);
     int renderActiveCount = targetActiveCount;
     if(controlsPrimed_ && targetActiveCount < activeCount_)
     {
@@ -490,19 +454,14 @@ void Voice::updateControl(const StaticSpectralFrame &frame,
             }
         renderActiveCount = tailSilent ? targetActiveCount : activeCount_;
     }
-    activeCount_ = std::clamp(renderActiveCount, 1, kMaxWavetablePartials);
+    activeCount_ = std::clamp(renderActiveCount, 1, kMaxRenderPartials);
 
     for(int i = 0; i < targetActiveCount; ++i)
     {
         const auto *wave = wavetable_ != nullptr ? &wavetable_->partials[(size_t)i] : nullptr;
-        morphTarget_[(size_t)i] = wave != nullptr && wave->usesMetaWavetable
-                                      ? clampf(wave->morph, 0.0f, 1.0f)
-                                      : 0.0f;
-        if(!morphInitialized_[(size_t)i])
-        {
-            morphCur_[(size_t)i] = morphTarget_[(size_t)i];
-            morphInitialized_[(size_t)i] = true;
-        }
+        const float baseMorph = wave != nullptr && wave->usesMetaWavetable
+                                    ? clampf(wave->morph, 0.0f, 1.0f)
+                                    : 0.0f;
 
         // f_i^final = f0 * nu_i * M_i^freq  (RelativeRatio) or nu_i * M_i^freq (AbsoluteHz)
         const float sourceFrequency = wave != nullptr && wave->usesMetaWavetable ? wave->ratio : frame.nu[i];
@@ -523,13 +482,24 @@ void Voice::updateControl(const StaticSpectralFrame &frame,
         const float phaseDriftTarget = frame.phaseDriftHz[i];
         const float phaseJitterTarget = frame.phaseJitter[i];
 
+        // Method A: matrix morph modulation is folded into the single per-sample
+        // smoothed morph value (morphCur_ toward morphTarget_) instead of getting its
+        // own per-block linear ramp. framePos = morph*(frameCount-1) multiplies any
+        // morph-velocity kink by the frame count, so a per-block-linear dMorph clicked
+        // badly at high frame counts; one continuous smoother keeps velocity C1.
+        morphTarget_[(size_t)i] = clampf(baseMorph + dMorphTarget, 0.0f, 1.0f);
+        if(!morphInitialized_[(size_t)i])
+        {
+            morphCur_[(size_t)i] = morphTarget_[(size_t)i];
+            morphInitialized_[(size_t)i] = true;
+        }
+
         if(!controlsPrimed_)
         {
             ampCur_[i] = srcAmp;
             freqCur_[i] = f;
             dPhaseCur_[i] = dPhaseTarget;
             dPanCur_[i] = dPanTarget;
-            dMorphCur_[i] = dMorphTarget;
             dWarpCur_[i] = dWarpTarget;
             phaseDriftCur_[i] = phaseDriftTarget;
             phaseJitterCur_[i] = phaseJitterTarget;
@@ -537,7 +507,6 @@ void Voice::updateControl(const StaticSpectralFrame &frame,
             freqStep_[i] = 0.0f;
             dPhaseStep_[i] = 0.0f;
             dPanStep_[i] = 0.0f;
-            dMorphStep_[i] = 0.0f;
             dWarpStep_[i] = 0.0f;
             phaseDriftStep_[i] = 0.0f;
             phaseJitterStep_[i] = 0.0f;
@@ -548,7 +517,6 @@ void Voice::updateControl(const StaticSpectralFrame &frame,
             freqStep_[i] = (f - freqCur_[i]) * invBlock;
             dPhaseStep_[i] = (dPhaseTarget - dPhaseCur_[i]) * invBlock;
             dPanStep_[i] = (dPanTarget - dPanCur_[i]) * invBlock;
-            dMorphStep_[i] = (dMorphTarget - dMorphCur_[i]) * invBlock;
             dWarpStep_[i] = (dWarpTarget - dWarpCur_[i]) * invBlock;
             phaseDriftStep_[i] = (phaseDriftTarget - phaseDriftCur_[i]) * invBlock;
             phaseJitterStep_[i] = (phaseJitterTarget - phaseJitterCur_[i]) * invBlock;
@@ -563,7 +531,6 @@ void Voice::updateControl(const StaticSpectralFrame &frame,
         freqStep_[i] = 0.0f;
         dPhaseStep_[i] = 0.0f;
         dPanStep_[i] = -dPanCur_[i] * invBlock;
-        dMorphStep_[i] = -dMorphCur_[i] * invBlock;
         dWarpStep_[i] = -dWarpCur_[i] * invBlock;
         phaseDriftStep_[i] = -phaseDriftCur_[i] * invBlock;
         phaseJitterStep_[i] = -phaseJitterCur_[i] * invBlock;
@@ -606,6 +573,10 @@ void Voice::renderAdd(float *left, float *right, int numSamples)
     // Accumulate a finished (gain-applied) track buffer into its strip bus (tanh soft clip);
     // if no buses are set (legacy non-track path), fall back to the mixed left/right.
     const bool useBus = trackMode && busL_ != nullptr && busR_ != nullptr;
+    // Route-DAG mode: evaluate the compiled per-voice graph (filters sum their
+    // inputs; track buses sum their feeders). Requires the shared scratch for
+    // node buffers. Falls back to legacy per-track chains when invalid.
+    const bool graphMode = route_.valid && useBus && modScratch_ != nullptr;
     const auto flushTrack = [&](int source, const float *L, const float *R) {
         if(useBus)
         {
@@ -618,9 +589,9 @@ void Voice::renderAdd(float *left, float *right, int numSamples)
         }
     };
 
-    if(!anyMod)
+    if(!anyMod && !graphMode)
     {
-        // Fast single-pass path (no cross-track modulation).
+        // Fast single-pass path (no cross-track modulation, legacy per-track chain).
         for(int source = 0; source < sourceCount; ++source)
         {
             const int begin = trackMode ? std::clamp(wavetable_->trackBegin[(size_t)source], 0, activeCount_) : 0;
@@ -638,8 +609,14 @@ void Voice::renderAdd(float *left, float *right, int numSamples)
             std::fill(sourceRawL_.begin(), sourceRawL_.begin() + numSamples, 0.0f);
             std::fill(sourceRawR_.begin(), sourceRawR_.begin() + numSamples, 0.0f);
             renderPartialRangeRaw(sourceRawL_.data(), sourceRawR_.data(), numSamples, begin, end);
-            processSourceFilter(sourceRawL_.data(), sourceRawR_.data(), numSamples, sourceParams_[(size_t)source],
-                                sourceFilterStates_[(size_t)source]);
+            if(trackRuntime_[(size_t)source].muted)
+            {
+                std::fill(sourceRawL_.begin(), sourceRawL_.begin() + numSamples, 0.0f);
+                std::fill(sourceRawR_.begin(), sourceRawR_.begin() + numSamples, 0.0f);
+            }
+            processPerVoiceFilters(sourceRawL_.data(), sourceRawR_.data(), numSamples,
+                                   trackRuntime_[(size_t)source],
+                                   sourceFilterStates_[(size_t)source].data());
             flushTrack(source, sourceRawL_.data(), sourceRawR_.data());
         }
         if(useBus) finalizeBlock(numSamples);
@@ -730,9 +707,17 @@ void Voice::renderAdd(float *left, float *right, int numSamples)
         currentRenderTrack_ = source;
         renderPartialRangeRaw(bL, bR, numSamples, begin, end,
                               hasPm ? pmScratch_.data() : nullptr, syncBuf);
-        // gain-PRE filter (modulator tap is here, before strip gain/pan)
-        processSourceFilter(bL, bR, numSamples, sourceParams_[(size_t)source],
-                            sourceFilterStates_[(size_t)source], /*applyGainPan=*/false);
+        if(trackRuntime_[(size_t)source].muted)
+        {
+            std::fill(bL, bL + numSamples, 0.0f);
+            std::fill(bR, bR + numSamples, 0.0f);
+        }
+        // gain-PRE filter (modulator tap is here, before strip gain/pan).
+        // In route-DAG mode the filters are graph nodes evaluated after this loop,
+        // so the node buffer stays raw (unfiltered) here.
+        if(!graphMode)
+            processPerVoiceFilters(bL, bR, numSamples, trackRuntime_[(size_t)source],
+                                   sourceFilterStates_[(size_t)source].data(), /*applyGainPan=*/false);
         // amplitude-domain mods (AM / Ring) read other tracks' gain-pre signal
         for(const auto &m : trackRuntime_[(size_t)source].mods)
         {
@@ -747,22 +732,185 @@ void Voice::renderAdd(float *left, float *right, int numSamples)
         rendered[(size_t)source] = true;
     }
 
-    // Mix audible tracks: apply strip gain/pan, then flush to the strip bus.
-    for(int source = 0; source < sourceCount; ++source)
+    if(graphMode)
     {
-        if(!rendered[(size_t)source])
-            continue;
-        if(trackRuntime_[(size_t)source].outputMode == SourceTrackOutputMode::ModOnly)
-            continue;  // usable as a modulator but not summed to output
-        float *bL = modScratch_->bufL[(size_t)source].data();
-        float *bR = modScratch_->bufR[(size_t)source].data();
-        std::copy(bL, bL + numSamples, sourceRawL_.begin());
-        std::copy(bR, bR + numSamples, sourceRawR_.begin());
-        applyGainPan(sourceRawL_.data(), sourceRawR_.data(), numSamples, sourceParams_[(size_t)source]);
-        flushTrack(source, sourceRawL_.data(), sourceRawR_.data());
+        evaluateRouteGraph(numSamples, sourceCount, rendered.data(), flushTrack);
+    }
+    else
+    {
+        // Mix audible tracks: apply strip gain/pan, then flush to the strip bus.
+        for(int source = 0; source < sourceCount; ++source)
+        {
+            if(!rendered[(size_t)source])
+                continue;
+            if(trackRuntime_[(size_t)source].outputMode == SourceTrackOutputMode::ModOnly)
+                continue;  // usable as a modulator but not summed to output
+            float *bL = modScratch_->bufL[(size_t)source].data();
+            float *bR = modScratch_->bufR[(size_t)source].data();
+            std::copy(bL, bL + numSamples, sourceRawL_.begin());
+            std::copy(bR, bR + numSamples, sourceRawR_.begin());
+            applyGainPan(sourceRawL_.data(), sourceRawR_.data(), numSamples, sourceParams_[(size_t)source]);
+            flushTrack(source, sourceRawL_.data(), sourceRawR_.data());
+        }
     }
     if(useBus) finalizeBlock(numSamples);
     else       finishPartialRender(left, right, serialRawL_.data(), serialRawR_.data(), numSamples);
+}
+
+// Evaluate the compiled per-voice routing DAG. Source node buffers are the
+// already-rendered (raw, mod-applied) per-track buffers in modScratch_. Filter
+// nodes sum their inputs and filter once; each track's strip bus sums the nodes
+// wired into it, then strip gain/pan is applied and the result flushed to the bus.
+void Voice::evaluateRouteGraph(int numSamples, int sourceCount, const bool *rendered,
+                               const std::function<void(int, const float *, const float *)> &flushTrack)
+{
+    const CompiledPerVoiceRoute &rt = route_;
+    if(renderTrackCount_ <= 0)
+        return;
+
+    const auto renderIndexOf = [&](uint32_t tid) -> int {
+        for(int t = 0; t < sourceCount; ++t)
+            if(trackRuntime_[(size_t)t].trackId == tid) return t;
+        return -1;
+    };
+    // Resolve a node ref to its output buffers; false → skip (unrendered, bad
+    // slot, or a ModOnly source which must not reach the audio output).
+    const auto nodeBuf = [&](const RouteNodeRef &r, const float *&L, const float *&R) -> bool {
+        if(r.kind == 0)
+        {
+            const int t = renderIndexOf(r.id);
+            if(t < 0 || !rendered[t]) return false;
+            if(trackRuntime_[(size_t)t].outputMode == SourceTrackOutputMode::ModOnly) return false;
+            L = modScratch_->bufL[(size_t)t].data();
+            R = modScratch_->bufR[(size_t)t].data();
+            return true;
+        }
+        if(r.kind == 1 && int(r.id) < kMaxPerVoiceFilters)
+        {
+            L = modScratch_->filterL[(size_t)r.id].data();
+            R = modScratch_->filterR[(size_t)r.id].data();
+            return true;
+        }
+        if(r.kind == 2 && int(r.id) < kMaxAmpEnvRouteNodes)
+        {
+            L = modScratch_->ampEnvL[(size_t)r.id].data();
+            R = modScratch_->ampEnvR[(size_t)r.id].data();
+            return true;
+        }
+        if(r.kind == 3 && int(r.id) < kMaxUtilNodes)
+        {
+            L = modScratch_->utilL[(size_t)r.id].data();
+            R = modScratch_->utilR[(size_t)r.id].data();
+            return true;
+        }
+        return false;
+    };
+
+    // Global per-voice filter params (identical across tracks → use render track 0).
+    const RenderTrackRuntime &g = trackRuntime_[0];
+
+    // 1) Filter + amp-env nodes in topological order.
+    for(int oi = 0; oi < rt.evalOrderCount; ++oi)
+    {
+        const RouteNodeRef node = rt.evalOrder[(size_t)oi];
+        if(node.kind == 1)
+        {
+            const int slot = int(node.id);
+            if(slot < 0 || slot >= kMaxPerVoiceFilters) continue;
+            float *fl = modScratch_->filterL[(size_t)slot].data();
+            float *fr = modScratch_->filterR[(size_t)slot].data();
+            std::fill(fl, fl + numSamples, 0.0f);
+            std::fill(fr, fr + numSamples, 0.0f);
+            const int inN = std::min<int>(rt.filterInputCount[(size_t)slot], kMaxRouteInputs);
+            for(int k = 0; k < inN; ++k)
+            {
+                const float *L = nullptr, *R = nullptr;
+                if(!nodeBuf(rt.filterInputs[(size_t)slot][(size_t)k], L, R)) continue;
+                for(int s = 0; s < numSamples; ++s) { fl[s] += L[s]; fr[s] += R[s]; }
+            }
+            if(slot < g.perVoiceFilterCount)
+                processSourceFilterParams(fl, fr, numSamples, g.perVoiceFilters[(size_t)slot],
+                                          filterNodeStates_[(size_t)slot]);
+        }
+        else if(node.kind == 2)
+        {
+            const int e = int(node.id);
+            if(e < 0 || e >= kMaxAmpEnvRouteNodes) continue;
+            const int envSlot = std::clamp(int(rt.ampEnvSlot[(size_t)e]), 0, kMaxAmpEnvs - 1);
+            float *al = modScratch_->ampEnvL[(size_t)e].data();
+            float *ar = modScratch_->ampEnvR[(size_t)e].data();
+            std::fill(al, al + numSamples, 0.0f);
+            std::fill(ar, ar + numSamples, 0.0f);
+            const int inN = std::min<int>(rt.ampEnvInputCount[(size_t)e], kMaxRouteInputs);
+            for(int k = 0; k < inN; ++k)
+            {
+                const float *L = nullptr, *R = nullptr;
+                if(!nodeBuf(rt.ampEnvInputs[(size_t)e][(size_t)k], L, R)) continue;
+                for(int s = 0; s < numSamples; ++s) { al[s] += L[s]; ar[s] += R[s]; }
+            }
+            // Multiply by this amp-env's per-sample level.
+            for(int s = 0; s < numSamples; ++s)
+            {
+                const float lv = ampEnvScratch_[(size_t)envSlot][(size_t)s];
+                al[s] *= lv;
+                ar[s] *= lv;
+            }
+        }
+        else if(node.kind == 3)
+        {
+            const int ui = int(node.id);
+            if(ui < 0 || ui >= kMaxUtilNodes) continue;
+            float *ul = modScratch_->utilL[(size_t)ui].data();
+            float *ur = modScratch_->utilR[(size_t)ui].data();
+            std::fill(ul, ul + numSamples, 0.0f);
+            std::fill(ur, ur + numSamples, 0.0f);
+            const int inN = std::min<int>(rt.utilInputCount[(size_t)ui], kMaxRouteInputs);
+            for(int k = 0; k < inN; ++k)
+            {
+                const float *L = nullptr, *R = nullptr;
+                if(!nodeBuf(rt.utilInputs[(size_t)ui][(size_t)k], L, R)) continue;
+                for(int s = 0; s < numSamples; ++s) { ul[s] += L[s]; ur[s] += R[s]; }
+            }
+            const RouteUtilParams &up = rt.utilParams[(size_t)ui];
+            // Optional custom band-pass: 1-pole HP at bandLo + 1-pole LP at bandHi.
+            if(up.bandOn)
+            {
+                const float sr = float(sampleRate_);
+                const float gLo = clampf(1.0f - std::exp(-kTwoPi * clampf(up.bandLoHz, 20.0f, sr * 0.45f) / sr), 0.0f, 0.999f);
+                const float gHi = clampf(1.0f - std::exp(-kTwoPi * clampf(up.bandHiHz, 20.0f, sr * 0.45f) / sr), 0.0f, 0.999f);
+                UtilBandState &st = utilBandStates_[(size_t)ui];
+                for(int s = 0; s < numSamples; ++s)
+                {
+                    st.loL += gLo * (ul[s] - st.loL); const float hpL = ul[s] - st.loL; st.hiL += gHi * (hpL - st.hiL); ul[s] = st.hiL;
+                    st.loR += gLo * (ur[s] - st.loR); const float hpR = ur[s] - st.loR; st.hiR += gHi * (hpR - st.hiR); ur[s] = st.hiR;
+                }
+            }
+            // Level + equal-power pan (unity at center).
+            const float ang = (clampf(up.pan, -1.0f, 1.0f) + 1.0f) * 0.25f * kPi;
+            const float gL = up.level * std::cos(ang) * 1.41421356f;
+            const float gR = up.level * std::sin(ang) * 1.41421356f;
+            for(int s = 0; s < numSamples; ++s) { ul[s] *= gL; ur[s] *= gR; }
+        }
+    }
+
+    // 2) Each track's strip bus = sum of its feeders → gain/pan → flush.
+    for(int ti = 0; ti < rt.trackCount; ++ti)
+    {
+        const int t = renderIndexOf(rt.trackId[(size_t)ti]);
+        if(t < 0) continue;
+        const int inN = std::min<int>(rt.busInputCount[(size_t)ti], kMaxRouteInputs);
+        if(inN <= 0) continue;
+        std::fill(sourceRawL_.begin(), sourceRawL_.begin() + numSamples, 0.0f);
+        std::fill(sourceRawR_.begin(), sourceRawR_.begin() + numSamples, 0.0f);
+        for(int k = 0; k < inN; ++k)
+        {
+            const float *L = nullptr, *R = nullptr;
+            if(!nodeBuf(rt.busInputs[(size_t)ti][(size_t)k], L, R)) continue;
+            for(int s = 0; s < numSamples; ++s) { sourceRawL_[(size_t)s] += L[s]; sourceRawR_[(size_t)s] += R[s]; }
+        }
+        applyGainPan(sourceRawL_.data(), sourceRawR_.data(), numSamples, sourceParams_[(size_t)t]);
+        flushTrack(t, sourceRawL_.data(), sourceRawR_.data());
+    }
 }
 
 // Amplitude-domain source modulation (AM / Ring), in place on the carrier.
@@ -847,116 +995,9 @@ void Voice::beginPartialRender(int numSamples)
         return st.value;
     };
 
-    auto advanceMatrixEnv = [](AdsrRuntimeState &st, const MatrixEnvParams &p) -> float {
-        if(p.pointCount >= 2)
-        {
-            switch(st.state)
-            {
-                case PartialState::Attack:
-                {
-                    const float tau = float(st.stageSample) / float(std::max(1, st.attackSamples));
-                    st.value = matrixEnvBreakpointEval(p, tau);
-                    ++st.stageSample;
-                    if(st.stageSample >= st.attackSamples)
-                    {
-                        st.stageSample = 0;
-                        if(!p.loop)  // loop mode replays the curve instead of holding
-                        {
-                            st.value = matrixEnvBreakpointEval(p, 1.0f);
-                            st.state = PartialState::Sustain;
-                        }
-                    }
-                    break;
-                }
-                case PartialState::Decay:
-                case PartialState::Sustain:
-                    st.value = matrixEnvBreakpointEval(p, 1.0f);
-                    break;
-                case PartialState::Release:
-                {
-                    const float tau = float(st.stageSample) / float(std::max(1, st.releaseSamples));
-                    const float endValue = matrixEnvBreakpointEval(p, 1.0f);
-                    st.value = st.releaseFrom + (endValue - st.releaseFrom) * tau;
-                    ++st.stageSample;
-                    if(st.stageSample >= st.releaseSamples)
-                    {
-                        st.value = endValue;
-                        st.stageSample = 0;
-                        st.state = PartialState::Idle;
-                    }
-                    break;
-                }
-                case PartialState::Idle:
-                    st.value = matrixEnvBreakpointEval(p, 1.0f);
-                    break;
-            }
-            return st.value;
-        }
-
-        const float sustain = clampf(p.sustain, 0.0f, 1.0f);
-        switch(st.state)
-        {
-            case PartialState::Attack:
-            {
-                const float tau = float(st.stageSample) / float(std::max(1, st.attackSamples));
-                st.value = envCurveEval(p.attackCurve, tau, p.etaA);
-                ++st.stageSample;
-                if(st.stageSample >= st.attackSamples)
-                {
-                    st.value = 1.0f;
-                    st.stageSample = 0;
-                    st.state = PartialState::Decay;
-                }
-                break;
-            }
-            case PartialState::Decay:
-            {
-                const float tau = float(st.stageSample) / float(std::max(1, st.decaySamples));
-                const float f = envCurveEval(p.decayCurve, tau, p.etaD);
-                st.value = sustain + (1.0f - sustain) * (1.0f - f);
-                ++st.stageSample;
-                if(st.stageSample >= st.decaySamples)
-                {
-                    st.value = sustain;
-                    st.stageSample = 0;
-                    st.state = PartialState::Sustain;
-                }
-                break;
-            }
-            case PartialState::Sustain:
-                st.value = sustain;
-                break;
-            case PartialState::Release:
-            {
-                const float tau = float(st.stageSample) / float(std::max(1, st.releaseSamples));
-                const float f = envCurveEval(p.releaseCurve, tau, p.etaR);
-                st.value = st.releaseFrom * (1.0f - f);
-                ++st.stageSample;
-                if(st.stageSample >= st.releaseSamples)
-                {
-                    st.value = 0.0f;
-                    st.stageSample = 0;
-                    st.state = PartialState::Idle;
-                }
-                break;
-            }
-            case PartialState::Idle:
-                st.value = 0.0f;
-                break;
-        }
-        return st.value;
-    };
-
     for(int s = 0; s < numSamples; ++s)
     {
         globalEnvScratch_[(size_t)s] = advanceAdsr(ampEnv_, sustain_, adsrCurve_, adsrCurve_, adsrCurve_);
-        for(int e = 0; e < kMaxModEnvs; ++e)
-        {
-            const auto &p = modEnvParams_[(size_t)e];
-            const float raw = advanceMatrixEnv(modEnvState_[(size_t)e], p);
-            envScratch_[(size_t)e][(size_t)s] = raw;
-            modEnvLevel_[(size_t)e] = raw; // ENVs always active (no enable gate)
-        }
         for(int e = 0; e < kMaxAmpEnvs; ++e)
         {
             const auto &params = sharedAmpEnvParams_[(size_t)e];
@@ -972,8 +1013,9 @@ void Voice::beginPartialRender(int numSamples)
         {
             if(t < trackCount && renderTrackCount_ > 0)
             {
-                const int envIndex = std::clamp(trackRuntime_[(size_t)t].ampEnvIndex, 0, kMaxAmpEnvs - 1);
-                trackEnvScratch_[(size_t)t][(size_t)s] = ampEnvScratch_[(size_t)envIndex][(size_t)s];
+                // Source tracks no longer have an implicit amp ADSR. Envelope
+                // shaping is explicit: wire AE1..AE4 nodes in the per-voice graph.
+                trackEnvScratch_[(size_t)t][(size_t)s] = 1.0f;
             }
             else if(t < trackCount)
             {
@@ -1039,13 +1081,19 @@ void Voice::renderPartialRangeRaw(float *left, float *right, int numSamples, int
 
             const float fBase = std::max(0.0f, freqCur_[i] + phaseDriftCur_[i]);
             const float morph = useMetaWavetable
-                                    ? clampf(morphCur_[(size_t)i] + dMorphCur_[(size_t)i], 0.0f, 1.0f)
+                                    ? clampf(morphCur_[(size_t)i], 0.0f, 1.0f)
                                     : 0.0f;
             const int frameCount = useMetaWavetable ? std::clamp(wave->frameCount, 1, kMaxWavetableFrames) : 1;
             const float framePos = morph * float(std::max(0, frameCount - 1));
             const int frameA = std::clamp(int(framePos), 0, frameCount - 1);
             const int frameB = std::min(frameA + 1, frameCount - 1);
             const float frameFrac = framePos - float(frameA);
+            // Only 3+ frames can cross a frame boundary during a sweep; 2 frames stay
+            // on the single [0,1] segment where linear already == the endpoints, so
+            // skip the two extra lookups there.
+            const bool cubicFrames = useMetaWavetable && frameCount > 2;
+            const int framePrev = std::max(frameA - 1, 0);
+            const int frameNext = std::min(frameB + 1, frameCount - 1);
 
             for(int u = 0; u < U; ++u)
             {
@@ -1065,21 +1113,24 @@ void Voice::renderPartialRangeRaw(float *left, float *right, int numSamples, int
                     const int mipLevel = wave->mipTables
                                              ? wavetableMipLevelForFrequency(oscillatorHz, float(sampleRate_))
                                              : 0;
-                    if(wave->mipTables)
+                    const auto *frameSet =
+                        wave->mipTables ? &(*wave->mipTables)[(size_t)mipLevel]
+                                        : (wave->tables ? wave->tables.get() : nullptr);
+                    if(frameSet != nullptr)
                     {
-                        const auto &frameTableA = (*wave->mipTables)[(size_t)mipLevel][(size_t)frameA];
-                        const auto &frameTableB = (*wave->mipTables)[(size_t)mipLevel][(size_t)frameB];
-                        const float a = lookupTablePosition(frameTableA, warped);
-                        const float b = lookupTablePosition(frameTableB, warped);
-                        osc = a + (b - a) * frameFrac;
-                    }
-                    else if(wave->tables)
-                    {
-                        const auto &frameTableA = (*wave->tables)[(size_t)frameA];
-                        const auto &frameTableB = (*wave->tables)[(size_t)frameB];
-                        const float a = lookupTablePosition(frameTableA, warped);
-                        const float b = lookupTablePosition(frameTableB, warped);
-                        osc = a + (b - a) * frameFrac;
+                        const auto &set = *frameSet;
+                        const float p1 = lookupTablePosition(set[(size_t)frameA], warped);
+                        const float p2 = lookupTablePosition(set[(size_t)frameB], warped);
+                        if(cubicFrames)
+                        {
+                            const float p0 = lookupTablePosition(set[(size_t)framePrev], warped);
+                            const float p3 = lookupTablePosition(set[(size_t)frameNext], warped);
+                            osc = catmullRomFrame(p0, p1, p2, p3, frameFrac);
+                        }
+                        else
+                        {
+                            osc = p1 + (p2 - p1) * frameFrac;
+                        }
                     }
                     else
                     {
@@ -1109,7 +1160,6 @@ void Voice::renderPartialRangeRaw(float *left, float *right, int numSamples, int
             freqCur_[i] += freqStep_[i];
             dPhaseCur_[i] += dPhaseStep_[i];
             dPanCur_[i] += dPanStep_[i];
-            dMorphCur_[i] += dMorphStep_[i];
             dWarpCur_[i] += dWarpStep_[i];
             phaseDriftCur_[i] += phaseDriftStep_[i];
             phaseJitterCur_[i] += phaseJitterStep_[i];
@@ -1150,16 +1200,38 @@ void Voice::finalizeBlock(int numSamples)
     {
         float envSum = 0.0f;
         bool anyActive = false;
-        for(int t = 0; t < trackCount; ++t)
+        int envCount = 0;
+        if(route_.valid)
         {
-            const int envIndex = renderTrackCount_ > 0
-                                     ? std::clamp(trackRuntime_[(size_t)t].ampEnvIndex, 0, kMaxAmpEnvs - 1)
-                                     : 0;
-            envSum += sharedAmpEnvState_[(size_t)envIndex].value;
-            if(sharedAmpEnvState_[(size_t)envIndex].state != PartialState::Idle)
-                anyActive = true;
+            std::array<bool, kMaxAmpEnvs> seenEnv {};
+            for(int e = 0; e < kMaxAmpEnvRouteNodes; ++e)
+            {
+                if(route_.ampEnvInputCount[(size_t)e] == 0)
+                    continue;
+                const int envIndex = std::clamp(int(route_.ampEnvSlot[(size_t)e]), 0, kMaxAmpEnvs - 1);
+                if(seenEnv[(size_t)envIndex])
+                    continue;
+                seenEnv[(size_t)envIndex] = true;
+                envSum += sharedAmpEnvState_[(size_t)envIndex].value;
+                ++envCount;
+                if(sharedAmpEnvState_[(size_t)envIndex].state != PartialState::Idle)
+                    anyActive = true;
+            }
         }
-        avgEnv_ = envSum / float(std::max(1, trackCount));
+        if(envCount == 0)
+        {
+            for(int t = 0; t < trackCount; ++t)
+            {
+                const int envIndex = renderTrackCount_ > 0
+                                         ? std::clamp(trackRuntime_[(size_t)t].ampEnvIndex, 0, kMaxAmpEnvs - 1)
+                                         : 0;
+                envSum += sharedAmpEnvState_[(size_t)envIndex].value;
+                ++envCount;
+                if(sharedAmpEnvState_[(size_t)envIndex].state != PartialState::Idle)
+                    anyActive = true;
+            }
+        }
+        avgEnv_ = envSum / float(std::max(1, envCount));
         if(!anyActive)
         {
             idle_ = true;
@@ -1190,7 +1262,17 @@ void Voice::processSourceFilter(float *left, float *right, int numSamples, const
                                 SourceFilterRuntime &state, bool applyGainPanFlag)
 {
     numSamples = std::min(numSamples, kMaxVoiceRenderBlockSamples);
-    const auto &filter = source.filter;
+    const float gain = applyGainPanFlag ? clampf(source.gain, 0.0f, 2.0f) : 1.0f;
+    const float pan = applyGainPanFlag ? clampf(source.pan, -1.0f, 1.0f) : 0.0f;
+    const float gainL = gain * (pan <= 0.0f ? 1.0f : 1.0f - pan);
+    const float gainR = gain * (pan >= 0.0f ? 1.0f : 1.0f + pan);
+    processSourceFilterParams(left, right, numSamples, source.filter, state, gainL, gainR);
+}
+
+void Voice::processSourceFilterParams(float *left, float *right, int numSamples, const SourceFilterParams &filter,
+                                      SourceFilterRuntime &state, float gainL, float gainR)
+{
+    numSamples = std::min(numSamples, kMaxVoiceRenderBlockSamples);
     const float mix = filter.enabled && filter.topology != SourceFilterTopology::Bypass
                           ? clampf(filter.mix, 0.0f, 1.0f)
                           : 0.0f;
@@ -1199,10 +1281,6 @@ void Voice::processSourceFilter(float *left, float *right, int numSamples, const
     const float resonance = clampf(filter.resonance, 0.0f, 0.95f);
     const float drive = clampf(filter.drive, 0.1f, 8.0f);
     const float feedback = clampf(filter.feedback, 0.0f, 0.95f);
-    const float gain = applyGainPanFlag ? clampf(source.gain, 0.0f, 2.0f) : 1.0f;
-    const float pan = applyGainPanFlag ? clampf(source.pan, -1.0f, 1.0f) : 0.0f;
-    const float gainL = gain * (pan <= 0.0f ? 1.0f : 1.0f - pan);
-    const float gainR = gain * (pan >= 0.0f ? 1.0f : 1.0f + pan);
 
     const auto processOne = [&](float x, bool rightChannel) {
         float &lp1 = rightChannel ? state.lp1R : state.lp1L;
@@ -1257,6 +1335,23 @@ void Voice::processSourceFilter(float *left, float *right, int numSamples, const
     }
 }
 
+void Voice::processPerVoiceFilters(float *left, float *right, int numSamples,
+                                   const RenderTrackRuntime &runtime, SourceFilterRuntime *states,
+                                   bool applyGainPanFlag)
+{
+    numSamples = std::min(numSamples, kMaxVoiceRenderBlockSamples);
+    const int count = std::clamp(runtime.perVoiceFilterOrderCount, 0, kMaxPerVoiceFilters);
+    for(int i = 0; i < count; ++i)
+    {
+        const int filterIdx = int(runtime.perVoiceFilterOrder[(size_t)i]);
+        if(filterIdx < 0 || filterIdx >= runtime.perVoiceFilterCount || filterIdx >= kMaxPerVoiceFilters)
+            continue;
+        processSourceFilterParams(left, right, numSamples, runtime.perVoiceFilters[(size_t)filterIdx], states[filterIdx]);
+    }
+    if(applyGainPanFlag)
+        applyGainPan(left, right, numSamples, runtime.strip);
+}
+
 bool Voice::debugVerifyDecayTransient()
 {
     constexpr double fs = 48000.0;
@@ -1281,9 +1376,9 @@ bool Voice::debugVerifyDecayTransient()
     UnisonParams unison;
     MatrixVoiceOutput matrixOut;
     initMatrixOutput(matrixOut);
-    std::array<MatrixEnvParams, kMaxModEnvs> matrixEnvs {};
+    std::array<ModSlotParams, kMaxModSlots> modSlots {};
     std::array<AdsrParams, kMaxAmpEnvs> ampEnvs {};
-    voice.noteOn(60, 1.0f, frame, adsr, ampEnvs, matrixEnvs, unison, RenderQualityMode::Normal, 1);
+    voice.noteOn(60, 1.0f, frame, adsr, ampEnvs, modSlots, unison, RenderQualityMode::Normal, 1);
 
     std::array<float, blockSize> left {};
     std::array<float, blockSize> right {};
@@ -1296,8 +1391,7 @@ bool Voice::debugVerifyDecayTransient()
         std::fill(left.begin(), left.end(), 0.0f);
         std::fill(right.begin(), right.end(), 0.0f);
         std::array<RenderTrackRuntime, kMaxSourceTracks> runtime {};
-        std::array<LfoParams, kMaxLfos> noLfos {};
-        voice.updateControl(frame, matrixOut, adsr, ampEnvs, matrixEnvs, noLfos, unison, runtime, 0,
+        voice.updateControl(frame, matrixOut, adsr, ampEnvs, modSlots, unison, runtime, 0,
                             RenderQualityMode::Normal, 1.0f, chunk);
         voice.renderAdd(left.data(), right.data(), chunk);
         for(int i = 0; i < chunk; ++i)

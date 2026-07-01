@@ -1,0 +1,276 @@
+#include "../../KapibaraUI.hpp"
+
+#include <fstream>
+#include <sstream>
+#include <type_traits>
+
+START_NAMESPACE_DISTRHO
+
+namespace
+{
+std::string hexEncode(const void *d, size_t n)
+{
+        static const char *H = "0123456789abcdef";
+        const unsigned char *p = static_cast<const unsigned char *>(d);
+        std::string s; s.reserve(n * 2);
+        for(size_t i = 0; i < n; ++i) { s.push_back(H[p[i] >> 4]); s.push_back(H[p[i] & 0xf]); }
+        return s;
+}
+void hexDecode(const std::string &s, void *out, size_t n)
+{
+        unsigned char *p = static_cast<unsigned char *>(out);
+        const auto nib = [](char c) -> int { return (c >= '0' && c <= '9') ? c - '0' : (c >= 'a' && c <= 'f') ? c - 'a' + 10 : 0; };
+        for(size_t i = 0; i < n && i * 2 + 1 < s.size(); ++i)
+            p[i] = uint8_t((nib(s[i * 2]) << 4) | nib(s[i * 2 + 1]));
+}
+// Hex a trivially-copyable POD param struct. (InsertEffect can't be blob-copied
+// whole because ConvSlotParams holds a shared_ptr + std::string.)
+template <typename T> std::string hexPod(const T &v)
+{
+        static_assert(std::is_trivially_copyable<T>::value, "hexPod requires a POD struct");
+        return hexEncode(&v, sizeof(T));
+}
+template <typename T> void unhexPod(const std::string &s, T &v)
+{
+        static_assert(std::is_trivially_copyable<T>::value, "unhexPod requires a POD struct");
+        hexDecode(s, &v, sizeof(T));
+}
+} // namespace
+
+// Modern-state persistence: the legacy preset (plugin side) doesn't save the
+// multi-track routing/structure, so the UI appends it here and parses it back.
+void KapibaraUI::saveModernState(const std::string &path)
+{
+        std::ofstream out(path, std::ios::app);
+        if(!out) return;
+        out << "modern 1\n";
+        for(size_t ti = 0; ti < generator_.tracks.size(); ++ti)
+        {
+            const auto &t = generator_.tracks[ti];
+            out << "mtrack " << ti << ' ' << t.id << ' ' << int(t.type) << ' ' << t.gain << ' ' << t.pan << ' ' << t.send
+                << ' ' << t.ampEnvIndex << ' ' << int(t.mute) << ' ' << int(t.solo)
+                << ' ' << t.unison.voices << ' ' << t.unison.detuneCents << ' ' << t.unison.widthStereo << ' ' << t.unison.phaseSpread
+                << ' ' << int(t.basicShape) << ' ' << t.pulseWidth << ' ' << t.subLevel << ' ' << int(t.sampleNoiseMode) << ' ' << t.noiseColor
+                << ' ' << t.partialBank.partialCount << ' ' << t.perVoiceFilterCount << ' ' << t.inserts.size() << "\n";
+            out << "mtname " << ti << ' ' << t.name << "\n";
+            for(int s = 0; s < t.perVoiceFilterCount && s < synth::kMaxPerVoiceFilters; ++s)
+            {
+                const auto &f = t.perVoiceFilters[(size_t)s];
+                out << "mpvf " << ti << ' ' << s << ' ' << int(f.enabled) << ' ' << int(f.topology) << ' '
+                    << f.cutoffHz << ' ' << f.resonance << ' ' << f.drive << ' ' << f.feedback << ' ' << f.mix << "\n";
+            }
+            for(size_t ii = 0; ii < t.inserts.size(); ++ii)
+            {
+                const auto &e = t.inserts[ii];
+                out << "mins " << ti << ' ' << ii << ' ' << int(e.kind) << ' ' << int(e.bypass)
+                    << ' ' << hexPod(e.filter) << ' ' << hexPod(e.dist) << ' ' << hexPod(e.eq)
+                    << ' ' << hexPod(e.comp) << ' ' << hexPod(e.delay) << ' ' << hexPod(e.reverb) << "\n";
+                if(!e.conv.irName.empty())
+                    out << "minsconv " << ti << ' ' << ii << ' ' << e.conv.irName << "\n"; // IR audio not persisted, only its name
+            }
+        }
+        for(const auto &w : routeWires_)
+            out << "mwire " << w.from.nodeId << ' ' << int(w.from.port) << ' ' << w.to.nodeId << ' ' << int(w.to.port) << "\n";
+        for(const auto &kv : nodeOutPortCount_)
+            out << "moutp " << kv.first << ' ' << kv.second << "\n";
+        for(const auto &kv : structUtilCount_)
+            out << "mutc " << kv.first << ' ' << kv.second << "\n";
+        for(const auto &kv : structUtilParams_)
+            out << "mutp " << kv.first << ' ' << kv.second.level << ' ' << kv.second.pan << ' '
+                << kv.second.bandLoHz << ' ' << kv.second.bandHiHz << ' ' << int(kv.second.bandOn) << "\n";
+        for(const auto &kv : structNodePos_)
+            for(const auto &np : kv.second)
+                out << "mnp " << kv.first << ' ' << np.first << ' ' << np.second.x << ' ' << np.second.y << "\n";
+        for(const auto &kv : structWires_)
+            for(const auto &w : kv.second)
+                out << "msw " << kv.first << ' ' << w.from.nodeId << ' ' << int(w.from.port) << ' ' << w.to.nodeId << ' ' << int(w.to.port) << "\n";
+    }
+
+void KapibaraUI::loadModernState(const std::string &path)
+{
+        std::ifstream in(path);
+        if(!in) return;
+        bool hasModern = false;
+        std::vector<synth::SourceTrackParams> tracks;
+        std::vector<synth::GridWire> wires;
+        std::unordered_map<uint32_t, int> outPorts;
+        std::unordered_map<uint32_t, int> utilCount;
+        std::unordered_map<uint64_t, synth::RouteUtilParams> utilParams;
+        std::unordered_map<uint32_t, std::unordered_map<int, synth::GridPoint>> nodePos;
+        std::unordered_map<uint32_t, std::vector<synth::GridWire>> sWires;
+        const auto ensureTrack = [&](int ti) { if(ti >= 0 && ti >= int(tracks.size())) tracks.resize((size_t)ti + 1); };
+        std::string line;
+        while(std::getline(in, line))
+        {
+            std::istringstream ss(line);
+            std::string tok; ss >> tok;
+            if(tok == "modern") { hasModern = true; continue; }
+            if(!hasModern) continue;
+            if(tok == "mtrack")
+            {
+                int ti; ss >> ti; ensureTrack(ti); if(ti < 0) continue;
+                auto &t = tracks[(size_t)ti];
+                int type, mute, solo, bshape, snmode, pc, pvfc, insc; unsigned id;
+                ss >> id >> type >> t.gain >> t.pan >> t.send >> t.ampEnvIndex >> mute >> solo
+                   >> t.unison.voices >> t.unison.detuneCents >> t.unison.widthStereo >> t.unison.phaseSpread
+                   >> bshape >> t.pulseWidth >> t.subLevel >> snmode >> t.noiseColor >> pc >> pvfc >> insc;
+                t.id = id; t.type = synth::SourceTrackType(type); t.mute = mute; t.solo = solo;
+                t.basicShape = synth::BasicOscillatorShape(bshape); t.sampleNoiseMode = synth::SampleNoiseMode(snmode);
+                t.partialBank.partialCount = pc; t.perVoiceFilterCount = pvfc; t.inserts.clear();
+            }
+            else if(tok == "mtname")
+            {
+                int ti; ss >> ti; ensureTrack(ti); if(ti < 0) continue;
+                std::string name; std::getline(ss, name);
+                if(!name.empty() && name.front() == ' ') name.erase(name.begin());
+                tracks[(size_t)ti].name = name;
+            }
+            else if(tok == "mpvf")
+            {
+                int ti, s, en, topo; ss >> ti >> s; ensureTrack(ti);
+                if(ti < 0 || s < 0 || s >= synth::kMaxPerVoiceFilters) continue;
+                auto &f = tracks[(size_t)ti].perVoiceFilters[(size_t)s];
+                ss >> en >> topo >> f.cutoffHz >> f.resonance >> f.drive >> f.feedback >> f.mix;
+                f.enabled = en; f.topology = synth::SourceFilterTopology(topo);
+            }
+            else if(tok == "mins")
+            {
+                int ti, ii, kind, byp; ss >> ti >> ii >> kind >> byp; ensureTrack(ti);
+                if(ti < 0 || ii < 0) continue;
+                InsertEffect e; e.kind = uint8_t(kind); e.bypass = byp != 0;
+                std::string hf, hd, he, hc, hdl, hr; ss >> hf >> hd >> he >> hc >> hdl >> hr;
+                unhexPod(hf, e.filter); unhexPod(hd, e.dist); unhexPod(he, e.eq);
+                unhexPod(hc, e.comp); unhexPod(hdl, e.delay); unhexPod(hr, e.reverb);
+                auto &v = tracks[(size_t)ti].inserts;
+                if(int(v.size()) <= ii) v.resize((size_t)ii + 1);
+                v[(size_t)ii] = e;
+            }
+            else if(tok == "minsconv")
+            {
+                int ti, ii; ss >> ti >> ii; if(ti < 0 || ii < 0 || ti >= int(tracks.size())) continue;
+                auto &v = tracks[(size_t)ti].inserts;
+                if(ii >= int(v.size())) continue;
+                std::string name; std::getline(ss, name);
+                if(!name.empty() && name.front() == ' ') name.erase(name.begin());
+                v[(size_t)ii].conv.irName = name;
+            }
+            else if(tok == "mwire")
+            {
+                synth::GridWire w; unsigned fn, tn; int fp, tp; ss >> fn >> fp >> tn >> tp;
+                w.from = { fn, uint8_t(fp) }; w.to = { tn, uint8_t(tp) }; wires.push_back(w);
+            }
+            else if(tok == "moutp") { unsigned id; int c; ss >> id >> c; outPorts[id] = c; }
+            else if(tok == "mutc") { unsigned id; int c; ss >> id >> c; utilCount[id] = c; }
+            else if(tok == "mutp")
+            {
+                uint64_t k; synth::RouteUtilParams up; int on;
+                ss >> k >> up.level >> up.pan >> up.bandLoHz >> up.bandHiHz >> on; up.bandOn = on; utilParams[k] = up;
+            }
+            else if(tok == "mnp") { unsigned c; int local, x, y; ss >> c >> local >> x >> y; nodePos[c][local] = { x, y }; }
+            else if(tok == "msw")
+            {
+                unsigned c, fn, tn; int fp, tp; ss >> c >> fn >> fp >> tn >> tp;
+                synth::GridWire w; w.from = { fn, uint8_t(fp) }; w.to = { tn, uint8_t(tp) };
+                sWires[c].push_back(w);
+            }
+        }
+        if(!hasModern) return;
+        if(!tracks.empty()) generator_.tracks = tracks;
+        routeWires_ = wires;
+        nodeOutPortCount_ = outPorts;
+        structUtilCount_ = utilCount;
+        structUtilParams_ = utilParams;
+        structNodePos_ = nodePos;
+        structWires_ = sWires;
+        selectedTrack_ = clampi(selectedTrack_, 0, std::max(0, int(generator_.tracks.size()) - 1));
+        // Recomputes each track's routing fields (filter/insert order, connectedToMaster)
+        // from the restored wires, then pushes all tracks + the compiled route to the engine.
+        rebuildSelectedPerVoiceRouteFromWires();
+    }
+
+void KapibaraUI::appendPresetNameChar(char ch)
+{
+        const bool ok = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')
+                        || ch == '_' || ch == '-' || ch == ' ';
+        if(!ok || presetNameBuffer_.size() >= 64)
+            return;
+        presetNameBuffer_.push_back(ch);
+    }
+
+std::string KapibaraUI::trimPresetName(std::string s)
+{
+        while(!s.empty() && std::isspace(static_cast<unsigned char>(s.front())))
+            s.erase(s.begin());
+        while(!s.empty() && std::isspace(static_cast<unsigned char>(s.back())))
+            s.pop_back();
+        return s;
+    }
+
+std::string KapibaraUI::safeFileStem(std::string s, const char *fallback)
+{
+        s = trimPresetName(std::move(s));
+        std::string out;
+        for(char ch : s)
+        {
+            const bool ok = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')
+                            || ch == '_' || ch == '-' || ch == ' ';
+            if(ok)
+                out.push_back(ch);
+        }
+        return out.empty() ? std::string(fallback) : out;
+    }
+
+void KapibaraUI::beginSynthPresetRename()
+{
+        if(selectedPresetIndex_ >= 0 && selectedPresetIndex_ < int(presetNames_.size()))
+            presetNameBuffer_ = presetNames_[(size_t)selectedPresetIndex_];
+        else if(presetNameBuffer_.empty())
+            presetNameBuffer_ = "user_kapibara";
+        presetNameEditing_ = true;
+        presetNameEditTarget_ = PresetNameEditTarget::Synth;
+        skipNextPresetCharacterInput_ = false;
+    }
+
+void KapibaraUI::beginWavetablePresetRename()
+{
+        if(selectedWavetablePresetIndex_ >= 0 && selectedWavetablePresetIndex_ < int(wavetablePresets_.size()))
+            presetNameBuffer_ = wavetablePresets_[(size_t)selectedWavetablePresetIndex_].name;
+        else if(!wavetablePresetLabel_.empty() && wavetablePresetLabel_ != "Select Wavetable")
+            presetNameBuffer_ = wavetablePresetLabel_;
+        else
+            presetNameBuffer_ = "wavetable";
+        presetNameEditing_ = true;
+        presetNameEditTarget_ = PresetNameEditTarget::Wavetable;
+        skipNextPresetCharacterInput_ = false;
+    }
+
+void KapibaraUI::commitPresetNameEdit()
+{
+        const auto target = presetNameEditTarget_;
+        presetNameEditing_ = false;
+        presetNameEditTarget_ = PresetNameEditTarget::None;
+        skipNextPresetCharacterInput_ = false;
+        const std::string clean = safeFileStem(presetNameBuffer_, target == PresetNameEditTarget::Wavetable ? "wavetable" : "user_kapibara");
+        presetNameBuffer_ = clean;
+        if(target == PresetNameEditTarget::Synth)
+        {
+            releaseAllUiNotes();
+            if(auto *p = plugin())
+            {
+                p->saveUserPreset(clean.c_str());
+                saveModernState(p->presetFilePath(clean.c_str()));
+            }
+            pullFromPlugin();
+            for(int i = 0; i < int(presetNames_.size()); ++i)
+                if(presetNames_[(size_t)i] == clean)
+                    selectedPresetIndex_ = i;
+            presetLabel_ = clean;
+        }
+        else if(target == PresetNameEditTarget::Wavetable)
+        {
+            saveOrRenameWavetablePreset(clean);
+        }
+    }
+
+
+END_NAMESPACE_DISTRHO

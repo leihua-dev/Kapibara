@@ -32,15 +32,15 @@ build/dpf/bin/kapibara
 |------|------|
 | `src/plugin/dpf/DistrhoPluginInfo.h` | DPF metadata, NanoVG/OpenGL3 UI setting |
 | `src/plugin/dpf/KapibaraPlugin.*` | DPF synth shell, MIDI bridge, audio `run()`, preset save/load |
-| `src/plugin/dpf/KapibaraUI.cpp` | NanoVG single-screen Seed dashboard and bottom keyboard |
+| `src/plugin/dpf/ui/` | NanoVG single-screen Seed dashboard, routing grids, and bottom keyboard |
 | `src/engine/SynthCore.h/.cpp` | Seed snapshot publication, voice pool, MIDI queue, undo stack |
 | `src/engine/Voice.h/.cpp` | Wavetable oscillator lanes, true unison, per-voice ADSR |
-| `src/engine/MatrixEngine.h/.cpp` | 4 LFOs, 4 ENV breakpoint curves, 16 matrix rules, chaos/key-track sources |
+| `src/engine/ModMatrix.h/.cpp` | 4 LFOs, 4 ENV breakpoint curves, 16 matrix rules, chaos/key-track sources |
 | `src/dsp/Generators.h/.cpp` | 64-slot wavetable partial model, FFT, mip-level bake, spectral morph |
-| `src/dsp/Operators.h/.cpp` | Non-destructive spectral edit operators applied post-generation |
-| `src/dsp/Effects.h/.cpp` | Seed tone FX (EQ + filter) applied after voice mix |
-| `src/model/SpectralFrame.h` | Core data type: StaticSpectralFrame (ν, amp, x, μ), SpectralTimeline |
-| `src/model/CompositionModel.h` | SeedPatch preset schema, parameter lock scopes |
+| `src/dsp/InsertEffects.h` | Strip-grid insert parameters and DSP helpers |
+| `src/dsp/MasterEffects.h/.cpp` | Seed tone FX (EQ + filter) applied after strip-grid inserts |
+| `src/dsp/SpectralFrame.h` | Core data type: StaticSpectralFrame (nu, amp, x, mu), SpectralTimeline |
+| `src/engine/SeedPatch.h` | Current SeedPatch preset boundary |
 
 ## Rules
 

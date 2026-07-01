@@ -42,6 +42,7 @@ CPU use is driven by:
 | Rendered partial lanes | up to 64 across all tracks |
 | Unison voices | multiplies partial lanes directly |
 | Meta Oscillator morph/warp | frame interpolation per voice per partial |
-| Tone FX (`dsp/Effects`) | EQ + filter applied once per block after voice sum |
+| Strip-grid inserts | Per-source bus FX applied after voice accumulation |
+| Tone FX (`dsp/MasterEffects`) | EQ + filter applied once per block after strip-grid inserts |
 
 Use Panic to clear held voices immediately when testing heavy unison settings.

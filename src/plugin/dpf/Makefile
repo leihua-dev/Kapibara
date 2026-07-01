@@ -8,12 +8,33 @@ FILES_DSP = \
 	KapibaraPlugin.cpp \
 	../../engine/SynthCore.cpp \
 	../../engine/Voice.cpp \
-	../../dsp/Generators.cpp \
-	../../engine/MatrixEngine.cpp \
-	../../dsp/Operators.cpp \
-	../../dsp/Effects.cpp
+	../../dsp/WavetableCore.cpp \
+	../../dsp/GeneratorBank.cpp \
+	../../dsp/BasicOscDsp.cpp \
+	../../dsp/SampleNoiseDsp.cpp \
+	../../engine/AdsrEnv.cpp \
+	../../engine/ModMatrix.cpp \
+	../../dsp/MasterEffects.cpp
 
-FILES_UI = KapibaraUI.cpp
+FILES_UI = \
+	ui/KapibaraUI.cpp \
+	$(wildcard ui/sections/core/*.cpp) \
+	$(wildcard ui/sections/menus/*.cpp) \
+	$(wildcard ui/sections/presets/*.cpp) \
+	$(wildcard ui/sections/fx/*.cpp) \
+	$(wildcard ui/sections/router/*.cpp) \
+	$(wildcard ui/sections/source/*.cpp) \
+	$(wildcard ui/sections/pervoice/*.cpp) \
+	$(wildcard ui/sections/sync/*.cpp) \
+	$(wildcard ui/sections/page/*.cpp) \
+	$(wildcard ui/sections/visuals/*.cpp) \
+	$(wildcard ui/sections/input/*.cpp) \
+	$(wildcard ui/sections/osc/partialbank/*.cpp) \
+	$(wildcard ui/sections/osc/meta/*.cpp) \
+	$(wildcard ui/sections/osc/basic/*.cpp) \
+	$(wildcard ui/sections/osc/noise/*.cpp) \
+	$(wildcard ui/sections/osc/shared/*.cpp) \
+	$(wildcard ui/sections/matrix/*.cpp)
 
 include $(DPF_PATH)/Makefile.plugins.mk
 

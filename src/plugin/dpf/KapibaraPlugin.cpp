@@ -243,6 +243,15 @@ void KapibaraPlugin::moveSourceTrack(uint32_t trackId, int newIndex)
 void KapibaraPlugin::updateSourceTrack(uint32_t trackId, const synth::SourceTrackParams &track)
 {
     auto clean = track;
+    const auto clampSourceFilter = [](synth::SourceFilterParams &filter) {
+        filter.cutoffHz = clampf(filter.cutoffHz, 20.0f, 20000.0f);
+        filter.resonance = clampf(filter.resonance, 0.0f, 0.95f);
+        filter.drive = clampf(filter.drive, 0.1f, 8.0f);
+        filter.feedback = clampf(filter.feedback, 0.0f, 0.95f);
+        filter.mix = clampf(filter.mix, 0.0f, 1.0f);
+        const int topology = std::clamp(int(filter.topology), 0, int(synth::SourceFilterTopology::FeedbackLadder));
+        filter.topology = static_cast<synth::SourceFilterTopology>(topology);
+    };
     clean.gain = clampf(clean.gain, 0.0f, 2.0f);
     clean.pan = clampf(clean.pan, -1.0f, 1.0f);
     clean.send = clampf(clean.send, 0.0f, 1.0f);
@@ -257,10 +266,35 @@ void KapibaraPlugin::updateSourceTrack(uint32_t trackId, const synth::SourceTrac
     clean.ampEnvelope.release = clampf(clean.ampEnvelope.release, 0.0f, 8.0f);
     clean.ampEnvelope.curve = clampf(clean.ampEnvelope.curve, 0.0f, 1.0f);
     clean.partialBank.partialCount = std::clamp(clean.partialBank.partialCount, 1, synth::kMaxWavetablePartials);
+    clean.partialBank.frameCount = std::clamp(clean.partialBank.frameCount, 1, synth::kMaxWavetableFrames);
+    clean.partialBank.morph = clampf(clean.partialBank.morph, 0.0f, 1.0f);
     clean.metaOsc.frameCount = std::clamp(clean.metaOsc.frameCount, 1, synth::kMaxWavetableFrames);
+    clean.metaOsc.phaseRandom = clampf(clean.metaOsc.phaseRandom, 0.0f, 1.0f);
     clean.pulseWidth = clampf(clean.pulseWidth, 0.05f, 0.95f);
     clean.subLevel = clampf(clean.subLevel, 0.0f, 1.0f);
     clean.noiseColor = clampf(clean.noiseColor, 0.0f, 1.0f);
+    clean.perVoiceFilterCount = std::clamp(clean.perVoiceFilterCount, 0, synth::kMaxPerVoiceFilters);
+    clean.perVoiceFilterOrderCount = std::clamp(clean.perVoiceFilterOrderCount, 0, synth::kMaxPerVoiceFilters);
+    clampSourceFilter(clean.strip.filter);
+    for(int i = 0; i < synth::kMaxPerVoiceFilters; ++i)
+        clampSourceFilter(clean.perVoiceFilters[(size_t)i]);
+    if(clean.perVoiceFilterCount <= 0 && clean.strip.filter.enabled)
+    {
+        clean.perVoiceFilterCount = 1;
+        clean.perVoiceFilters[0] = clean.strip.filter;
+    }
+    if(clean.perVoiceFilterCount == 1 && !clean.perVoiceFilters[0].enabled && clean.strip.filter.enabled)
+        clean.perVoiceFilters[0] = clean.strip.filter;
+    if(clean.perVoiceFilterCount > 0)
+        clean.strip.filter = clean.perVoiceFilters[0];
+    int keptOrder = 0;
+    for(int i = 0; i < clean.perVoiceFilterOrderCount; ++i)
+    {
+        const uint8_t idx = clean.perVoiceFilterOrder[(size_t)i];
+        if(idx < clean.perVoiceFilterCount)
+            clean.perVoiceFilterOrder[(size_t)keptOrder++] = idx;
+    }
+    clean.perVoiceFilterOrderCount = keptOrder;
     core_.setSourceTrack(trackId, clean);
 }
 
@@ -272,6 +306,28 @@ void KapibaraPlugin::updateSourceTrackMorphOnly(uint32_t trackId, float morph)
 void KapibaraPlugin::updateSourceTracks(const std::vector<synth::SourceTrackParams> &tracks)
 {
     core_.setSourceTracks(tracks);
+}
+
+void KapibaraPlugin::updatePerVoiceFiltersGlobal(
+    const std::array<synth::SourceFilterParams, synth::kMaxPerVoiceFilters> &filters, int count)
+{
+    auto clean = filters;
+    for(auto &f : clean)
+    {
+        f.cutoffHz = clampf(f.cutoffHz, 20.0f, 20000.0f);
+        f.resonance = clampf(f.resonance, 0.0f, 0.95f);
+        f.drive = clampf(f.drive, 0.1f, 8.0f);
+        f.feedback = clampf(f.feedback, 0.0f, 0.95f);
+        f.mix = clampf(f.mix, 0.0f, 1.0f);
+        const int topology = std::clamp(int(f.topology), 0, int(synth::SourceFilterTopology::FeedbackLadder));
+        f.topology = static_cast<synth::SourceFilterTopology>(topology);
+    }
+    core_.setPerVoiceFiltersGlobal(clean, std::clamp(count, 0, synth::kMaxPerVoiceFilters));
+}
+
+void KapibaraPlugin::updateCompiledRoute(const synth::CompiledPerVoiceRoute &route)
+{
+    core_.setCompiledRoute(route);
 }
 
 void KapibaraPlugin::setPartialEnabled(int index, bool enabled)
@@ -315,6 +371,7 @@ void KapibaraPlugin::updatePartialSlot(int index, const synth::WavetablePartialS
     clean.ratio = clampf(clean.ratio, 0.01f, 128.0f);
     clean.amp = clampf(clean.amp, 0.0f, 1.0f);
     clean.phase = clampf(clean.phase, -kPi, kPi);
+    clean.phaseRandom = clampf(clean.phaseRandom, 0.0f, 1.0f);
     clean.pan = clampf(clean.pan, -1.0f, 1.0f);
     clean.frameCount = std::clamp(clean.frameCount, 1, synth::kMaxWavetableFrames);
     clean.morph = clampf(clean.morph, 0.0f, 1.0f);
@@ -366,6 +423,13 @@ std::vector<std::string> KapibaraPlugin::presetNames() const
     return names;
 }
 
+std::string KapibaraPlugin::wavetableUserDir() const
+{
+    std::error_code ec;
+    std::filesystem::create_directories(kWavetablePresetDirectory, ec);
+    return kWavetablePresetDirectory;
+}
+
 std::vector<WavetablePresetEntry> KapibaraPlugin::wavetablePresetEntries() const
 {
     std::vector<WavetablePresetEntry> entries;
@@ -382,7 +446,7 @@ std::vector<WavetablePresetEntry> KapibaraPlugin::wavetablePresetEntries() const
         auto extension = entry.path().extension().string();
         std::transform(extension.begin(), extension.end(), extension.begin(),
                        [](unsigned char ch) { return char(std::tolower(ch)); });
-        if(extension != ".wav")
+        if(extension != ".wav" && extension != ".kwt")
             continue;
         auto relative = std::filesystem::relative(entry.path(), root, ec);
         if(ec)
@@ -395,6 +459,11 @@ std::vector<WavetablePresetEntry> KapibaraPlugin::wavetablePresetEntries() const
     }
     std::sort(entries.begin(), entries.end(), [](const auto &a, const auto &b) { return a.name < b.name; });
     return entries;
+}
+
+std::string KapibaraPlugin::presetFilePath(const char *name) const
+{
+    return presetPathForName(name).string();
 }
 
 bool KapibaraPlugin::saveUserPreset(const char *name)
@@ -411,7 +480,7 @@ bool KapibaraPlugin::saveUserPreset(const char *name)
 
     const auto gen = core_.getGeneratorParams();
     const auto adsr = core_.getGlobalAdsr();
-    out << kPresetTag << " 5 " << synth::kMaxWavetableHarmonics << "\n";
+    out << kPresetTag << " 7 " << synth::kMaxWavetableHarmonics << "\n";
     out << "gain " << core_.getGlobalGain() << "\n";
     out << "adsr " << adsr.attack << ' ' << adsr.decay << ' ' << adsr.sustain << ' ' << adsr.release << ' ' << adsr.curve << "\n";
     for(int i = 0; i < synth::kMaxAmpEnvs; ++i)
@@ -423,6 +492,18 @@ bool KapibaraPlugin::saveUserPreset(const char *name)
     out << "generator " << gen.wavetableSeed.partialCount << ' ' << int(gen.wavetableSeed.freqShape) << ' '
         << gen.wavetableSeed.inharmonicAmount << ' ' << gen.unison.voices << ' ' << gen.unison.detuneCents << ' '
         << gen.unison.widthStereo << ' ' << gen.unison.phaseSpread << ' ' << gen.sourceCount << "\n";
+    out << "bankframes " << gen.wavetableSeed.frameCount << ' ' << gen.wavetableSeed.morph << "\n";
+    for(int f = 0; f < gen.wavetableSeed.frameCount; ++f)
+    {
+        out << "bankframe " << f;
+        const auto &frame = gen.wavetableSeed.frames[(size_t)f];
+        for(int h = 0; h < synth::kMaxWavetablePartials; ++h)
+        {
+            const auto &hm = frame.harmonics[(size_t)h];
+            out << ' ' << hm.ratio << ' ' << hm.amp << ' ' << hm.phase;
+        }
+        out << "\n";
+    }
 
     for(int i = 0; i < 8; ++i)
     {
@@ -438,7 +519,7 @@ bool KapibaraPlugin::saveUserPreset(const char *name)
         const auto &slot = gen.wavetableSeed.partials[(size_t)i];
         out << "partial " << i << ' ' << slot.enabled << ' ' << slot.ratio << ' ' << slot.amp << ' '
             << slot.phase << ' ' << slot.pan << ' ' << slot.frameCount << ' ' << slot.morph << ' '
-            << int(slot.warpMode) << ' ' << slot.warpAmount << "\n";
+            << int(slot.warpMode) << ' ' << slot.warpAmount << ' ' << slot.phaseRandom << "\n";
         if(i < synth::kEditableMetaPartials)
         {
             for(int f = 0; f < slot.frameCount; ++f)
@@ -519,6 +600,31 @@ bool KapibaraPlugin::loadUserPreset(const char *name)
             gen.wavetableSeed.freqShape = static_cast<synth::FreqShape>(std::clamp(shape, 0, 2));
             gen.sourceCount = synth::sanitizeGeneratorSourceCount(gen.sourceCount);
         }
+        else if(tag == "bankframes")
+        {
+            in >> gen.wavetableSeed.frameCount >> gen.wavetableSeed.morph;
+            gen.wavetableSeed.frameCount = std::clamp(gen.wavetableSeed.frameCount, 1, synth::kMaxWavetableFrames);
+            gen.wavetableSeed.morph = clampf(gen.wavetableSeed.morph, 0.0f, 1.0f);
+        }
+        else if(tag == "bankframe")
+        {
+            int frameIndex = 0;
+            in >> frameIndex;
+            if(frameIndex < 0 || frameIndex >= synth::kMaxWavetableFrames)
+                return false;
+            auto &frame = gen.wavetableSeed.frames[(size_t)frameIndex];
+            frame.useImportedWaveform = false;
+            frame.waveform.reset();
+            frame.spectrum.reset();
+            for(int h = 0; h < synth::kMaxWavetablePartials; ++h)
+            {
+                auto &hm = frame.harmonics[(size_t)h];
+                in >> hm.ratio >> hm.amp >> hm.phase;
+                if(hm.ratio <= 0.0f)
+                    hm.ratio = float(h + 1);
+            }
+            gen.wavetableSeed.frameCount = std::max(gen.wavetableSeed.frameCount, frameIndex + 1);
+        }
         else if(tag == "source")
         {
             int index = 0;
@@ -553,6 +659,9 @@ bool KapibaraPlugin::loadUserPreset(const char *name)
             auto &slot = gen.wavetableSeed.partials[(size_t)index];
             in >> enabled >> slot.ratio >> slot.amp >> slot.phase >> slot.pan >> slot.frameCount
                >> slot.morph >> warp >> slot.warpAmount;
+            if(version >= 7)
+                in >> slot.phaseRandom;
+            slot.phaseRandom = clampf(slot.phaseRandom, 0.0f, 1.0f);
             slot.enabled = enabled != 0;
             slot.frameCount = std::clamp(slot.frameCount, 1, synth::kMaxWavetableFrames);
             slot.warpMode = static_cast<synth::WavetableWarpMode>(std::clamp(warp, 0, 3));
@@ -639,19 +748,9 @@ synth::AdsrParams KapibaraPlugin::ampEnvParams(int index) const
     return core_.getAmpEnvParams(index);
 }
 
-synth::OperatorChain KapibaraPlugin::operatorChain() const
+synth::ModSlotParams KapibaraPlugin::modSlotParams(int index) const
 {
-    return core_.getOperatorChain();
-}
-
-synth::LfoParams KapibaraPlugin::lfoParams(int index) const
-{
-    return core_.getLfoParams(index);
-}
-
-synth::MatrixEnvParams KapibaraPlugin::matrixEnvParams(int index) const
-{
-    return core_.getMatrixEnvParams(index);
+    return core_.getModSlotParams(index);
 }
 
 synth::MatrixRule KapibaraPlugin::matrixRule(int index) const
@@ -669,7 +768,7 @@ synth::ShapeSourceParams KapibaraPlugin::shapeSourceParams() const
     return core_.getShapeSourceParams();
 }
 
-synth::EffectsChainParams KapibaraPlugin::effectsParams() const
+synth::MasterEffectsParams KapibaraPlugin::effectsParams() const
 {
     return core_.getEffectsParams();
 }
@@ -689,14 +788,14 @@ float KapibaraPlugin::sourceLiveMorph(int trackIndex) const
     return core_.getLiveTrackMorph(trackIndex);
 }
 
-void KapibaraPlugin::updateLfo(int index, const synth::LfoParams &params)
+float KapibaraPlugin::sourceLiveLevel(int trackIndex) const
 {
-    core_.setLfoParams(index, params);
+    return core_.getTrackLevel(trackIndex);
 }
 
-void KapibaraPlugin::updateMatrixEnv(int index, const synth::MatrixEnvParams &params)
+void KapibaraPlugin::updateModSlot(int index, const synth::ModSlotParams &params)
 {
-    core_.setMatrixEnvParams(index, params);
+    core_.setModSlotParams(index, params);
 }
 
 void KapibaraPlugin::updateAmpEnv(int index, const synth::AdsrParams &params)
@@ -725,14 +824,9 @@ void KapibaraPlugin::updateShapeSource(const synth::ShapeSourceParams &params)
     core_.setShapeSourceParams(params);
 }
 
-void KapibaraPlugin::updateEffects(const synth::EffectsChainParams &params)
+void KapibaraPlugin::updateEffects(const synth::MasterEffectsParams &params)
 {
     core_.setEffectsParams(params);
-}
-
-void KapibaraPlugin::updateOperatorChain(const synth::OperatorChain &chain)
-{
-    core_.setOperatorChain(chain);
 }
 
 void KapibaraPlugin::updateSourceGroups(const std::vector<synth::SourceGroupDef> &groups)

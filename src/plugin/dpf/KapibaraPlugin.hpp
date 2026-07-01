@@ -32,6 +32,9 @@ class KapibaraPlugin final : public Plugin
     void updateSourceTrack(uint32_t trackId, const synth::SourceTrackParams &track);
     void updateSourceTrackMorphOnly(uint32_t trackId, float morph);
     void updateSourceTracks(const std::vector<synth::SourceTrackParams> &tracks);
+    void updatePerVoiceFiltersGlobal(const std::array<synth::SourceFilterParams, synth::kMaxPerVoiceFilters> &filters,
+                                     int count);
+    void updateCompiledRoute(const synth::CompiledPerVoiceRoute &route);
     void setPartialEnabled(int index, bool enabled);
     void setPartialAmp(int index, float amp);
     void setPartialRatio(int index, float ratio);
@@ -44,34 +47,33 @@ class KapibaraPlugin final : public Plugin
     void panic();
     std::vector<std::string> presetNames() const;
     std::vector<WavetablePresetEntry> wavetablePresetEntries() const;
+    std::string wavetableUserDir() const;
     bool saveUserPreset(const char *name = nullptr);
     bool loadUserPreset(const char *name = nullptr);
     bool deleteUserPreset(const char *name = nullptr);
     void resetUserPreset();
     const char *presetStatus() const;
+    std::string presetFilePath(const char *name) const; // path of a user preset file
 
     synth::SourceGenParams generatorParams() const;
     synth::AdsrParams adsrParams() const;
     synth::AdsrParams ampEnvParams(int index) const;
-    synth::OperatorChain operatorChain() const;
-    synth::LfoParams lfoParams(int index) const;
-    synth::MatrixEnvParams matrixEnvParams(int index) const;
+    synth::ModSlotParams modSlotParams(int index) const;
     synth::MatrixRule matrixRule(int index) const;
     synth::ChaosParams chaosParams() const;
     synth::ShapeSourceParams shapeSourceParams() const;
-    synth::EffectsChainParams effectsParams() const;
+    synth::MasterEffectsParams effectsParams() const;
     float globalGain() const;
     int activeVoiceCount() const;
     float sourceLiveMorph(int trackIndex) const;
+    float sourceLiveLevel(int trackIndex) const;
 
-    void updateLfo(int index, const synth::LfoParams &params);
-    void updateMatrixEnv(int index, const synth::MatrixEnvParams &params);
+    void updateModSlot(int index, const synth::ModSlotParams &params);
     void updateAmpEnv(int index, const synth::AdsrParams &params);
     void updateMatrixRule(int index, const synth::MatrixRule &rule);
     void updateChaos(const synth::ChaosParams &params);
     void updateShapeSource(const synth::ShapeSourceParams &params);
-    void updateEffects(const synth::EffectsChainParams &params);
-    void updateOperatorChain(const synth::OperatorChain &chain);
+    void updateEffects(const synth::MasterEffectsParams &params);
     void updateSourceGroups(const std::vector<synth::SourceGroupDef> &groups);
 
   protected:
