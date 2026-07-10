@@ -5,10 +5,11 @@ MIDI note
   -> KapibaraPlugin  (DPF MIDI handler)
   -> SynthCore::noteOn()   (voice allocation, snapshot freeze)
   -> RenderSnapshot        (immutable read-only render state)
-  -> Voice x N             (wavetable oscillators + unison + per-voice ADSR)
-       -> MatrixEngine     (LFO / ENV modulation applied per control-rate block)
-       -> Per-Voice Grid   (currently Source filter per track)
-  -> Strip Grid            (per-source bus inserts)
+  -> Voice x N             (partial lanes + unison + per-voice ADSR)
+       -> ModMatrix        (MOD slots evaluated per control-rate block)
+       -> Source mods      (AM / RingMod / FM / PM / hard sync between tracks)
+       -> Per-voice chain  (up to 4 filters per track)
+  -> Strip buses           (per-source insert chains, merge groups, master)
   -> MasterEffects         (Seed tone FX: EQ + filter)
   -> Output gain + safety limiter
 ```
@@ -31,27 +32,31 @@ at control-rate boundaries (every 32 samples).
 `SynthCore::publishSnapshotNoLock()` expands the current `SeedPatch`
 (`engine/SeedPatch.h`) into one immutable `RenderSnapshot`.
 
-- `Partial Bank` tracks contribute their own additive partial bank. The bank can
-  morph between multiple amp/phase frames; each frame maps the first 64
-  harmonics to the 64 partial lanes.
+- `Partial Bank` tracks contribute their own additive partial bank (up to 64
+  partials). The bank can morph between multiple amp/phase frames; each frame
+  maps the first 64 harmonics to the 64 partial lanes.
 - `Meta Oscillator` tracks contribute a multi-frame wavetable (baked by
-  `dsp/Generators`).
+  `dsp/WavetableCore`).
 - `Basic Oscillator` and `Sample / Noise` tracks are converted into bounded
-  partial render data within the safety budget (max 64 partial lanes,
-  16 source tracks).
+  partial render data within the safety budget (12 source tracks, 64 partial
+  slots per track, 500 flattened partial lanes).
 
 The flattened wavetable state is read-only during audio rendering.
 Partial Bank count, inharmonic/harmonic-shape edits, and frame morph publish
 updated render snapshots from the UI/control path while dragging; they do not
 bake Meta wavetable table caches in the audio callback.
 
+While a voice is playing a track, `SynthCore` publishes that track's live
+(modulated) morph for the UI (`getLiveTrackMorph()`); when no voice is active
+it returns a negative sentinel and the UI falls back to the knob value.
+
 ## Wavetable Pipeline (UI thread only)
 
 ```text
-WAV import / TIME draw / SPECTRUM edit
-  -> FFT analysis + phase alignment  (dsp/Generators)
-  -> frame morphing / reorder        (dsp/Generators)
-  -> band-limited mip cache bake     (dsp/Generators, 11 mip levels)
+WAV / .kwt import, TIME draw, SPECTRUM edit
+  -> FFT analysis + phase alignment  (dsp/WavetableCore)
+  -> frame morphing / reorder        (dsp/WavetableCore)
+  -> band-limited mip cache bake     (dsp/WavetableCore, 11 mip levels)
   -> publishSnapshotNoLock()
   -> immutable RenderSnapshot        (audio thread reads from here)
 ```
@@ -61,35 +66,48 @@ callback.
 
 ## Modulation
 
-`MatrixEngine` (`engine/MatrixEngine`) evaluates at control rate (every 32
-samples):
+`ModMatrix` (`engine/ModMatrix`) evaluates at control rate (every 32 samples):
 
-- 4 global LFOs with asymmetric shape (ξ, ρ, p\_up, p\_down)
-- 4 per-voice ENV breakpoint curves (`MatrixEnvParams::points`)
-- 16 routing rules mapping sources (LFO, ENV, velocity, key-track, chaos,
-  random, per-voice ADSR) to global partial destinations or a stable track ID
-- Realtime-safe track destinations include gain, pan, Meta pitch, Morph and Warp
-- Weight functions restrict rules to partial frequency bands (low/mid/high μ
-  groups)
+- **8 unified MOD slots** (`ModSlotParams` in `engine/ModCurve.h`): each slot
+  is a breakpoint curve (up to 16 points, per-segment curvature) with a rate
+  and a loop flag — `loop=true` behaves as an LFO (continuous phase,
+  retriggered at note-on), `loop=false` as a one-shot envelope that holds its
+  final value. Output is bipolar −1..+1.
+- **16 routing rules** mapping sources to destinations, optionally scoped to a
+  stable track ID.
+  - Sources: MOD slots 1–8 (legacy LFO1–4 / ENV1–4 aliases), velocity,
+    key-track, random, chaos, shape, generator-self, per-voice ADSR 1–4.
+  - Destinations: partial amp/freq/phase, decay time, spectral decay, track
+    gain/pan, Meta pitch (oct/sem/fine/crs), Meta morph/warp/pan, and strip
+    insert parameters P0–P3.
+  - Weight modes restrict rules to partial ranges: all, low/high partials,
+    μ groups (low/mid/high), or an explicit band index range.
 
 `Freq` destination interprets rule depth as octaves (`2^depth`), allowing wide
 pitch sweeps. `Amp` destination is clamped to a non-negative gain multiplier.
 
-## Source Routing And Strip Grid
+## Source Mods And Per-Voice Chain
 
-The lower UI is split into `SOURCE ROUTER | PER-VOICE GRID | STRIP GRID`.
-The source router owns source selection and first-stage merge groups. Merge
-groups only sum member source buses; they do not own hidden insert chains.
+Each track carries up to 3 source-mod entries (`SourceModEntry`): another
+track modulates it via AM, RingMod, FM, PM, or hard sync, rendered inside
+`Voice` before bus accumulation. The per-voice chain adds up to 4 filter
+nodes per track, also processed in `Voice`.
 
-The per-voice grid currently exposes a small chain of filter nodes. Their
-parameters live on each track's per-voice filter chain and are processed in
-`Voice` before audio is accumulated into the source bus.
+## Source Routing And Strip Buses
 
-The strip grid owns bus-level insert chains. Existing track inserts are shown
-as strip-grid nodes and are processed by `SynthCore::renderStripBuses()` after
-voice accumulation. The fixed `Master` node represents the final bus output.
+The bottom workspace holds the Source column and, when expanded, the full
+route board. The source column owns source selection; the route board owns
+source ordering, first-stage merge groups, and the bus wiring compiled by
+`ui/sections/router/KapibaraUIRouteCompile.cpp` into the route-graph render
+state. Merge groups only sum member source buses; they do not own hidden
+insert chains.
+
+The strip buses own bus-level insert chains (filter, distortion, EQ,
+compressor, delay, reverb, convolution reverb, multiband). Track inserts are
+processed by `SynthCore::renderStripBuses()` after voice accumulation. The
+fixed `Master` node represents the final bus output.
 
 ## Output
 
 Seed tone FX (`dsp/MasterEffects`: 3-band EQ + multi-mode filter) process the
-rendered voice mix. Global gain and output safety limiting are applied last.
+rendered bus mix. Global gain and output safety limiting are applied last.

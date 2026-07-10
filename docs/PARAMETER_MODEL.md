@@ -2,13 +2,14 @@
 
 ```text
 SeedPatch  (engine/SeedPatch.h)
-  -> Source Track Rack
+  -> Source Track Rack (≤12 tracks)
        -> Partial Bank / Meta Oscillator / Basic Oscillator / Sample+Noise
-       -> Per-Voice Grid filter
-       -> Strip Grid inserts
-  -> 4 shared Amp ADSR envelopes
-  -> 4 Matrix ENV breakpoint curves  (engine/MatrixEngine)
-  -> 16 Matrix routing rules         (engine/MatrixEngine)
+       -> Unison, per-voice filter chain (≤4), source mods (≤3)
+       -> Strip insert chain
+  -> 4 shared Amp ADSR envelopes     (engine/AdsrEnv)
+  -> 8 unified MOD slots             (engine/ModCurve)
+  -> 16 Matrix routing rules         (engine/ModMatrix)
+  -> Chaos + Shape source params     (engine/ModCurve)
   -> Tone FX                         (dsp/MasterEffects)
 ```
 
@@ -17,17 +18,14 @@ SeedPatch  (engine/SeedPatch.h)
 `SeedPatch` (defined in `engine/SeedPatch.h`) is the serialisable preset
 boundary. It stores:
 
-- Source Track Rack (track list with per-track generator params)
-- 4 shared Amp ADSR banks (`ampEnvIndex` per track selects one)
-- 4 drawable Matrix ENV breakpoint curves
-- 16 Matrix routing rules
-- Per-track per-voice filter params
-- Per-track strip-grid insert chains
+- `SourceGenParams generator` — the Source Track Rack (track list with
+  per-track generator params, route graph, merge groups)
+- Master ADSR (`adsr`) plus 4 shared Amp ADSR banks (`ampEnvParams`;
+  `ampEnvIndex` per track selects one)
+- 8 unified MOD slot curves (`modSlotParams`)
+- 16 Matrix routing rules (`matrixRules`)
+- Chaos and Shape source params
 - Tone FX chain (master EQ + filter settings)
-- Unison / render quality settings
-
-Parameter lock scopes (`ParameterScope::Global / Seed / Note`) control which
-changes are applied at note-on versus globally.
 
 ## Source Tracks
 
@@ -35,20 +33,25 @@ Track types and their generators:
 
 | Type | Generator | Source |
 |------|-----------|--------|
-| Partial Bank | independent additive bank up to 64 partials | `dsp/Generators` |
-| Meta Oscillator | multi-frame wavetable, up to 512 × 2048-sample frames | `dsp/Generators` |
-| Basic Oscillator | sine/triangle/saw/pulse/sub from bounded partial data | `dsp/Generators` |
-| Sample / Noise | Noise active; File/Capture are UI placeholders | `dsp/Generators` |
+| Partial Bank | independent additive bank up to 64 partials with frame morph | `dsp/GeneratorBank` |
+| Meta Oscillator | multi-frame wavetable, up to 512 × 2048-sample frames | `dsp/WavetableCore` |
+| Basic Oscillator | sine/triangle/saw/pulse/sub from bounded partial data | `dsp/BasicOscDsp` |
+| Sample / Noise | Noise active; File/Capture are UI placeholders | `dsp/SampleNoiseDsp` |
 
-Each track owns: generator params, gain, pan, send, mute/solo, output mode,
-strip-grid inserts, per-voice filter params, and `ampEnvIndex` (0–3)
-referencing one shared Amp ADSR.
+Each track owns: generator params, gain, pan, send, mute/solo, output mode
+(Audio / ModOnly / AudioAndMod), unison params, per-voice filter chain
+(≤4 nodes), source-mod entries (≤3), strip insert chain, and `ampEnvIndex`
+(0–3) referencing one shared Amp ADSR.
+
+Meta Oscillator pitch is edited as OCT/SEM/FIN/CRS components merged into a
+frequency ratio; warp modes are None / Bend / Squeeze / Skew.
 
 ## Amp Envelopes
 
-Four shared Amp ADSR envelopes (attack, decay, sustain, release). Each track
-selects one via `ampEnvIndex`. The legacy Seed ADSR remains as a master
-compatibility envelope and global release boundary.
+Four shared Amp ADSR envelopes plus the legacy master ADSR
+(`engine/AdsrEnv.h`). Each stage has its own curvature (`curveA`, `curveD`,
+`curveR`, edited by Ctrl-drag on the envelope graph). Each track selects one
+bank via `ampEnvIndex`.
 
 Every note-on freezes the selected ADSR onto the allocated voice. If `attack=0`
 the voice starts at full level and immediately enters decay; `sustain=0` still
@@ -57,35 +60,44 @@ envelope value.
 
 ## Matrix Modulation
 
-Defined in `engine/MatrixEngine`:
+Defined in `engine/ModCurve.h` (sources) and `engine/ModMatrix.h` (rules):
 
-- **4 LFOs** — asymmetric shape (ξ, ρ, p\_up, p\_down), plus sine/square/triangle/S&H
-- **4 Matrix ENVs** — drawable breakpoint curves (`MatrixEnvParams::points`),
-  output unipolar 0..1, first and last points locked to the same level
-- **16 routing rules** — source × weight × depth → destination, optionally scoped by stable source-track ID
-  - Sources: LFO1–4, ENV1–4, velocity, key-track, chaos, random, per-voice ADSR
-  - Destinations: frequency, amplitude, phase, track gain/pan, Meta pitch components, Morph and Warp
-  - Weight functions restrict rules to partial groups (low μ=0 / mid μ=1 / high μ=2)
+- **8 unified MOD slots** — each a breakpoint curve of up to 16 points with
+  per-segment curvature, a rate in Hz, and a `loop` flag. `loop=true` is LFO
+  behaviour (continuous phase, note-on retrigger); `loop=false` is a one-shot
+  envelope that holds its end value. Output is bipolar −1..+1. The first four
+  slots are the legacy "LFO1–4", the second four the legacy "ENV1–4".
+- **Chaos source** — white/smooth/crackle noise generator with frequency and
+  amount.
+- **Shape source** — spectral-domain static modulator
+  (asymmetric/sine/square/triangle/S&H over partial index or spectral x).
+- **16 routing rules** — source × weight × depth → destination, optionally
+  scoped by stable source-track ID (`targetTrackId`) and insert slot
+  (`targetSlot`).
+  - Sources: MOD slots, velocity, key-track, random, chaos, shape,
+    generator-self, per-voice ADSR 1–4
+  - Destinations: partial `Amp` / `Freq` / `Phase`, `DecayTime`,
+    `SpectralDecay`, track gain/pan, Meta pitch oct/sem/fine/crs,
+    Meta morph/warp/pan, and strip-insert params `InsertP0`–`InsertP3`
+  - Weight modes: all, low/high partials, μ groups (low/mid/high), band index
 
-Each voice freezes the active Seed's LFO/ENV parameters at note-on and
-evaluates them at control rate (every 32 samples) without heap allocation.
-Track-scoped routes are restricted to realtime-safe render parameters; frame
-count and waveform-content edits remain outside the audio callback.
+Each voice freezes the active Seed's MOD parameters at note-on and evaluates
+them at control rate (every 32 samples) without heap allocation. Track-scoped
+routes are restricted to realtime-safe render parameters; frame count and
+waveform-content edits remain outside the audio callback.
 
-## Source Routing And Strip Grid
+## Strip Inserts And Source Mods
 
-The lower routing surface is split into:
+Strip insert kinds (`dsp/InsertEffects.h`, DSP in `dsp/fx/`): filter,
+distortion, EQ, compressor, delay, reverb, convolution reverb, multiband.
+Four macro parameters per insert (P0–P3) are matrix-modulatable.
 
-- **Source Router** — source order, selection, and first-stage merge groups.
-- **Per-Voice Grid** — source-local filter nodes, processed in `Voice`.
-- **Strip Grid** — bus-level insert nodes, processed after voices accumulate
-  into per-source buses.
-
-Merge groups only sum sources. They do not own insert chains.
+Source mods (`SourceModEntry`): a track can be modulated by another track via
+AM, RingMod, FM, PM, or hard sync, with a depth control, rendered per voice.
 
 ## Tone FX
 
-`dsp/MasterEffects` processes the rendered voice mix after strip-grid inserts:
+`dsp/MasterEffects` processes the rendered bus mix after strip inserts:
 
 - 3-band EQ (low / mid / high)
 - Multi-mode filter: low-pass, high-pass, or band-pass
@@ -96,8 +108,8 @@ Merge groups only sum sources. They do not own insert chains.
 
 A Meta wavetable has up to 512 ordered 2048-sample frames. Each frame stores
 synchronised time-domain samples, FFT spectrum, and harmonic metadata.
-Band-limited mip tables (11 levels) are baked separately in `dsp/Generators`
-and used at runtime to control aliasing.
+Band-limited mip tables (11 levels) are baked separately in
+`dsp/WavetableCore` and used at runtime to control aliasing.
 
 WAV import (DPF file browser or X11 file drop) offers: Auto Detect, Fixed 2048
 Frames, Single Cycle, Constant Pitch, or Manual Cycle Length, with a
@@ -109,7 +121,7 @@ alignment, linear midpoint morph, wrapped-phase spectral midpoint morph.
 The SPECTRUM editor shows the first 256 bins; runtime playback uses the baked
 mip tables, not the editor view.
 
-Partial Bank now also has a frame table. Each frame stores amp/phase for the
+Partial Bank also has a frame table. Each frame stores amp/phase for the
 first 64 harmonic partials, reusing the same harmonic `.kwt` wavetable format
 as Meta wavetable presets. Loading a Meta `.kwt` into Partial Bank imports only
 those first 64 harmonics. `Partials`, `Inharmonic`, frame `Morph`, and frame
@@ -119,6 +131,15 @@ amplitude/frequency updates across the control block.
 New `.kwt` files are saved as binary `KWT2`: frame/bin counts followed by packed
 16-bit amplitude and phase bins. The loader still accepts the older ASCII
 `KAPIBARA_WT` format for existing presets.
+
+## Persistence
+
+The plugin saves the legacy text preset; the UI appends a `modern` section
+(`ui/sections/presets/KapibaraUIPresetState.cpp`) with the multi-track
+structure: track params/names, per-voice filters, inserts, source mods, route
+graph, and merge groups. Osc frame data is not duplicated in the modern
+section; Partial Bank frames persist via the legacy `bankframes` /
+`bankframe` keys.
 
 ## Unison
 
