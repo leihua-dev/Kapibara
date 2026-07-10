@@ -6,6 +6,24 @@ using namespace routeui;
 
 void KapibaraUI::rebuildSelectedPerVoiceRouteFromWires()
 {
+        // Nodes from which MASTER is forward-reachable (reverse closure from
+        // MASTER over all wires). Computed once, used for every track below.
+        std::vector<uint32_t> canReachMaster { masterNodeId() };
+        {
+            bool grew = true;
+            while(grew)
+            {
+                grew = false;
+                for(const auto &w : routeWires_)
+                    if(std::find(canReachMaster.begin(), canReachMaster.end(), w.to.nodeId) != canReachMaster.end()
+                       && std::find(canReachMaster.begin(), canReachMaster.end(), w.from.nodeId) == canReachMaster.end())
+                    { canReachMaster.push_back(w.from.nodeId); grew = true; }
+            }
+        }
+        const auto reachesMaster = [&](uint32_t nodeId) {
+            return std::find(canReachMaster.begin(), canReachMaster.end(), nodeId) != canReachMaster.end();
+        };
+
         for(auto &track : generator_.tracks)
         {
             const uint32_t tid = track.id;
@@ -103,22 +121,58 @@ void KapibaraUI::rebuildSelectedPerVoiceRouteFromWires()
                 passedFilters = true; // had filters, then went somewhere non-strip
 
             // The linear walk only follows one output port; with multi-output
-            // components a path to MASTER may use another port. Confirm via forward
-            // reachability (all ports) so connectedToMaster is robust.
+            // components a path to MASTER may use another port. Confirm via
+            // reachability so connectedToMaster is robust.
             if(!connectedToMaster)
+                connectedToMaster = reachesMaster(sourceRouterNodeId(tid));
+            // The compiled per-voice DAG deposits a signal into the bus of whichever
+            // track OWNS the strip node it feeds — which may not be the track whose
+            // source started the chain (e.g. source B rewired into A's old chain that
+            // ends at A's strip FX). That bus must stay audible, so also count this
+            // track as connected when anything feeds its strip zone and that strip
+            // node still reaches MASTER.
+            if(!connectedToMaster)
+                for(const auto &w : routeWires_)
+                    if(w.to.nodeId != masterNodeId() && isStripNode(w.to.nodeId)
+                       && stripTrackId(w.to.nodeId) == tid && reachesMaster(w.to.nodeId))
+                    { connectedToMaster = true; break; }
+
+            // Fallback insert order: when another track's chain feeds this track's
+            // strip zone, the linear walk above (which starts at this track's own
+            // source) never reaches those inserts, leaving insertOrderCount == 0 and
+            // the strip FX silently bypassed. Walk the strip zone from its
+            // externally-fed entry node instead.
+            if(insertOrderCount == 0 && !track.inserts.empty())
             {
-                std::vector<uint32_t> reach { sourceRouterNodeId(tid) };
-                bool grew = true;
-                while(grew)
+                uint32_t entry = 0;
+                for(const auto &w : routeWires_)
                 {
-                    grew = false;
-                    for(const auto &w : routeWires_)
-                        if(std::find(reach.begin(), reach.end(), w.from.nodeId) != reach.end()
-                           && std::find(reach.begin(), reach.end(), w.to.nodeId) == reach.end())
-                        { reach.push_back(w.to.nodeId); grew = true; }
+                    if(w.to.nodeId == masterNodeId() || !isStripNode(w.to.nodeId)
+                       || stripTrackId(w.to.nodeId) != tid)
+                        continue;
+                    const bool fromOwnStrip = w.from.nodeId != masterNodeId()
+                                              && isStripNode(w.from.nodeId)
+                                              && stripTrackId(w.from.nodeId) == tid;
+                    if(!fromOwnStrip) { entry = w.to.nodeId; break; }
                 }
-                if(std::find(reach.begin(), reach.end(), masterNodeId()) != reach.end())
-                    connectedToMaster = true;
+                uint32_t node = entry;
+                for(int guard = 0; node != 0 && guard < synth::kMaxStripInserts; ++guard)
+                {
+                    const int local = stripLocalId(node);
+                    const int ii = local - 1;
+                    if(local <= 0 || ii >= int(track.inserts.size())
+                       || ii >= synth::kMaxStripInserts || insertSeen[(size_t)ii])
+                        break;
+                    insertSeen[(size_t)ii] = true;
+                    insertOrder[(size_t)insertOrderCount++] = uint8_t(ii);
+                    uint32_t nextNode = 0;
+                    const synth::GridPortRef out { node, 1 };
+                    for(const auto &w : routeWires_)
+                        if(samePort(w.from, out) && w.to.nodeId != masterNodeId()
+                           && isStripNode(w.to.nodeId) && stripTrackId(w.to.nodeId) == tid)
+                        { nextNode = w.to.nodeId; break; }
+                    node = nextNode;
+                }
             }
 
             track.perVoiceFilterOrder      = filterOrder;

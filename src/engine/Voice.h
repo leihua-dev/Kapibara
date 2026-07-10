@@ -196,6 +196,15 @@ class Voice
     std::array<float, kMaxVoiceRenderBlockSamples> sourceRawL_ {};
     std::array<float, kMaxVoiceRenderBlockSamples> sourceRawR_ {};
 
+    // Cross-track FM integrates the modulator into a phase offset; the integral
+    // must stay continuous across render blocks, so it lives here (carrier track
+    // × mod slot) instead of resetting per block. Wrapped to ±π each block to
+    // preserve float precision over long notes.
+    std::array<std::array<double, kMaxTrackMods>, kMaxSourceTracks> fmPhaseAcc_ {};
+    // Hard-sync edge state: previous modulator sample per carrier track, so an
+    // upward zero-crossing spanning a block boundary isn't missed.
+    std::array<float, kMaxSourceTracks> syncPrev_ {};
+
     struct SourceFilterRuntime
     {
         float lp1L = 0.0f;

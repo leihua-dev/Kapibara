@@ -281,6 +281,8 @@ void Voice::noteOn(int midiNote, float velocity, const StaticSpectralFrame &fram
     sourceFilterStates_ = {};
     filterNodeStates_ = {};
     utilBandStates_ = {};
+    for(auto &acc : fmPhaseAcc_) acc.fill(0.0);
+    syncPrev_.fill(0.0f);
 
     updateUnisonLayout(unison);
     seedPhases(frame, unison);
@@ -669,8 +671,9 @@ void Voice::renderAdd(float *left, float *right, int numSamples)
         bool hasPm = false;
         const float *syncBuf = nullptr;
         std::fill(pmScratch_.begin(), pmScratch_.begin() + numSamples, 0.0f);
-        for(const auto &m : trackRuntime_[(size_t)source].mods)
+        for(int mi = 0; mi < kMaxTrackMods; ++mi)
         {
+            const auto &m = trackRuntime_[(size_t)source].mods[(size_t)mi];
             if(!m.enabled || m.sourceTrack < 0 || m.sourceTrack >= sourceCount || !rendered[(size_t)m.sourceTrack])
                 continue;
             const float *mL = modScratch_->bufL[(size_t)m.sourceTrack].data();
@@ -686,12 +689,17 @@ void Voice::renderAdd(float *left, float *right, int numSamples)
             else if(m.type == SourceModType::FM)
             {
                 const float devHz = depth * 8000.0f; // peak deviation (wide range)
-                double acc = 0.0;
+                // FM = integral of the modulator. The accumulator persists across
+                // render blocks — resetting it per block restarts the phase ramp at
+                // every block boundary, which reads as a harsh buzz.
+                double acc = fmPhaseAcc_[(size_t)source][(size_t)mi];
                 for(int s = 0; s < numSamples; ++s)
                 {
                     acc += double(devHz) * 0.5 * double(mL[s] + mR[s]) * double(invSr) * 6.2831853;
                     pmScratch_[(size_t)s] += float(acc);
                 }
+                // Phase is 2π-periodic: wrap so float conversion stays precise.
+                fmPhaseAcc_[(size_t)source][(size_t)mi] = std::remainder(acc, 6.283185307179586);
                 hasPm = true;
             }
             else if(m.type == SourceModType::HardSync)
@@ -1039,7 +1047,10 @@ void Voice::renderPartialRangeRaw(float *left, float *right, int numSamples, int
     numSamples = std::min(numSamples, kMaxVoiceRenderBlockSamples);
     partialBegin = std::clamp(partialBegin, 0, activeCount_);
     partialEnd = std::clamp(partialEnd, partialBegin, activeCount_);
-    float prevSync = 0.0f;  // previous modulator sample for hard-sync zero-cross detection
+    // Previous modulator sample for hard-sync zero-cross detection. Persists per
+    // carrier track so a crossing that spans a render-block boundary still fires.
+    const int syncTrack = std::clamp(currentRenderTrack_, 0, kMaxSourceTracks - 1);
+    float prevSync = syncPrev_[(size_t)syncTrack];
 
     for(int s = 0; s < numSamples; ++s)
     {
@@ -1168,6 +1179,8 @@ void Voice::renderPartialRangeRaw(float *left, float *right, int numSamples, int
         left[(size_t)s] += sumL;
         right[(size_t)s] += sumR;
     }
+    if(syncBuffer != nullptr)
+        syncPrev_[(size_t)syncTrack] = prevSync;
 }
 
 void Voice::finishPartialRender(float *left, float *right, const float *rawLeft, const float *rawRight, int numSamples)
