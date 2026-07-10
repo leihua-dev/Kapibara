@@ -204,12 +204,8 @@ bool KapibaraUI::handleButtonClick(float x, float y)
                 }
                 return true;
             }
-            if(metaWarpModeRect_.contains(x, y) && track->type == synth::SourceTrackType::MetaOscillator)
-            {
-                track->metaOsc.warpMode = static_cast<synth::WavetableWarpMode>((int(track->metaOsc.warpMode) + 1) % 4);
-                pushCurrentTrack();
-                return true;
-            }
+            // Warp mode is chosen via right-click menu (openWarpModeMenu), not by
+            // left-click cycling, so no left-click handling here.
             if(basicShapeRect_.contains(x, y) && track->type == synth::SourceTrackType::BasicOscillator)
             {
                 track->basicShape = static_cast<synth::BasicOscillatorShape>((int(track->basicShape) + 1) % 5);
@@ -369,18 +365,17 @@ bool KapibaraUI::handleButtonClick(float x, float y)
                 return true;
             }
         }
-        if(metaWarpModeRect_.contains(x, y))
-        {
-            metaSlot.warpMode = static_cast<synth::WavetableWarpMode>((int(metaSlot.warpMode) + 1) % 4);
-            pushMetaPartialRuntime();
-            return true;
-        }
+        // Warp mode is chosen via right-click menu (openWarpModeMenu), not by
+        // left-click cycling, so no left-click handling here.
         if(metaFrameButtonRect_.contains(x, y))
         {
             selectedMetaFrame_ = (selectedMetaFrame_ + 1) % std::max(1, metaSlot.frameCount);
             return true;
         }
-        if(metaHarmonicEditRect_.contains(x, y) || metaWaveformRect_.contains(x, y))
+        // Opening the full editor from the wave view, except over the Morph
+        // scrubber gutter, which is a drag control handled in handleControlPress.
+        if(metaHarmonicEditRect_.contains(x, y)
+           || (metaWaveformRect_.contains(x, y) && !metaMorphSliderRect_.contains(x, y)))
         {
             harmonicEditorOpen_ = true;
             return true;

@@ -177,6 +177,11 @@ class KapibaraUI final : public KapibaraUIDrawing
     bool modSourceCausesCycleFor(int selfIdx, int cand) const;
     bool handleModSourceMenuClick(float x, float y);
 
+    // menus/KapibaraUIWarpModeMenu
+    void openWarpModeMenu(uint32_t trackId, float x, float y);
+    void drawWarpModeMenu();
+    bool handleWarpModeMenuClick(float x, float y);
+
     // source/KapibaraUISourceEditor
     void drawGroupEditor(const Rect &r, int gi);
     void drawTrackEditor(const Rect &r);

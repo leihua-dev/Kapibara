@@ -1520,7 +1520,7 @@ void SynthCore::renderBlock(float *left, float *right, int numSamples)
         for(int ti = 0; ti < snap->renderTrackCount && ti < kMaxSourceTracks; ++ti)
         {
             const int begin = wt.trackBegin[(size_t)ti];
-            float bestMorph = liveTrackMorph_[(size_t)ti].load(std::memory_order_relaxed);
+            float bestMorph = -1.0f; // sentinel: no active voice this block -> UI falls back to the knob
             for(const auto &v : voices)
             {
                 if(!v.isIdle())

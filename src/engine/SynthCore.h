@@ -147,9 +147,12 @@ class SynthCore
     StaticSpectralFrame getFrameSnapshot() const;
     SpectralTimeline getTimelineSnapshot() const;
     int getActiveVoiceCount() const;
+    // Returns [0,1] while a voice is actively playing this track, or a negative
+    // sentinel when idle so the UI can fall back to the static knob value instead
+    // of a stale frozen-in-time morph from whatever note played last.
     float getLiveTrackMorph(int trackIdx) const
     {
-        if(trackIdx < 0 || trackIdx >= int(kMaxSourceTracks)) return 0.0f;
+        if(trackIdx < 0 || trackIdx >= int(kMaxSourceTracks)) return -1.0f;
         return liveTrackMorph_[(size_t)trackIdx].load(std::memory_order_relaxed);
     }
     // Post-insert peak level of a strip bus (0..~1), for the UI level meters.

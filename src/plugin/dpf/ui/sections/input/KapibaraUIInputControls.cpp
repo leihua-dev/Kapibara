@@ -131,6 +131,9 @@ bool KapibaraUI::handleControlPress(float x, float y)
             pushMetaUndoSnapshot();
             return setDragKnob(tgt, norm);
         };
+        // Vertical Morph scrubber occupies the left edge of the wave view, so it
+        // must be tested before the waveform-edit region it overlaps.
+        if(metaMorphSliderRect_.contains(x, y)) return setDragAbs(DragTarget::MetaMorphSlider);
         if(metaWaveformRect_.contains(x, y)) return setDragMetaAbs(DragTarget::MetaWaveform);
 
         // Pitch controls (OCT/SEM/FIN/CRS) — MetaOscillator or whole PartialBank group.

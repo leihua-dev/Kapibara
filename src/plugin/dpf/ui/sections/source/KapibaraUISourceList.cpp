@@ -46,10 +46,15 @@ void KapibaraUI::drawSourceRack(const Rect &r)
             // Mini waveform preview for MetaOscillator
             if(track.type == synth::SourceTrackType::MetaOscillator && track.metaOsc.frameCount > 0)
             {
-                // Get live morph from audio engine if available
+                // Follow the knob when idle; switch to the engine's live morph once
+                // a voice is actually playing this track.
                 float liveMorph = track.metaOsc.morph;
                 if(const auto *p = plugin())
-                    liveMorph = p->sourceLiveMorph(int(i));
+                {
+                    const float live = p->sourceLiveMorph(int(i));
+                    if(live >= 0.0f)
+                        liveMorph = live;
+                }
                 const int frameIdx = clampi(
                     int(liveMorph * float(track.metaOsc.frameCount - 1) + 0.5f),
                     0, track.metaOsc.frameCount - 1);

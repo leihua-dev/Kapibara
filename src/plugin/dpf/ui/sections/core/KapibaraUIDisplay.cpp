@@ -33,6 +33,7 @@ void KapibaraUI::onNanoDisplay()
         drawInsertMenu();
         drawModeMenu();
         drawModSourceMenu();
+        drawWarpModeMenu();
         drawWavetableImportMenu();
         drawGridAxisPicker();
         drawInsertDragGhost();

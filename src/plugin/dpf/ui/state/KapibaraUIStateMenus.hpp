@@ -6,6 +6,12 @@
     bool optionsMenuOpen_ = false;
     bool harmonicEditorOpen_ = false;
     bool metaProcessContextMenuOpen_ = false;
+    // Warp mode picker (right-click the warp mode chip). trackId 0 = legacy
+    // metaSlot (generator_.wavetableSeed.partials[selectedMetaPartial_]).
+    bool warpModeMenuOpen_ = false;
+    float warpModeMenuX_ = 0.0f, warpModeMenuY_ = 0.0f;
+    uint32_t warpModeMenuTrackId_ = 0;
+    std::array<Rect, 4> warpModeMenuRects_ {};
     bool routeContextMenuOpen_ = false;
     float routeContextX_ = 0.0f, routeContextY_ = 0.0f;
     int  routeContextRuleIndex_ = -1;

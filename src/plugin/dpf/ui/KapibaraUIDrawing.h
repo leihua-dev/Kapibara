@@ -27,13 +27,34 @@ class KapibaraUIDrawing : public UI
         lbY_ = (rh - lbH_) * 0.5f;
     }
 
-    void useUiFont()
+    void useFallbackSans()
     {
 #ifdef DGL_NO_SHARED_RESOURCES
         fontFace("sans");
 #else
         fontFace(NANOVG_DEJAVU_SANS_TTF);
 #endif
+    }
+
+    // Labels / captions: condensed sans, engineering-panel feel.
+    void useUiFont()
+    {
+        if(haveCondFont_) fontFace("cond"); else useFallbackSans();
+        textLetterSpacing(0.0f);
+    }
+
+    // Numeric readouts (values, frame/pitch coordinates): tabular monospace.
+    void useMonoFont()
+    {
+        if(haveMonoFont_) fontFace("mono"); else useFallbackSans();
+        textLetterSpacing(0.0f);
+    }
+
+    // Section headers: condensed, uppercase, widely tracked (~0.12em silk-screen).
+    void useHeaderFont()
+    {
+        if(haveCondFont_) fontFace("cond"); else useFallbackSans();
+        textLetterSpacing(1.3f);
     }
 
     void uiFontSize(float size)
@@ -54,19 +75,16 @@ class KapibaraUIDrawing : public UI
         text(x + 8.0f, y, title, nullptr);
     }
 
-    void drawKnob(const Rect &r, const char *label, float norm, float value)
+    // The machined knob graphic (cap, groove, ticks, value arc, pointer). `active`
+    // brightens the value arc; the default state stays deliberately dim so the
+    // numbers read louder than the controls.
+    void drawKnobArc(float cx, float cy, float rad, float norm, bool active = false)
     {
-        const bool tall = r.h >= r.w * 0.65f;
-        const float sz   = tall ? std::min(r.w, r.h) : r.h;
-        const float rad  = std::max(6.0f, sz * 0.5f - 8.0f);
-        const float cx   = tall ? r.x + r.w * 0.5f : r.x + sz * 0.5f;
-        const float cy   = tall ? r.y + sz * 0.5f + 2.0f : r.y + r.h * 0.5f;
-
         beginPath();
         circle(cx, cy, rad + 4.0f);
         fillPaint(linearGradient(cx, cy - rad - 4.0f, cx, cy + rad + 4.0f,
-                                 shade(DesignTokens::controlBackground(), 0.20f),
-                                 shade(DesignTokens::controlBackground(), -0.16f)));
+                                 shade(DesignTokens::controlBackground(), 0.08f),
+                                 shade(DesignTokens::controlBackground(), -0.08f)));
         fill();
         strokeColor(DesignTokens::border());
         strokeWidth(DesignTokens::borderWidth);
@@ -79,48 +97,67 @@ class KapibaraUIDrawing : public UI
         lineCap(ROUND);
         beginPath();
         arc(cx, cy, rad, kStart, kEnd, CCW);
-        strokeColor(DesignTokens::divider());
-        strokeWidth(2.5f);
+        strokeColor(DesignTokens::groove());
+        strokeWidth(3.0f);
         stroke();
+
+        for(int i = 0; i <= 4; ++i)
+        {
+            const float ta = kStart + (float(i) / 4.0f) * DesignTokens::knobSweep;
+            const float tcos = std::cos(ta), tsin = std::sin(ta);
+            strokeLine(cx + tcos * (rad + 2.0f), cy + tsin * (rad + 2.0f),
+                       cx + tcos * (rad + 5.0f), cy + tsin * (rad + 5.0f),
+                       DesignTokens::textSecondary().withAlpha(0.35f), 1.0f);
+        }
+
+        // Value arc — muted by default, bright cyan only when active/editing.
         if(norm > 0.001f)
         {
             beginPath();
             arc(cx, cy, rad, kStart, kAngle, CCW);
-            strokeColor(DesignTokens::accentCyan().withAlpha(0.22f));
-            strokeWidth(6.0f);
-            stroke();
-            beginPath();
-            arc(cx, cy, rad, kStart, kAngle, CCW);
-            strokeColor(DesignTokens::accentCyan());
-            strokeWidth(2.75f);
+            strokeColor(active ? DesignTokens::accentCyan()
+                               : DesignTokens::accentCyan().withAlpha(0.42f));
+            strokeWidth(active ? 2.75f : 2.0f);
             stroke();
         }
 
         const float ax = std::cos(kAngle);
         const float ay = std::sin(kAngle);
-        const float p0 = rad * 0.30f;
-        const float p1 = rad * 0.68f;
         beginPath();
-        moveTo(cx + ax * p0, cy + ay * p0);
-        lineTo(cx + ax * p1, cy + ay * p1);
-        strokeColor(DesignTokens::textPrimary());
+        moveTo(cx + ax * rad * 0.30f, cy + ay * rad * 0.30f);
+        lineTo(cx + ax * rad * 0.68f, cy + ay * rad * 0.68f);
+        strokeColor(DesignTokens::textPrimary().withAlpha(active ? 1.0f : 0.8f));
         strokeWidth(1.75f);
         stroke();
         lineCap(BUTT);
-        beginPath();
-        circle(cx + ax * p1, cy + ay * p1, 1.7f);
-        fillColor(DesignTokens::accentCyan());
-        fill();
+    }
 
+    void drawKnob(const Rect &r, const char *label, float norm, float value)
+    {
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%.3g", value);
-        useUiFont();
+        drawKnobLabeled(r, label, norm, buf);
+    }
+
+    // Knob with a caller-formatted value string (fixed decimals, units, etc.).
+    void drawKnobLabeled(const Rect &r, const char *label, float norm, const char *buf)
+    {
+        const bool tall = r.h >= r.w * 0.65f;
+        const float sz   = tall ? std::min(r.w, r.h) : r.h;
+        const float rad  = std::max(6.0f, sz * 0.5f - 8.0f);
+        const float cx   = tall ? r.x + r.w * 0.5f : r.x + sz * 0.5f;
+        const float cy   = tall ? r.y + sz * 0.5f + 2.0f : r.y + r.h * 0.5f;
+
+        drawKnobArc(cx, cy, rad, norm);
+
         if(tall)
         {
+            useUiFont();
             uiFontSize(10.5f);
             textAlign(ALIGN_CENTER | ALIGN_TOP);
             fillColor(DesignTokens::textSecondary());
             text(cx, r.y + sz + 2.0f, label, nullptr);
+            useMonoFont();
             uiFontSize(11.5f);
             textAlign(ALIGN_CENTER | ALIGN_TOP);
             fillColor(DesignTokens::textPrimary());
@@ -129,14 +166,78 @@ class KapibaraUIDrawing : public UI
         else
         {
             const float tx = r.x + sz + 5.0f;
+            useUiFont();
             uiFontSize(10.5f);
             textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
             fillColor(DesignTokens::textSecondary());
             text(tx, cy - 5.5f, label, nullptr);
+            useMonoFont();
             uiFontSize(12.0f);
             fillColor(DesignTokens::textPrimary());
             text(tx, cy + 6.0f, buf, nullptr);
         }
+    }
+
+    // Instrument-panel parameter row: knob at the left, condensed label, and a
+    // right-aligned monospace value on one baseline — a strict aligned column.
+    void drawParamKnobRow(const Rect &r, const char *label, float norm, const char *valueText,
+                          bool active = false)
+    {
+        const float ksz = std::min(r.h, 30.0f);
+        const float rad = std::max(6.0f, ksz * 0.5f - 5.0f);
+        const float cx  = r.x + ksz * 0.5f;
+        const float cy  = r.y + r.h * 0.5f;
+        drawKnobArc(cx, cy, rad, norm, active);
+
+        useUiFont();
+        uiFontSize(11.5f);
+        textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+        fillColor(DesignTokens::textSecondary());
+        text(r.x + ksz + 10.0f, cy, label, nullptr);
+
+        useMonoFont();
+        uiFontSize(13.0f);
+        textAlign(ALIGN_RIGHT | ALIGN_MIDDLE);
+        fillColor(DesignTokens::textPrimary());
+        text(r.x + r.w, cy, valueText, nullptr);
+    }
+
+    // Small uppercase section label (PITCH / WAVETABLE / UNISON) — an instrument
+    // panel silk-screen caption, drawn above a group rather than boxing it.
+    void drawGroupLabel(float x, float y, const char *label)
+    {
+        useHeaderFont();
+        uiFontSize(10.0f);
+        textAlign(ALIGN_LEFT | ALIGN_TOP);
+        // Dimmer than parameter labels so headers recede, not dominate.
+        fillColor(DesignTokens::textSecondary().withAlpha(0.55f));
+        text(x, y, label, nullptr);
+    }
+
+    // Compact integer stepper: [-] value [+]. The two button rects are returned so
+    // the caller can hit-test them.
+    void drawStepper(const Rect &r, const char *label, int value, Rect &downRect, Rect &upRect)
+    {
+        useUiFont();
+        uiFontSize(9.0f);
+        textAlign(ALIGN_LEFT | ALIGN_TOP);
+        fillColor(DesignTokens::textSecondary());
+        text(r.x, r.y, label, nullptr);
+
+        const float by = r.y + 13.0f;
+        const float bh = std::max(16.0f, r.h - 15.0f);
+        const float bw = std::min(22.0f, r.w * 0.28f);
+        downRect = { r.x, by, bw, bh };
+        upRect   = { r.x + r.w - bw, by, bw, bh };
+        drawButton(downRect, "-", false);
+        drawButton(upRect, "+", false);
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%d", value);
+        useMonoFont();
+        uiFontSize(14.0f);
+        textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
+        fillColor(DesignTokens::textPrimary());
+        text(r.x + r.w * 0.5f, by + bh * 0.5f, buf, nullptr);
     }
 
     void drawSlider(const Rect &r, const char *label, float norm, float value)
@@ -168,6 +269,7 @@ class KapibaraUIDrawing : public UI
         textAlign(ALIGN_LEFT | ALIGN_BOTTOM);
         fillColor(DesignTokens::textSecondary());
         text(r.x, r.y - 2.0f, label, nullptr);
+        useMonoFont();
         textAlign(ALIGN_RIGHT | ALIGN_BOTTOM);
         fillColor(DesignTokens::textPrimary());
         text(r.x + r.w, r.y - 2.0f, buf, nullptr);
@@ -236,20 +338,14 @@ class KapibaraUIDrawing : public UI
 
     void drawPanel(const Rect &r, Color fillValue, Color strokeValue)
     {
+        // Flat machined-metal panel: fill + one crisp border, no glossy top
+        // highlight — big blocks read via their border/divider, not a layered
+        // rounded-card look.
         const float radius = std::min(DesignTokens::panelRadius, std::min(r.w, r.h) * 0.45f);
         beginPath();
         roundedRect(r.x, r.y, r.w, r.h, radius);
         fillColor(fillValue);
         fill();
-        if(r.h > 8.0f && r.w > radius * 2.0f + 4.0f)
-        {
-            beginPath();
-            moveTo(r.x + radius, r.y + 1.0f);
-            lineTo(r.x + r.w - radius, r.y + 1.0f);
-            strokeColor(shade(fillValue, 0.16f));
-            strokeWidth(1.0f);
-            stroke();
-        }
         beginPath();
         roundedRect(r.x + 0.5f, r.y + 0.5f, r.w - 1.0f, r.h - 1.0f, radius);
         strokeColor(strokeValue);
@@ -303,6 +399,12 @@ class KapibaraUIDrawing : public UI
         std::snprintf(scratch_, sizeof(scratch_), fmt, a, b);
         return scratch_;
     }
+
+    // Dual-font system: condensed sans for labels/headers, monospace for numbers.
+    // Loaded from system TTFs at startup; both fall back to the DejaVu sans face if
+    // unavailable so text never disappears.
+    bool haveCondFont_ = false;
+    bool haveMonoFont_ = false;
 
     float uiScale_ = 1.0f;
     char scratch_[64] {};

@@ -44,6 +44,8 @@ void KapibaraUI::drawTrackEditor(const Rect &r)
         auto *track = currentTrack();
         if(track == nullptr)
             return;
+        // Section title (accent bar + name) matching the PER-VOICE CHAIN / FX RACK
+        // panels to the right.
         drawSectionTitle(r.x + 16.0f, r.y + 14.0f, track->name.c_str());
         // Track type / ADSR-route / Duplicate live in the strip now, not here.
         trackOutputModeRect_ = {};  // output mode 选择从 UI 移除，默认 AudioAndMod
@@ -58,10 +60,16 @@ void KapibaraUI::drawTrackEditor(const Rect &r)
         editorTabRects_.fill({});
         modSrcRects_.fill({}); modTypeRects_.fill({}); modDepthRects_.fill({}); modDeleteRects_.fill({});
 
-        // Oscillator body + compact unison row at the bottom.
-        const Rect content { r.x + 16.0f, r.y + 50.0f, r.w - 32.0f, r.h - 62.0f };
-        const float unisonH = 26.0f;
+        // Oscillator body + a dedicated UNISON zone, separated by a divider (not a
+        // boxed card). The editor may report its real body bottom via oscBodyBottomY_
+        // (e.g. the meta editor ends level with the WAVETABLE panel / PAN row) so the
+        // UNISON row tucks right under it and the space below is left free for the
+        // (future) source-modulation module.
+        const Rect content { r.x + 16.0f, r.y + 44.0f, r.w - 32.0f, r.h - 56.0f };
+        const float unisonH = 52.0f;  // label + control row
         const Rect srcContent { content.x, content.y, content.w, content.h - unisonH - 8.0f };
+        oscBodyBottomY_ = content.y + srcContent.h;  // default: UNISON at the panel bottom
+        oscBodyLeftW_ = content.w;                    // default: UNISON spans the full width
         if(track->type == synth::SourceTrackType::PartialBank)
             drawPartialBankTrackEditor(srcContent, *track);
         else if(track->type == synth::SourceTrackType::MetaOscillator)
@@ -70,17 +78,45 @@ void KapibaraUI::drawTrackEditor(const Rect &r)
             drawBasicTrackEditor(srcContent, *track);
         else
             drawNoiseTrackEditor(srcContent, *track);
-        // Compact unison row
-        const float uy = content.y + content.h - unisonH;
-        const float kw = (content.w - 24.0f) * 0.25f;
-        unisonVoicesRect_ = { content.x,                uy, kw, unisonH };
-        unisonDetuneRect_ = { content.x + kw + 8.0f,   uy, kw, unisonH };
-        unisonWidthRect_  = { content.x + (kw + 8.0f) * 2.0f, uy, kw, unisonH };
-        unisonPhaseRect_  = { content.x + (kw + 8.0f) * 3.0f, uy, kw, unisonH };
-        drawSlider(unisonVoicesRect_, "Voices",  float(track->unison.voices - 1) / 15.0f, float(track->unison.voices));
-        drawSlider(unisonDetuneRect_, "Detune",  track->unison.detuneCents / 80.0f, track->unison.detuneCents);
-        drawSlider(unisonWidthRect_,  "Width",   track->unison.widthStereo, track->unison.widthStereo);
-        drawSlider(unisonPhaseRect_,  "Rnd Ph",  track->unison.phaseSpread, track->unison.phaseSpread);
+
+        // UNISON zone directly below the oscillator body. Clamp so it always fits.
+        const float uy = clampf(oscBodyBottomY_ + 10.0f, content.y, content.y + content.h - unisonH);
+        const float unisonW = oscBodyLeftW_ > 0.0f ? oscBodyLeftW_ : content.w;
+        strokeLine(content.x, uy - 2.0f, content.x + unisonW, uy - 2.0f,
+                   DesignTokens::divider(), 1.0f);
+        drawGroupLabel(content.x, uy + 2.0f, "UNISON");
+        const float rowY = uy + 16.0f;
+        const float rowH = unisonH - 18.0f;
+        const float cellGap = 10.0f;
+        const float cellW = (unisonW - cellGap * 3.0f) * 0.25f;
+        unisonVoicesRect_ = { content.x,                       rowY, cellW, rowH };
+        unisonDetuneRect_ = { content.x + (cellW + cellGap),   rowY, cellW, rowH };
+        unisonWidthRect_  = { content.x + (cellW + cellGap) * 2.0f, rowY, cellW, rowH };
+        unisonPhaseRect_  = { content.x + (cellW + cellGap) * 3.0f, rowY, cellW, rowH };
+        // Voices: drag up/down to change the count (no +/- buttons).
+        unisonVoicesDownRect_ = {};
+        unisonVoicesUpRect_ = {};
+        {
+            useUiFont();
+            uiFontSize(11.5f);
+            textAlign(ALIGN_LEFT | ALIGN_TOP);
+            fillColor(DesignTokens::textSecondary());
+            text(unisonVoicesRect_.x, unisonVoicesRect_.y, "VOICES", nullptr);
+            useMonoFont();
+            uiFontSize(17.0f);
+            textAlign(ALIGN_LEFT | ALIGN_BOTTOM);
+            fillColor(DesignTokens::textPrimary());
+            char vb[8];
+            std::snprintf(vb, sizeof(vb), "%d", track->unison.voices);
+            text(unisonVoicesRect_.x, unisonVoicesRect_.y + unisonVoicesRect_.h, vb, nullptr);
+        }
+        char ub[24];
+        std::snprintf(ub, sizeof(ub), "%.1f ct", track->unison.detuneCents);
+        drawKnobLabeled(unisonDetuneRect_, "DETUNE", track->unison.detuneCents / 80.0f, ub);
+        std::snprintf(ub, sizeof(ub), "%.2f", track->unison.widthStereo);
+        drawKnobLabeled(unisonWidthRect_, "WIDTH", track->unison.widthStereo, ub);
+        std::snprintf(ub, sizeof(ub), "%.2f", track->unison.phaseSpread);
+        drawKnobLabeled(unisonPhaseRect_, "RND PH", track->unison.phaseSpread, ub);
     }
 
 void KapibaraUI::drawVoiceTab(const Rect &r, synth::SourceTrackParams &track)
@@ -150,9 +186,12 @@ void KapibaraUI::clearTrackEditorRects()
         ampEnvSelectRect_ = {};
         duplicateEnvRect_ = {};
         unisonVoicesRect_ = {};
+        unisonVoicesDownRect_ = {};
+        unisonVoicesUpRect_ = {};
         unisonDetuneRect_ = {};
         unisonWidthRect_ = {};
         unisonPhaseRect_ = {};
+        metaMorphSliderRect_ = {};
     }
 
 std::vector<InsertEffect> *KapibaraUI::trackInsertsFor(uint32_t trackId)

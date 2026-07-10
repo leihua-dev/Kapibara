@@ -264,14 +264,15 @@ void KapibaraUI::drawMetaFrameStrip(const Rect &r, const synth::WavetablePartial
 void KapibaraUI::drawPitchControl(const Rect &r, const char *label, int value, bool)
 {
         drawPanel(r, rgba(0x0d1920ff), rgba(0x243240ff));
-        useUiFont();
-        uiFontSize(10.0f);
+        useHeaderFont();
+        uiFontSize(9.5f);
         fillColor(rgba(0x5a8aa8ff));
         textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
         text(r.x + 7.0f, r.y + r.h * 0.5f, label, nullptr);
 
         char buf[16];
         std::snprintf(buf, sizeof(buf), value > 0 ? "+%d" : "%d", value);
+        useMonoFont();
         uiFontSize(13.0f);
         fillColor(rgba(0x9be7a1ff));
         textAlign(ALIGN_RIGHT | ALIGN_MIDDLE);
@@ -281,14 +282,15 @@ void KapibaraUI::drawPitchControl(const Rect &r, const char *label, int value, b
 void KapibaraUI::drawPitchControlF(const Rect &r, const char *label, float value)
 {
         drawPanel(r, rgba(0x0d1920ff), rgba(0x243240ff));
-        useUiFont();
-        uiFontSize(10.0f);
+        useHeaderFont();
+        uiFontSize(9.5f);
         fillColor(rgba(0x5a8aa8ff));
         textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
         text(r.x + 7.0f, r.y + r.h * 0.5f, label, nullptr);
 
         char buf[16];
         std::snprintf(buf, sizeof(buf), value >= 0.0f ? "+%.2f" : "%.2f", value);
+        useMonoFont();
         uiFontSize(12.0f);
         fillColor(rgba(0x9be7a1ff));
         textAlign(ALIGN_RIGHT | ALIGN_MIDDLE);

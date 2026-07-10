@@ -97,6 +97,15 @@ bool KapibaraUI::applyOscillatorDragValue(float x, float y)
                 }
                 else { metaSlot.morph = knobNorm(); pushMetaPartialRuntime(); }
                 break;
+            case DragTarget::MetaMorphSlider:
+                // Absolute vertical position within the Morph scrubber: top = 0
+                // (back frame), bottom = 1 (front frame), matching the frame stack.
+                if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::MetaOscillator)
+                {
+                    track->metaOsc.morph = clampf((y - morphGrooveTop_) / std::max(1.0f, morphGrooveH_), 0.0f, 1.0f);
+                    pushCurrentTrackMorphOnly();
+                }
+                break;
             case DragTarget::MetaWarpAmount:
                 if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::MetaOscillator)
                 { track->metaOsc.warpAmount = knobNorm() * 2.0f - 1.0f; pushCurrentTrack(); }

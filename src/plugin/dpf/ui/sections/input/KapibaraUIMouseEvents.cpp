@@ -97,6 +97,15 @@ bool KapibaraUI::onMouse(const MouseEvent &ev)
             repaint();
             return true;
         }
+        if(ev.button == kMouseButtonRight && metaWarpModeRect_.contains(x, y))
+        {
+            auto *track = currentTrack();
+            const uint32_t tid = (track != nullptr && track->type == synth::SourceTrackType::MetaOscillator)
+                                      ? track->id : 0u;
+            openWarpModeMenu(tid, x, y);
+            repaint();
+            return true;
+        }
         if(ev.button == kMouseButtonRight)
         {
             if(openRouteNodeContext(x, y))
@@ -202,6 +211,12 @@ bool KapibaraUI::onMouse(const MouseEvent &ev)
             return true;
         }
         if(handleModSourceMenuClick(x, y))
+        {
+            repaint();
+            return true;
+        }
+
+        if(handleWarpModeMenuClick(x, y))
         {
             repaint();
             return true;

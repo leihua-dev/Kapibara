@@ -143,7 +143,7 @@ enum class DragTarget
     SourceGain, SourcePan, SourceFilterCutoff, SourceFilterResonance, SourceFilterDrive, SourceFilterFeedback,
     SourceFilterMix,
     UnisonVoices, UnisonDetune, UnisonWidth, UnisonPhase,
-    MetaRatio, MetaAmp, MetaPhase, MetaPhaseRand, MetaPan, MetaFrameCount, MetaMorph, MetaWarpAmount,
+    MetaRatio, MetaAmp, MetaPhase, MetaPhaseRand, MetaPan, MetaFrameCount, MetaMorph, MetaMorphSlider, MetaWarpAmount,
     MetaPitchOct, MetaPitchSem, MetaPitchFin, MetaPitchCrs,
     MetaFrameScan, MetaWaveform, MetaHarmonicRatio, MetaHarmonicAmp, MetaHarmonicPhase,
     PartialTableAmp, PartialTablePhase,
@@ -261,11 +261,17 @@ struct DesignTokens
     static Color accentGreen()       { return rgba(0x8bea62ff); }
     static Color accentBlue()        { return rgba(0x4aa8e8ff); }
 
-    static constexpr float panelRadius = 8.0f;
-    static constexpr float controlRadius = 5.0f;
+    // Industrial-panel pass: square-ish corners (2-4px, not the old 5-8px rounded
+    // cards), panels/dividers carry the visual weight instead of layered rounded
+    // boxes.
+    static constexpr float panelRadius = 3.0f;
+    static constexpr float controlRadius = 2.0f;
     static constexpr float borderWidth = 1.0f;
     static constexpr float knobStart = 3.0f * kPi / 4.0f;
     static constexpr float knobSweep = 3.0f * kPi / 2.0f;
+
+    // Metal-groove tone used for recessed tracks/insets (darker than divider()).
+    static Color groove() { return rgba(0x0c1215ff); }
 };
 
 inline bool isBlackKey(int note)

@@ -149,7 +149,12 @@ void KapibaraUI::drawStripThumbnail(const Rect &r, const synth::SourceTrackParam
         if(track.type == synth::SourceTrackType::MetaOscillator && track.metaOsc.frameCount > 0)
         {
             float liveMorph = track.metaOsc.morph;
-            if(const auto *p = plugin()) liveMorph = p->sourceLiveMorph(trackIndex);
+            if(const auto *p = plugin())
+            {
+                const float live = p->sourceLiveMorph(trackIndex);
+                if(live >= 0.0f)
+                    liveMorph = live;
+            }
             const int fIdx = clampi(int(liveMorph * float(track.metaOsc.frameCount - 1) + 0.5f), 0,
                                     track.metaOsc.frameCount - 1);
             const auto &frm = track.metaOsc.frames[(size_t)fIdx];
