@@ -68,12 +68,8 @@ void KapibaraUI::drawFocusedNodeDetail(const Rect &r)
         }
         if(focusPage_ == 2 && isSourceNode)
         {
-            const int ti = trackIndexOfId(id & 0x00ffffffu);
-            if(ti >= 0)
-            {
-                drawSectionTitle(r.x + 268.0f, r.y + 10.0f, "OSC MOD SYSTEM");
-                drawOscModDiagram(content, generator_.tracks[(size_t)ti]);
-            }
+            drawSectionTitle(r.x + 268.0f, r.y + 10.0f, "OSC MOD SYSTEM");
+            drawOscModDiagram(content);
             return;
         }
         structAddOutRect_ = {}; structRemoveOutRect_ = {}; structAddUtilRect_ = {};
@@ -133,20 +129,19 @@ bool KapibaraUI::handleFocusedDetailPress(float x, float y)
         for(int i = 0; i < 3; ++i)
             if(focusPageTabRects_[(size_t)i].w > 0.0f && focusPageTabRects_[(size_t)i].contains(x, y))
             { focusPage_ = i; repaint(); return true; }
-        // OSC MOD diagram page: click a modulator box → mode / remove menu.
+        // OSC MOD diagram page: click a mode chip → mode / remove menu.
         if(focusPage_ == 2 && (focusedNodeId_ & 0xff000000u) == 0x08000000u)
         {
-            const int ti = trackIndexOfId(focusedNodeId_ & 0x00ffffffu);
-            if(ti >= 0)
-                for(int k = 0; k < synth::kMaxTrackMods; ++k)
-                    if(oscModDiagRects_[(size_t)k].w > 0.0f && oscModDiagRects_[(size_t)k].contains(x, y))
-                    {
-                        selectedTrack_ = ti;
-                        selectedModSlot_ = k;
-                        openOscModTypeMenu(int(generator_.tracks[(size_t)ti].id), k, x, y);
-                        repaint();
-                        return true;
-                    }
+            for(const auto &hit : oscModDiagHits_)
+                if(hit.rect.contains(x, y) && hit.track >= 0
+                   && hit.track < int(generator_.tracks.size()))
+                {
+                    selectedTrack_ = hit.track;
+                    selectedModSlot_ = hit.slot;
+                    openOscModTypeMenu(int(generator_.tracks[(size_t)hit.track].id), hit.slot, x, y);
+                    repaint();
+                    return true;
+                }
         }
         if(focusPage_ == 1)
         {

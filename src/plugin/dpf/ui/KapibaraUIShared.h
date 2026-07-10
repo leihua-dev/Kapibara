@@ -127,6 +127,14 @@ struct ModHit
     int slot = 0; // slot = -1 means "add"
 };
 
+// Clickable mode chip in the global OSC MOD diagram → (carrier track, mod slot).
+struct OscModDiagHit
+{
+    Rect rect {};
+    int track = -1;
+    int slot = -1;
+};
+
 struct MatrixCell
 {
     Rect rect;

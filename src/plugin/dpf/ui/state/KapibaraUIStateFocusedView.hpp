@@ -32,5 +32,5 @@
     int  structUtilParamDrag_ = -1; // 0=level 1=pan 2=lo 3=hi
     float structUtilParamStartY_ = 0.0f, structUtilParamStartVal_ = 0.0f;
     std::array<Rect, 4> ampFocusKnobRects_ {};
-    // OSC MOD diagram (focus page 2): clickable modulator boxes, one per mod slot.
-    std::array<Rect, synth::kMaxTrackMods> oscModDiagRects_ {};
+    // Global OSC MOD diagram (focus page 2): clickable mode chips → (carrier, slot).
+    std::vector<OscModDiagHit> oscModDiagHits_;

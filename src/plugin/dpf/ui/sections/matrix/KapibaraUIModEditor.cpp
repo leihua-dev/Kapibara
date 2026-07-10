@@ -118,17 +118,124 @@ void KapibaraUI::drawModEditor(const Rect &region, synth::SourceTrackParams &tra
         }
     }
 
-// Focused-detail "OSC MOD" page: a signal diagram of how this carrier is
-// modulated. Phase-domain entries (FM/PM) sum into a Σ node feeding the PHASE
-// input, amp-domain entries (AM/Ring) combine multiplicatively at the AMP
-// stage, and a Sync entry resets phase — matching how Voice actually renders.
-void KapibaraUI::drawOscModDiagram(const Rect &r, synth::SourceTrackParams &track)
+// Focused-detail "OSC MOD" page: the GLOBAL modulation network. Every track and
+// component tap that participates in cross-track modulation is a node, laid out
+// left→right by dependency depth, so series chains (A → FLT → B → C) and
+// parallel fan-ins read directly. Phase-domain inputs (FM/PM) meet at a +
+// node, amp-domain inputs (AM/Ring) at a x node — matching Voice's render.
+void KapibaraUI::drawOscModDiagram(const Rect &r)
 {
         // The generic OSC MOD row handlers must not misfire from stale rects while
         // the diagram page is up.
         modSrcRects_.fill({}); modTypeRects_.fill({}); modDepthRects_.fill({}); modDeleteRects_.fill({});
         oscModAddRect_ = {};
-        oscModDiagRects_.fill({});
+        oscModDiagHits_.clear();
+
+        const int n = std::min<int>(int(generator_.tracks.size()), synth::kMaxSourceTracks);
+
+        // --- Node & edge collection -----------------------------------------
+        struct DiagNode
+        {
+            int kind = 0;       // 0 = track, 1 = FLT tap, 2 = AE tap
+            int track = -1;     // track index (kind 0) or home track (taps)
+            int node = 0;       // tap slot / instance
+            int depth = 0;
+            bool carrier = false;
+            Rect box {};
+        };
+        struct DiagEdge
+        {
+            int from = -1, to = -1;      // node indices
+            int carrier = -1, slot = -1; // mod entry behind the chip (-1 = audio feed)
+            synth::SourceModType type = synth::SourceModType::AM;
+            float depth = 0.0f;
+            bool audioFeed = false;      // dim home → tap feed line
+        };
+        std::vector<DiagNode> nodes;
+        std::vector<DiagEdge> edges;
+        const auto ensureNode = [&](int kind, int track, int node) -> int {
+            for(size_t idx = 0; idx < nodes.size(); ++idx)
+                if(nodes[idx].kind == kind
+                   && (kind == 0 ? nodes[idx].track == track : nodes[idx].node == node))
+                    return int(idx);
+            DiagNode d; d.kind = kind; d.track = track; d.node = node;
+            nodes.push_back(d);
+            return int(nodes.size()) - 1;
+        };
+        for(int i = 0; i < n; ++i)
+        {
+            const auto &carrier = generator_.tracks[(size_t)i];
+            for(int k = 0; k < synth::kMaxTrackMods; ++k)
+            {
+                const auto &m = carrier.mods[(size_t)k];
+                if(!modEntryActive(m) || m.sourceTrack < 0 || m.sourceTrack >= n)
+                    continue;
+                const int carIdx = ensureNode(0, i, 0);
+                nodes[(size_t)carIdx].carrier = true;
+                int srcIdx;
+                if(m.sourceKind == 0)
+                    srcIdx = ensureNode(0, m.sourceTrack, 0);
+                else
+                {
+                    const int homeIdx = ensureNode(0, m.sourceTrack, 0);
+                    srcIdx = ensureNode(int(m.sourceKind), m.sourceTrack, int(m.sourceNode));
+                    bool haveFeed = false;
+                    for(const auto &e : edges)
+                        if(e.audioFeed && e.from == homeIdx && e.to == srcIdx) { haveFeed = true; break; }
+                    if(!haveFeed)
+                    {
+                        DiagEdge fe; fe.from = homeIdx; fe.to = srcIdx; fe.audioFeed = true;
+                        edges.push_back(fe);
+                    }
+                }
+                DiagEdge e;
+                e.from = srcIdx; e.to = ensureNode(0, i, 0);
+                e.carrier = i; e.slot = k; e.type = m.type; e.depth = m.depth;
+                edges.push_back(e);
+            }
+        }
+
+        if(edges.empty())
+        {
+            useUiFont();
+            uiFontSize(10.0f);
+            textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
+            fillColor(DesignTokens::textSecondary());
+            text(r.x + r.w * 0.5f, r.y + r.h * 0.5f,
+                 "no osc mods anywhere — drag a wire from a component output onto a source row,"
+                 " or use + MOD in the source editor", nullptr);
+            return;
+        }
+
+        // --- Longest-path depth (the mod graph is acyclic) -------------------
+        for(size_t pass = 0; pass <= nodes.size(); ++pass)
+        {
+            bool changed = false;
+            for(const auto &e : edges)
+                if(nodes[(size_t)e.to].depth < nodes[(size_t)e.from].depth + 1)
+                { nodes[(size_t)e.to].depth = nodes[(size_t)e.from].depth + 1; changed = true; }
+            if(!changed) break;
+        }
+        int maxDepth = 0;
+        for(const auto &d : nodes) maxDepth = std::max(maxDepth, d.depth);
+
+        // --- Layout: one column per depth, rows stacked & centred ------------
+        constexpr float trackW = 132.0f, tapW = 92.0f, rowPitch = 60.0f;
+        const float colGap = maxDepth > 0
+                                 ? std::max(trackW + 40.0f, (r.w - trackW - 52.0f) / float(maxDepth))
+                                 : 0.0f;
+        std::vector<int> counts((size_t)maxDepth + 1, 0), placed((size_t)maxDepth + 1, 0);
+        for(const auto &d : nodes) counts[(size_t)d.depth]++;
+        for(auto &d : nodes)
+        {
+            const float bw = d.kind == 0 ? trackW : tapW;
+            const float bh = (d.kind == 0 && d.carrier) ? 46.0f : 26.0f;
+            const float colH = float(counts[(size_t)d.depth]) * rowPitch;
+            const float y0 = r.y + std::max(4.0f, (r.h - 18.0f) * 0.5f - colH * 0.5f);
+            d.box = { r.x + 8.0f + colGap * float(d.depth),
+                      y0 + float(placed[(size_t)d.depth]) * rowPitch, bw, bh };
+            placed[(size_t)d.depth]++;
+        }
 
         const auto arrowHead = [&](float ax, float ay, Color c) {
             beginPath();
@@ -139,151 +246,154 @@ void KapibaraUI::drawOscModDiagram(const Rect &r, synth::SourceTrackParams &trac
             fillColor(c);
             fill();
         };
-
-        // Partition active entries by domain.
-        std::array<int, synth::kMaxTrackMods> phaseSlots {}, ampSlots {}, syncSlots {};
-        int nPhase = 0, nAmp = 0, nSync = 0, nAll = 0;
-        for(int k = 0; k < synth::kMaxTrackMods; ++k)
-        {
-            const auto &m = track.mods[(size_t)k];
-            if(!modEntryActive(m) || m.sourceTrack < 0 || m.sourceTrack >= int(generator_.tracks.size()))
-                continue;
-            ++nAll;
-            if(m.type == synth::SourceModType::FM || m.type == synth::SourceModType::PM)
-                phaseSlots[(size_t)nPhase++] = k;
-            else if(m.type == synth::SourceModType::HardSync)
-                syncSlots[(size_t)nSync++] = k;
-            else
-                ampSlots[(size_t)nAmp++] = k;
-        }
-
-        if(nAll == 0)
-        {
-            useUiFont();
-            uiFontSize(10.0f);
-            textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
-            fillColor(DesignTokens::textSecondary());
-            text(r.x + r.w * 0.5f, r.y + r.h * 0.5f,
-                 "no osc mods — drag a wire from another source onto this track's row,"
-                 " or use + MOD in the source editor", nullptr);
-            return;
-        }
-
-        // Carrier box on the right with OUT arrow and the three input stages.
-        const Rect carrier { r.x + r.w - 200.0f, r.y + r.h * 0.5f - 27.0f, 150.0f, 54.0f };
-        drawPanel(carrier, rgba(0x17242cff), DesignTokens::accentGreen());
-        useUiFont();
-        uiFontSize(10.5f);
-        textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
-        fillColor(DesignTokens::textPrimary());
-        scissor(carrier.x + 2.0f, carrier.y, carrier.w - 4.0f, carrier.h);
-        text(carrier.x + carrier.w * 0.5f, carrier.y + carrier.h * 0.5f, track.name.c_str(), nullptr);
-        resetScissor();
-        strokeLine(carrier.x + carrier.w, carrier.y + carrier.h * 0.5f,
-                   r.x + r.w - 22.0f, carrier.y + carrier.h * 0.5f,
-                   DesignTokens::accentGreen(), 1.5f);
-        arrowHead(r.x + r.w - 22.0f, carrier.y + carrier.h * 0.5f, DesignTokens::accentGreen());
-        uiFontSize(8.5f);
-        textAlign(ALIGN_LEFT | ALIGN_BOTTOM);
-        fillColor(DesignTokens::textSecondary());
-        text(carrier.x + carrier.w + 6.0f, carrier.y + carrier.h * 0.5f - 4.0f, "OUT", nullptr);
-
-        const float phaseY = carrier.y + 12.0f;
-        const float ampY   = carrier.y + 27.0f;
-        const float syncY  = carrier.y + 42.0f;
-        uiFontSize(7.5f);
-        textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-        fillColor(nPhase > 0 ? DesignTokens::textPrimary() : DesignTokens::textSecondary().withAlpha(0.4f));
-        text(carrier.x + 5.0f, phaseY, "PHASE", nullptr);
-        fillColor(nAmp > 0 ? DesignTokens::textPrimary() : DesignTokens::textSecondary().withAlpha(0.4f));
-        text(carrier.x + 5.0f, ampY, "AMP", nullptr);
-        fillColor(nSync > 0 ? DesignTokens::textPrimary() : DesignTokens::textSecondary().withAlpha(0.4f));
-        text(carrier.x + 5.0f, syncY, "SYNC", nullptr);
-
-        // Modulator boxes on the left (slot order), coloured by mode.
-        constexpr float boxW = 150.0f, boxH = 26.0f, boxGap = 12.0f;
-        const float listH = float(nAll) * boxH + float(nAll - 1) * boxGap;
-        float by = r.y + std::max(6.0f, r.h * 0.5f - listH * 0.5f);
-        std::array<float, synth::kMaxTrackMods> boxMidY {};
-        for(int k = 0; k < synth::kMaxTrackMods; ++k)
-        {
-            const auto &m = track.mods[(size_t)k];
-            if(!modEntryActive(m) || m.sourceTrack < 0 || m.sourceTrack >= int(generator_.tracks.size()))
-                continue;
-            const Color col = oscModTypeColor(m.type);
-            const Rect box { r.x + 8.0f, by, boxW, boxH };
-            oscModDiagRects_[(size_t)k] = box;
-            boxMidY[(size_t)k] = box.y + box.h * 0.5f;
-            drawPanel(box, rgba(0x101820ff), col.withAlpha(0.8f));
-            useUiFont();
-            uiFontSize(9.0f);
-            textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-            fillColor(DesignTokens::textPrimary());
-            char srcLbl[32];
-            oscModSourceLabel(m, srcLbl, sizeof(srcLbl));
-            scissor(box.x + 4.0f, box.y, box.w * 0.55f, box.h);
-            text(box.x + 6.0f, box.y + box.h * 0.5f, srcLbl, nullptr);
-            resetScissor();
-            char lbl[24];
-            std::snprintf(lbl, sizeof(lbl), "%s %.2f", synth::sourceModTypeName(m.type), m.depth);
-            useMonoFont();
-            uiFontSize(9.0f);
-            textAlign(ALIGN_RIGHT | ALIGN_MIDDLE);
-            fillColor(col);
-            text(box.x + box.w - 6.0f, box.y + box.h * 0.5f, lbl, nullptr);
-            by += boxH + boxGap;
-        }
-
-        // Combine nodes between the boxes and the carrier inputs.
-        const float leftEdge = r.x + 8.0f + boxW;
-        const float combineX = leftEdge + (carrier.x - leftEdge) * 0.52f;
-        const auto wireTo = [&](int slot, float nx, float ny, Color c) {
-            const float sy = boxMidY[(size_t)slot];
-            beginPath();
-            moveTo(leftEdge, sy);
-            bezierTo(leftEdge + (nx - leftEdge) * 0.5f, sy, leftEdge + (nx - leftEdge) * 0.5f, ny, nx, ny);
-            strokeColor(c.withAlpha(0.85f));
-            strokeWidth(1.5f);
-            stroke();
+        // Port rows on a carrier box (phase / amp / sync).
+        const auto portY = [&](const DiagNode &d, int domain) {
+            if(!(d.kind == 0 && d.carrier)) return d.box.y + d.box.h * 0.5f;
+            return d.box.y + 10.0f + 13.0f * float(domain);
         };
-        const auto combineNode = [&](float cx, float cy, const char *sym, Color c) {
+        const auto domainOf = [](synth::SourceModType t) {
+            if(t == synth::SourceModType::FM || t == synth::SourceModType::PM) return 0;
+            if(t == synth::SourceModType::HardSync) return 2;
+            return 1;
+        };
+
+        // --- Edges (under the boxes) -----------------------------------------
+        const auto drawWire = [&](float x0, float y0, float x1, float y1, Color c, float w) {
             beginPath();
-            circle(cx, cy, 10.0f);
-            fillColor(rgba(0x101820ff));
-            fill();
+            moveTo(x0, y0);
+            const float mx = x0 + (x1 - x0) * 0.5f;
+            bezierTo(mx, y0, mx, y1, x1, y1);
             strokeColor(c);
-            strokeWidth(1.5f);
+            strokeWidth(w);
             stroke();
-            useUiFont();
-            uiFontSize(11.0f);
-            textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
-            fillColor(c);
-            text(cx, cy, sym, nullptr);
         };
-        if(nPhase > 0)
+        // Combine nodes: carriers with ≥2 inputs in one domain get a +/x circle.
+        std::vector<std::array<int, 3>> fanIn(nodes.size(), std::array<int, 3> { 0, 0, 0 });
+        for(const auto &e : edges)
+            if(!e.audioFeed) fanIn[(size_t)e.to][(size_t)domainOf(e.type)]++;
+
+        for(const auto &e : edges)
         {
-            const Color c = rgba(0xe8b34aff); // phase-domain amber
-            for(int p = 0; p < nPhase; ++p)
-                wireTo(phaseSlots[(size_t)p], combineX - 10.0f, phaseY, oscModTypeColor(track.mods[(size_t)phaseSlots[(size_t)p]].type));
-            combineNode(combineX, phaseY, "+", c); // Σ: FM/PM offsets sum into the phase input
-            strokeLine(combineX + 10.0f, phaseY, carrier.x - 8.0f, phaseY, c, 1.5f);
-            arrowHead(carrier.x - 1.0f, phaseY, c);
+            const DiagNode &a = nodes[(size_t)e.from];
+            const DiagNode &b = nodes[(size_t)e.to];
+            const float x0 = a.box.x + a.box.w;
+            const float y0 = a.box.y + a.box.h * 0.5f;
+            if(e.audioFeed)
+            {
+                // Dim feed line: the tap component carries the home track's signal.
+                drawWire(x0, y0, b.box.x, b.box.y + b.box.h * 0.5f,
+                         DesignTokens::textSecondary().withAlpha(0.35f), 1.0f);
+                continue;
+            }
+            const int dom = domainOf(e.type);
+            const Color col = oscModTypeColor(e.type);
+            const float py = portY(b, dom);
+            const bool viaCombine = fanIn[(size_t)e.to][(size_t)dom] >= 2 && dom != 2;
+            const float endX = viaCombine ? b.box.x - 26.0f : b.box.x - 2.0f;
+            drawWire(x0, y0, endX - (viaCombine ? 10.0f : 6.0f), py, col.withAlpha(0.85f), 1.5f);
+            if(!viaCombine)
+                arrowHead(b.box.x - 1.0f, py, col);
+
+            // Clickable mode chip on the wire.
+            char lbl[24];
+            std::snprintf(lbl, sizeof(lbl), "%s %.2f", synth::sourceModTypeName(e.type), e.depth);
+            const float chipW = 66.0f, chipH = 15.0f;
+            const Rect chip { (x0 + endX) * 0.5f - chipW * 0.5f,
+                              (y0 + py) * 0.5f - chipH * 0.5f, chipW, chipH };
+            drawPanel(chip, rgba(0x101820f0), col.withAlpha(0.9f));
+            useMonoFont();
+            uiFontSize(8.5f);
+            textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
+            fillColor(col);
+            text(chip.x + chip.w * 0.5f, chip.y + chip.h * 0.5f, lbl, nullptr);
+            oscModDiagHits_.push_back(OscModDiagHit { chip, e.carrier, e.slot });
         }
-        if(nAmp > 0)
+        // Combine circles + short arrow into the port.
+        for(size_t ni = 0; ni < nodes.size(); ++ni)
         {
-            const Color c = DesignTokens::accentCyan();
-            for(int p = 0; p < nAmp; ++p)
-                wireTo(ampSlots[(size_t)p], combineX - 10.0f, ampY, oscModTypeColor(track.mods[(size_t)ampSlots[(size_t)p]].type));
-            combineNode(combineX, ampY, "x", c); // AM/Ring apply multiplicatively in series
-            strokeLine(combineX + 10.0f, ampY, carrier.x - 8.0f, ampY, c, 1.5f);
-            arrowHead(carrier.x - 1.0f, ampY, c);
+            const DiagNode &d = nodes[ni];
+            if(!(d.kind == 0 && d.carrier)) continue;
+            for(int dom = 0; dom < 2; ++dom)
+            {
+                if(fanIn[ni][(size_t)dom] < 2) continue;
+                const float py = portY(d, dom);
+                const float cx = d.box.x - 26.0f;
+                const Color c = dom == 0 ? rgba(0xe8b34aff) : DesignTokens::accentCyan();
+                beginPath();
+                circle(cx, py, 9.0f);
+                fillColor(rgba(0x101820ff));
+                fill();
+                strokeColor(c);
+                strokeWidth(1.5f);
+                stroke();
+                useUiFont();
+                uiFontSize(10.0f);
+                textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
+                fillColor(c);
+                text(cx, py, dom == 0 ? "+" : "x", nullptr);
+                strokeLine(cx + 9.0f, py, d.box.x - 8.0f, py, c, 1.5f);
+                arrowHead(d.box.x - 1.0f, py, c);
+            }
         }
-        if(nSync > 0)
+
+        // --- Boxes (over the wires) -------------------------------------------
+        for(const auto &d : nodes)
         {
-            const Color c = oscModTypeColor(synth::SourceModType::HardSync);
-            for(int p = 0; p < nSync; ++p)
-                wireTo(syncSlots[(size_t)p], carrier.x - 8.0f, syncY, c);
-            arrowHead(carrier.x - 1.0f, syncY, c);
+            if(d.kind == 0)
+            {
+                const auto &t = generator_.tracks[(size_t)d.track];
+                const bool isFocused = (focusedNodeId_ & 0xff000000u) == 0x08000000u
+                                       && (focusedNodeId_ & 0x00ffffffu) == t.id;
+                drawPanel(d.box, rgba(0x111a21ff),
+                          isFocused ? DesignTokens::accentGreen() : rgba(0x3b5560ff));
+                useUiFont();
+                uiFontSize(9.5f);
+                textAlign(ALIGN_RIGHT | ALIGN_MIDDLE);
+                fillColor(DesignTokens::textPrimary());
+                scissor(d.box.x + 2.0f, d.box.y, d.box.w - 4.0f, d.box.h);
+                text(d.box.x + d.box.w - 7.0f, d.box.y + d.box.h * 0.5f, t.name.c_str(), nullptr);
+                resetScissor();
+                if(d.carrier)
+                {
+                    static const char *kPorts[3] = { "PHASE", "AMP", "SYNC" };
+                    uiFontSize(7.0f);
+                    textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+                    for(int dom = 0; dom < 3; ++dom)
+                    {
+                        const bool used = fanIn[(size_t)(&d - nodes.data())][(size_t)dom] > 0;
+                        fillColor(used ? DesignTokens::textSecondary()
+                                       : DesignTokens::textSecondary().withAlpha(0.35f));
+                        text(d.box.x + 5.0f, portY(d, dom), kPorts[dom], nullptr);
+                    }
+                }
+                // Audio-out stub for tracks that reach MASTER.
+                if(t.connectedToMaster)
+                {
+                    const float oy = d.box.y + d.box.h * 0.5f;
+                    strokeLine(d.box.x + d.box.w, oy, d.box.x + d.box.w + 16.0f, oy,
+                               DesignTokens::accentGreen().withAlpha(0.8f), 1.5f);
+                    arrowHead(d.box.x + d.box.w + 21.0f, oy, DesignTokens::accentGreen().withAlpha(0.8f));
+                }
+            }
+            else
+            {
+                // Component tap chip (FLT n / AE n).
+                drawPanel(d.box, rgba(0x101820ff), rgba(0x5b7380ff));
+                char lbl[16];
+                if(d.kind == 1)
+                    std::snprintf(lbl, sizeof(lbl), "FLT %d", d.node + 1);
+                else
+                {
+                    const int slot = (d.node >= 0 && d.node < int(ampEnvRouteNodeSlots_.size()))
+                                         ? int(ampEnvRouteNodeSlots_[(size_t)d.node]) : 0;
+                    std::snprintf(lbl, sizeof(lbl), "AE %d", slot + 1);
+                }
+                useUiFont();
+                uiFontSize(9.0f);
+                textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
+                fillColor(DesignTokens::textSecondary());
+                text(d.box.x + d.box.w * 0.5f, d.box.y + d.box.h * 0.5f, lbl, nullptr);
+            }
         }
 
         // Honest footer: the mod graph is acyclic today.
@@ -292,7 +402,7 @@ void KapibaraUI::drawOscModDiagram(const Rect &r, synth::SourceTrackParams &trac
         textAlign(ALIGN_LEFT | ALIGN_BOTTOM);
         fillColor(DesignTokens::textSecondary().withAlpha(0.6f));
         text(r.x + 8.0f, r.y + r.h - 4.0f,
-             "click a box to change mode / remove - depth edits in the source editor - feedback loops not supported yet",
+             "global osc-mod network - click a chip to change mode / remove - depth edits in the source editor - feedback loops not supported yet",
              nullptr);
     }
 
