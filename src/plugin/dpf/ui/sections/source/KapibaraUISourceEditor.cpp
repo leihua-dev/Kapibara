@@ -12,6 +12,7 @@ void KapibaraUI::drawGroupEditor(const Rect &r, int gi)
         drawPanel(r, rgba(0x140d1aff), rgba(0xc070e0aaU));
         clearTrackEditorRects();
         modSrcRects_.fill({}); modTypeRects_.fill({}); modDepthRects_.fill({}); modDeleteRects_.fill({});
+        oscModAddRect_ = {};
         if(gi < 0 || gi >= int(stripGroups_.size()))
             return;
         auto &grp = stripGroups_[(size_t)gi];
@@ -60,14 +61,19 @@ void KapibaraUI::drawTrackEditor(const Rect &r)
         editorTabRects_.fill({});
         modSrcRects_.fill({}); modTypeRects_.fill({}); modDepthRects_.fill({}); modDeleteRects_.fill({});
 
-        // Oscillator body + a dedicated UNISON zone, separated by a divider (not a
-        // boxed card). The editor may report its real body bottom via oscBodyBottomY_
-        // (e.g. the meta editor ends level with the WAVETABLE panel / PAN row) so the
-        // UNISON row tucks right under it and the space below is left free for the
-        // (future) source-modulation module.
+        // Oscillator body + a dedicated UNISON zone + the OSC MOD zone, separated by
+        // dividers (not boxed cards). The editor may report its real body bottom via
+        // oscBodyBottomY_ (e.g. the meta editor ends level with the WAVETABLE panel /
+        // PAN row) so the UNISON row tucks right under it, with OSC MOD below that.
         const Rect content { r.x + 16.0f, r.y + 44.0f, r.w - 32.0f, r.h - 56.0f };
         const float unisonH = 52.0f;  // label + control row
-        const Rect srcContent { content.x, content.y, content.w, content.h - unisonH - 8.0f };
+        // OSC MOD zone grows with the number of active source-mod entries.
+        int activeMods = 0;
+        for(const auto &m : track->mods)
+            if(modEntryActive(m)) ++activeMods;
+        const float modZoneH = 18.0f + float(activeMods) * 24.0f;
+        const Rect srcContent { content.x, content.y, content.w,
+                                content.h - unisonH - modZoneH - 16.0f };
         oscBodyBottomY_ = content.y + srcContent.h;  // default: UNISON at the panel bottom
         oscBodyLeftW_ = content.w;                    // default: UNISON spans the full width
         if(track->type == synth::SourceTrackType::PartialBank)
@@ -79,8 +85,10 @@ void KapibaraUI::drawTrackEditor(const Rect &r)
         else
             drawNoiseTrackEditor(srcContent, *track);
 
-        // UNISON zone directly below the oscillator body. Clamp so it always fits.
-        const float uy = clampf(oscBodyBottomY_ + 10.0f, content.y, content.y + content.h - unisonH);
+        // UNISON zone directly below the oscillator body. Clamp so it always fits,
+        // leaving room for the OSC MOD zone beneath.
+        const float uy = clampf(oscBodyBottomY_ + 10.0f, content.y,
+                                content.y + content.h - unisonH - modZoneH - 6.0f);
         const float unisonW = oscBodyLeftW_ > 0.0f ? oscBodyLeftW_ : content.w;
         strokeLine(content.x, uy - 2.0f, content.x + unisonW, uy - 2.0f,
                    DesignTokens::divider(), 1.0f);
@@ -117,6 +125,11 @@ void KapibaraUI::drawTrackEditor(const Rect &r)
         drawKnobLabeled(unisonWidthRect_, "WIDTH", track->unison.widthStereo, ub);
         std::snprintf(ub, sizeof(ub), "%.2f", track->unison.phaseSpread);
         drawKnobLabeled(unisonPhaseRect_, "RND PH", track->unison.phaseSpread, ub);
+
+        // OSC MOD zone: this track as a carrier, other tracks as audio-rate
+        // modulators (AM / Ring / FM / PM / Sync), rendered per voice in Voice.
+        const float modY = uy + unisonH + 6.0f;
+        drawModEditor({ content.x, modY, unisonW, modZoneH }, *track);
     }
 
 void KapibaraUI::drawVoiceTab(const Rect &r, synth::SourceTrackParams &track)
@@ -192,6 +205,7 @@ void KapibaraUI::clearTrackEditorRects()
         unisonWidthRect_ = {};
         unisonPhaseRect_ = {};
         metaMorphSliderRect_ = {};
+        oscModAddRect_ = {};
     }
 
 std::vector<InsertEffect> *KapibaraUI::trackInsertsFor(uint32_t trackId)

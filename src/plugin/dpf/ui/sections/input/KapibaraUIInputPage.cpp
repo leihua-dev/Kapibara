@@ -93,7 +93,8 @@ bool KapibaraUI::handlePageClick(float x, float y)
         // FX Rack panel body → start a drag-to-swap.
         if(handleFxRackPress(x, y))
             return true;
-        if(modMode && handleModEditorClick(x, y))
+        // OSC MOD rows live in the always-visible source editor, so no mode gate.
+        if(handleModEditorClick(x, y))
             return true;
         return handleButtonClick(x, y) || handleControlPress(x, y);
     }

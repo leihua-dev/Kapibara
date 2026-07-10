@@ -47,27 +47,68 @@ bool KapibaraUI::trackHasAnyMod(const synth::SourceTrackParams &t)
         return false;
     }
 
+// OSC MOD zone in the source editor: this track is the carrier; each row is one
+// audio-rate modulator entry [source track][mode][depth bar][x]. Divider + group
+// label styling matches the UNISON zone directly above it.
 void KapibaraUI::drawModEditor(const Rect &region, synth::SourceTrackParams &track)
 {
-        drawSectionTitle(region.x, region.y, "MODULATION (source → this)");
         modSrcRects_.fill({}); modTypeRects_.fill({}); modDepthRects_.fill({}); modDeleteRects_.fill({});
-        const float rowH = std::max(20.0f, (region.h - 24.0f) / float(synth::kMaxTrackMods) - 4.0f);
+        oscModAddRect_ = {};
+
+        strokeLine(region.x, region.y - 2.0f, region.x + region.w, region.y - 2.0f,
+                   DesignTokens::divider(), 1.0f);
+        drawGroupLabel(region.x, region.y + 2.0f, "OSC MOD");
+
+        // "+ MOD" chip on the header line while a free slot remains.
+        bool hasFree = false;
+        for(const auto &m : track.mods)
+            if(!modEntryActive(m)) { hasFree = true; break; }
+        if(hasFree)
+        {
+            oscModAddRect_ = { region.x + region.w - 52.0f, region.y, 52.0f, 14.0f };
+            drawButton(oscModAddRect_, "+ MOD", false);
+        }
+
+        constexpr float rowH = 20.0f;
+        constexpr float rowGap = 4.0f;
+        float ry = region.y + 18.0f;
         for(int i = 0; i < synth::kMaxTrackMods; ++i)
         {
             auto &m = track.mods[(size_t)i];
             if(!modEntryActive(m) || m.sourceTrack >= int(generator_.tracks.size()))
                 continue;
-            const float ry = region.y + 24.0f + float(i) * (rowH + 4.0f);
-            modSrcRects_[(size_t)i]    = { region.x, ry, region.w * 0.30f, rowH };
-            modTypeRects_[(size_t)i]   = { modSrcRects_[(size_t)i].x + modSrcRects_[(size_t)i].w + 4.0f, ry, region.w * 0.18f, rowH };
-            modDeleteRects_[(size_t)i] = { region.x + region.w - 22.0f, ry, 22.0f, rowH };
-            modDepthRects_[(size_t)i]  = { modTypeRects_[(size_t)i].x + modTypeRects_[(size_t)i].w + 4.0f, ry,
-                                          modDeleteRects_[(size_t)i].x - 4.0f - (modTypeRects_[(size_t)i].x + modTypeRects_[(size_t)i].w + 4.0f), rowH };
-            std::snprintf(scratch_, sizeof(scratch_), "%s", generator_.tracks[(size_t)m.sourceTrack].name.c_str());
-            drawButton(modSrcRects_[(size_t)i], scratch_, selectedModSlot_ == i);
+            const float srcW = std::max(70.0f, region.w * 0.30f);
+            modSrcRects_[(size_t)i]    = { region.x, ry, srcW, rowH };
+            modTypeRects_[(size_t)i]   = { region.x + srcW + 4.0f, ry, 42.0f, rowH };
+            modDeleteRects_[(size_t)i] = { region.x + region.w - 16.0f, ry, 16.0f, rowH };
+            const float dx = modTypeRects_[(size_t)i].x + modTypeRects_[(size_t)i].w + 6.0f;
+            modDepthRects_[(size_t)i]  = { dx, ry, modDeleteRects_[(size_t)i].x - 6.0f - dx, rowH };
+
+            drawButton(modSrcRects_[(size_t)i], generator_.tracks[(size_t)m.sourceTrack].name.c_str(),
+                       selectedModSlot_ == i);
             drawButton(modTypeRects_[(size_t)i], synth::sourceModTypeName(m.type), false);
-            drawSlider(modDepthRects_[(size_t)i], "Depth", m.depth, m.depth);
+
+            // Depth: recessed groove bar with a cyan fill + monospace value.
+            const Rect &dr = modDepthRects_[(size_t)i];
+            drawPanel(dr, DesignTokens::groove(), DesignTokens::border());
+            const float fillW = clampf(m.depth, 0.0f, 1.0f) * (dr.w - 4.0f);
+            if(fillW > 0.5f)
+            {
+                beginPath();
+                roundedRect(dr.x + 2.0f, dr.y + 2.0f, fillW, dr.h - 4.0f, 1.5f);
+                fillColor(DesignTokens::accentCyan().withAlpha(0.45f));
+                fill();
+            }
+            char vb[16];
+            std::snprintf(vb, sizeof(vb), "%.2f", m.depth);
+            useMonoFont();
+            uiFontSize(10.5f);
+            textAlign(ALIGN_RIGHT | ALIGN_MIDDLE);
+            fillColor(DesignTokens::textPrimary());
+            text(dr.x + dr.w - 5.0f, dr.y + dr.h * 0.5f, vb, nullptr);
+
             drawButton(modDeleteRects_[(size_t)i], "x", false);
+            ry += rowH + rowGap;
         }
     }
 
@@ -96,6 +137,11 @@ bool KapibaraUI::handleModEditorClick(float x, float y)
         auto *track = currentTrack();
         if(track == nullptr)
             return false;
+        if(oscModAddRect_.w > 0.0f && oscModAddRect_.contains(x, y))
+        {
+            openModSourceMenu(int(track->id), -1, x, y);
+            return true;
+        }
         for(int i = 0; i < synth::kMaxTrackMods; ++i)
         {
             auto &m = track->mods[(size_t)i];
