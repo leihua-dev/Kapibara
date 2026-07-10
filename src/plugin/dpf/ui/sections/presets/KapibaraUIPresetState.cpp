@@ -59,6 +59,14 @@ void KapibaraUI::saveModernState(const std::string &path)
                 out << "mpvf " << ti << ' ' << s << ' ' << int(f.enabled) << ' ' << int(f.topology) << ' '
                     << f.cutoffHz << ' ' << f.resonance << ' ' << f.drive << ' ' << f.feedback << ' ' << f.mix << "\n";
             }
+            for(int s = 0; s < synth::kMaxTrackMods; ++s)
+            {
+                const auto &m = t.mods[(size_t)s];
+                if(!(m.enabled && m.sourceTrack >= 0))
+                    continue;
+                out << "mmod " << ti << ' ' << s << ' ' << int(m.sourceTrack) << ' ' << int(m.type) << ' '
+                    << m.depth << ' ' << int(m.sourceKind) << ' ' << int(m.sourceNode) << "\n";
+            }
             for(size_t ii = 0; ii < t.inserts.size(); ++ii)
             {
                 const auto &e = t.inserts[ii];
@@ -132,6 +140,20 @@ void KapibaraUI::loadModernState(const std::string &path)
                 auto &f = tracks[(size_t)ti].perVoiceFilters[(size_t)s];
                 ss >> en >> topo >> f.cutoffHz >> f.resonance >> f.drive >> f.feedback >> f.mix;
                 f.enabled = en; f.topology = synth::SourceFilterTopology(topo);
+            }
+            else if(tok == "mmod")
+            {
+                int ti, s, src, type, kind = 0, node = 0; float depth = 0.0f;
+                ss >> ti >> s >> src >> type >> depth >> kind >> node;
+                ensureTrack(ti);
+                if(ti < 0 || s < 0 || s >= synth::kMaxTrackMods) continue;
+                auto &m = tracks[(size_t)ti].mods[(size_t)s];
+                m.enabled = true;
+                m.sourceTrack = int8_t(src);
+                m.type = synth::SourceModType(type);
+                m.depth = depth;
+                m.sourceKind = uint8_t(kind);
+                m.sourceNode = uint8_t(node);
             }
             else if(tok == "mins")
             {

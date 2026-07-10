@@ -107,12 +107,51 @@ bool KapibaraUI::handleOscModDotRightClick(float x, float y)
     }
 
 // A pending route-wire draft dropped onto a SOURCE row body: the draft's source
-// component becomes an audio-rate modulator of that row's track. Only source
-// nodes are valid modulators today (the engine taps track outputs).
+// component becomes an audio-rate modulator of that row's track. Sources tap the
+// track output; per-voice filter and amp-env nodes tap that node's output
+// (engine evaluates the node before the carrier renders).
 bool KapibaraUI::handleModWireDrop(float x, float y)
 {
-        if(!routeWireDraft_.active || !routeui::isSourceRouterNode(routeWireDraft_.from.nodeId))
+        if(!routeWireDraft_.active)
             return false;
+        const uint32_t fromNode = routeWireDraft_.from.nodeId;
+        int kind = -1, node = 0;
+        if(routeui::isSourceRouterNode(fromNode))
+            kind = 0;
+        else if(routeui::isPerVoiceNode(fromNode))
+        {
+            const int local = routeui::perVoiceLocalId(fromNode);
+            if(local <= 0 || local > synth::kMaxPerVoiceFilters)
+                return false;
+            kind = 1;
+            node = local - 1;
+        }
+        else if(routeui::isAmpEnvNode(fromNode))
+        {
+            const int inst = routeui::ampEnvInstanceId(fromNode);
+            if(inst < 0 || inst >= synth::kMaxAmpEnvRouteNodes)
+                return false;
+            kind = 2;
+            node = inst;
+        }
+        else
+            return false;
+
+        // Forward wire reachability from `start` to `target`.
+        const auto reaches = [&](uint32_t start, uint32_t target) {
+            std::vector<uint32_t> reach { start };
+            bool grew = true;
+            while(grew)
+            {
+                grew = false;
+                for(const auto &w : routeWires_)
+                    if(std::find(reach.begin(), reach.end(), w.from.nodeId) != reach.end()
+                       && std::find(reach.begin(), reach.end(), w.to.nodeId) == reach.end())
+                    { reach.push_back(w.to.nodeId); grew = true; }
+            }
+            return std::find(reach.begin(), reach.end(), target) != reach.end();
+        };
+
         const int n = std::min<int>(int(generator_.tracks.size()), synth::kMaxSourceTracks);
         for(int i = 0; i < n; ++i)
         {
@@ -123,15 +162,33 @@ bool KapibaraUI::handleModWireDrop(float x, float y)
             if(sourceRouterOutputRects_[(size_t)i].contains(x, y))
                 return false;
             auto &carrier = generator_.tracks[(size_t)i];
-            const int srcIdx = trackIndexOfId(routeui::sourceRouterTrackId(routeWireDraft_.from.nodeId));
             routeWireDraft_ = {};  // the draft is consumed either way
+
+            // Home (feeder) track: the tapped node's signal ultimately comes from
+            // some source; for track taps it's the track itself.
+            int srcIdx = -1;
+            if(kind == 0)
+                srcIdx = trackIndexOfId(routeui::sourceRouterTrackId(fromNode));
+            else
+                for(int t = 0; t < n; ++t)
+                    if(reaches(routeui::sourceRouterNodeId(generator_.tracks[(size_t)t].id), fromNode))
+                    { srcIdx = t; break; }
             if(srcIdx < 0 || srcIdx == i || modSourceCausesCycleFor(i, srcIdx))
                 return true;
-            // Reuse the entry with the same source, else the first free slot.
+            // A component fed by the carrier itself would be a feedback loop.
+            if(kind != 0 && reaches(routeui::sourceRouterNodeId(carrier.id), fromNode))
+                return true;
+
+            // Reuse the entry with the same tap, else the first free slot.
             int slot = -1;
             for(int k = 0; k < synth::kMaxTrackMods; ++k)
-                if(modEntryActive(carrier.mods[(size_t)k]) && carrier.mods[(size_t)k].sourceTrack == srcIdx)
+            {
+                const auto &e = carrier.mods[(size_t)k];
+                if(modEntryActive(e) && e.sourceKind == uint8_t(kind)
+                   && e.sourceNode == uint8_t(node)
+                   && (kind != 0 || e.sourceTrack == srcIdx))
                 { slot = k; break; }
+            }
             if(slot < 0)
                 for(int k = 0; k < synth::kMaxTrackMods; ++k)
                     if(!modEntryActive(carrier.mods[(size_t)k])) { slot = k; break; }
@@ -139,6 +196,8 @@ bool KapibaraUI::handleModWireDrop(float x, float y)
                 return true; // all slots used
             auto &m = carrier.mods[(size_t)slot];
             m.sourceTrack = int8_t(srcIdx);
+            m.sourceKind = uint8_t(kind);
+            m.sourceNode = uint8_t(node);
             m.enabled = true;
             if(m.depth <= 0.0f) m.depth = 0.5f;
             selectedTrack_ = i;
@@ -149,6 +208,28 @@ bool KapibaraUI::handleModWireDrop(float x, float y)
             return true;
         }
         return false;
+    }
+
+// Short display label for a mod entry's source: track name, "FLT n", or "AE n".
+void KapibaraUI::oscModSourceLabel(const synth::SourceModEntry &m, char *buf, size_t n) const
+{
+        if(m.sourceKind == 1)
+        {
+            std::snprintf(buf, n, "FLT %d", int(m.sourceNode) + 1);
+            return;
+        }
+        if(m.sourceKind == 2)
+        {
+            const int inst = int(m.sourceNode);
+            const int slot = (inst >= 0 && inst < int(ampEnvRouteNodeSlots_.size()))
+                                 ? int(ampEnvRouteNodeSlots_[(size_t)inst]) : 0;
+            std::snprintf(buf, n, "AE %d", slot + 1);
+            return;
+        }
+        if(m.sourceTrack >= 0 && m.sourceTrack < int(generator_.tracks.size()))
+            std::snprintf(buf, n, "%s", generator_.tracks[(size_t)m.sourceTrack].name.c_str());
+        else
+            std::snprintf(buf, n, "-");
     }
 
 END_NAMESPACE_DISTRHO

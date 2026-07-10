@@ -227,6 +227,20 @@ class Voice
                                 bool applyGainPan = true);
     void evaluateRouteGraph(int numSamples, int sourceCount, const bool *rendered,
                             const std::function<void(int, const float *, const float *)> &flushTrack);
+    // Evaluate one compiled route node (filter / amp-env / util) into its scratch
+    // buffer. Idempotent per block via the *EvalDone_ flags so a node tapped as a
+    // mod source (evaluated early, before its carrier renders) isn't re-run when
+    // evaluateRouteGraph walks the full order later.
+    void evaluateGraphNode(const RouteNodeRef &node, int numSamples, int sourceCount, const bool *rendered);
+    int renderIndexOfTrackId(uint32_t tid, int sourceCount) const;
+    // Resolve a route node ref to its output buffers; false → skip (unrendered
+    // track, bad slot, or a ModOnly source that must not reach the audio output).
+    bool resolveNodeBuf(const RouteNodeRef &r, int sourceCount, const bool *rendered,
+                        const float *&L, const float *&R) const;
+    // Transitive TRACK inputs of a route node (which sources must have rendered
+    // before the node's output is meaningful).
+    void collectNodeTrackDeps(const RouteNodeRef &ref, int sourceCount,
+                              std::array<bool, kMaxSourceTracks> &deps) const;
     void applyGainPan(float *left, float *right, int numSamples, const GeneratorSourceParams &source);
     static void applySourceMod(float *cL, float *cR, const float *mL, const float *mR,
                                int numSamples, SourceModType type, float depth);
@@ -234,6 +248,10 @@ class Voice
     std::array<SourceFilterRuntime, kMaxPerVoiceFilters> filterNodeStates_ {}; // per filter NODE (route DAG)
     struct UtilBandState { float loL = 0, loR = 0, hiL = 0, hiR = 0; };
     std::array<UtilBandState, kMaxUtilNodes> utilBandStates_ {}; // per utility node band-pass state
+    // Per-block "node already evaluated" flags (see evaluateGraphNode).
+    std::array<bool, kMaxPerVoiceFilters> filterEvalDone_ {};
+    std::array<bool, kMaxAmpEnvRouteNodes> ampEnvEvalDone_ {};
+    std::array<bool, kMaxUtilNodes> utilEvalDone_ {};
     std::array<GeneratorSourceParams, kMaxSourceTracks> sourceParams_ {};
     std::array<RenderTrackRuntime, kMaxSourceTracks> trackRuntime_ {};
     CompiledPerVoiceRoute route_ {};

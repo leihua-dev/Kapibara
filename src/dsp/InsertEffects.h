@@ -160,6 +160,12 @@ struct SourceModEntry
     int8_t sourceTrack = -1;          // modulator track index (-1 = none)
     SourceModType type = SourceModType::AM;
     float depth = 0.0f;               // 0..1
+    // Component tap: 0 = the modulator track's own (gain-pre) output; 1 = a
+    // per-voice filter node; 2 = an amp-env node. sourceNode = node slot /
+    // instance. For taps > 0, sourceTrack still holds the node's home (feeder)
+    // track so ordering, cycle checks, and UI fallbacks keep working.
+    uint8_t sourceKind = 0;
+    uint8_t sourceNode = 0;
 };
 
 inline const char *sourceModTypeName(SourceModType t)

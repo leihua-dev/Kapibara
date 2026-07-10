@@ -189,6 +189,7 @@ class KapibaraUI final : public KapibaraUIDrawing
     bool handleOscModDotRightClick(float x, float y);
     bool handleModWireDrop(float x, float y);
     void drawOscModDiagram(const Rect &r, synth::SourceTrackParams &track);
+    void oscModSourceLabel(const synth::SourceModEntry &m, char *buf, size_t n) const;
 
     // source/KapibaraUISourceEditor
     void drawGroupEditor(const Rect &r, int gi);

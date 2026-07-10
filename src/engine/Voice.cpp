@@ -646,14 +646,54 @@ void Voice::renderAdd(float *left, float *right, int numSamples)
                 if(mark[(size_t)t] == 1) { mark[(size_t)t] = 2; if(orderN < kMaxSourceTracks) order[orderN++] = t; --sp; continue; }
                 mark[(size_t)t] = 1;
                 for(const auto &m : trackRuntime_[(size_t)t].mods)
-                    if(m.enabled && m.sourceTrack >= 0 && m.sourceTrack < sourceCount
+                {
+                    if(!m.enabled) continue;
+                    if(m.sourceKind != 0 && graphMode)
+                    {
+                        // Component tap: depend on every track feeding that node.
+                        std::array<bool, kMaxSourceTracks> deps {};
+                        collectNodeTrackDeps(RouteNodeRef { m.sourceKind, m.sourceNode }, sourceCount, deps);
+                        for(int d = 0; d < sourceCount; ++d)
+                            if(deps[(size_t)d] && d != t && mark[(size_t)d] == 0 && sp < int(stk.size()))
+                                stk[sp++] = d;
+                        continue;
+                    }
+                    if(m.sourceTrack >= 0 && m.sourceTrack < sourceCount
                        && mark[(size_t)m.sourceTrack] == 0 && sp < int(stk.size()))
                         stk[sp++] = m.sourceTrack;
+                }
             }
         }
     }
 
     std::array<bool, kMaxSourceTracks> rendered {};
+    filterEvalDone_.fill(false);
+    ampEnvEvalDone_.fill(false);
+    utilEvalDone_.fill(false);
+    // Resolve one mod entry's tap buffers; false → not available this block.
+    const auto resolveModTap = [&](const SourceModEntry &m, const float *&L, const float *&R) -> bool {
+        if(m.sourceKind == 1)
+        {
+            if(!graphMode || int(m.sourceNode) >= kMaxPerVoiceFilters
+               || !filterEvalDone_[(size_t)m.sourceNode]) return false;
+            L = modScratch_->filterL[(size_t)m.sourceNode].data();
+            R = modScratch_->filterR[(size_t)m.sourceNode].data();
+            return true;
+        }
+        if(m.sourceKind == 2)
+        {
+            if(!graphMode || int(m.sourceNode) >= kMaxAmpEnvRouteNodes
+               || !ampEnvEvalDone_[(size_t)m.sourceNode]) return false;
+            L = modScratch_->ampEnvL[(size_t)m.sourceNode].data();
+            R = modScratch_->ampEnvR[(size_t)m.sourceNode].data();
+            return true;
+        }
+        if(m.sourceTrack < 0 || m.sourceTrack >= sourceCount || !rendered[(size_t)m.sourceTrack])
+            return false;
+        L = modScratch_->bufL[(size_t)m.sourceTrack].data();
+        R = modScratch_->bufR[(size_t)m.sourceTrack].data();
+        return true;
+    };
     for(int oi = 0; oi < orderN; ++oi)
     {
         const int source = order[oi];
@@ -666,6 +706,27 @@ void Voice::renderAdd(float *left, float *right, int numSamples)
         if(begin >= end)
             continue;
 
+        // Component taps: evaluate any graph node whose feeder tracks have all
+        // rendered, so this carrier can read it (e.g. a post-filter FM source).
+        if(graphMode)
+        {
+            bool wantsNodes = false;
+            for(const auto &m : trackRuntime_[(size_t)source].mods)
+                if(m.enabled && m.sourceKind != 0) { wantsNodes = true; break; }
+            if(wantsNodes)
+                for(int no = 0; no < route_.evalOrderCount; ++no)
+                {
+                    const RouteNodeRef nd = route_.evalOrder[(size_t)no];
+                    std::array<bool, kMaxSourceTracks> deps {};
+                    collectNodeTrackDeps(nd, sourceCount, deps);
+                    bool ready = true;
+                    for(int d = 0; d < sourceCount; ++d)
+                        if(deps[(size_t)d] && !rendered[(size_t)d]) { ready = false; break; }
+                    if(ready)
+                        evaluateGraphNode(nd, numSamples, sourceCount, rendered.data());
+                }
+        }
+
         // Build phase-mod (FM/PM) buffer and pick a hard-sync source from this track's mods.
         const float invSr = 1.0f / float(sampleRate_);
         bool hasPm = false;
@@ -674,10 +735,11 @@ void Voice::renderAdd(float *left, float *right, int numSamples)
         for(int mi = 0; mi < kMaxTrackMods; ++mi)
         {
             const auto &m = trackRuntime_[(size_t)source].mods[(size_t)mi];
-            if(!m.enabled || m.sourceTrack < 0 || m.sourceTrack >= sourceCount || !rendered[(size_t)m.sourceTrack])
+            if(!m.enabled)
                 continue;
-            const float *mL = modScratch_->bufL[(size_t)m.sourceTrack].data();
-            const float *mR = modScratch_->bufR[(size_t)m.sourceTrack].data();
+            const float *mL = nullptr, *mR = nullptr;
+            if(!resolveModTap(m, mL, mR))
+                continue;
             const float depth = clampf(m.depth, 0.0f, 1.0f);
             if(m.type == SourceModType::PM)
             {
@@ -726,16 +788,15 @@ void Voice::renderAdd(float *left, float *right, int numSamples)
         if(!graphMode)
             processPerVoiceFilters(bL, bR, numSamples, trackRuntime_[(size_t)source],
                                    sourceFilterStates_[(size_t)source].data(), /*applyGainPan=*/false);
-        // amplitude-domain mods (AM / Ring) read other tracks' gain-pre signal
+        // amplitude-domain mods (AM / Ring) read the modulator's gain-pre signal
         for(const auto &m : trackRuntime_[(size_t)source].mods)
         {
-            if(!m.enabled || m.sourceTrack < 0 || m.sourceTrack >= sourceCount || !rendered[(size_t)m.sourceTrack])
+            if(!m.enabled || (m.type != SourceModType::AM && m.type != SourceModType::RingMod))
                 continue;
-            if(m.type != SourceModType::AM && m.type != SourceModType::RingMod)
+            const float *mL = nullptr, *mR = nullptr;
+            if(!resolveModTap(m, mL, mR))
                 continue;
-            applySourceMod(bL, bR, modScratch_->bufL[(size_t)m.sourceTrack].data(),
-                           modScratch_->bufR[(size_t)m.sourceTrack].data(),
-                           numSamples, m.type, clampf(m.depth, 0.0f, 1.0f));
+            applySourceMod(bL, bR, mL, mR, numSamples, m.type, clampf(m.depth, 0.0f, 1.0f));
         }
         rendered[(size_t)source] = true;
     }
@@ -769,6 +830,170 @@ void Voice::renderAdd(float *left, float *right, int numSamples)
 // already-rendered (raw, mod-applied) per-track buffers in modScratch_. Filter
 // nodes sum their inputs and filter once; each track's strip bus sums the nodes
 // wired into it, then strip gain/pan is applied and the result flushed to the bus.
+int Voice::renderIndexOfTrackId(uint32_t tid, int sourceCount) const
+{
+    for(int t = 0; t < sourceCount; ++t)
+        if(trackRuntime_[(size_t)t].trackId == tid) return t;
+    return -1;
+}
+
+bool Voice::resolveNodeBuf(const RouteNodeRef &r, int sourceCount, const bool *rendered,
+                           const float *&L, const float *&R) const
+{
+    if(r.kind == 0)
+    {
+        const int t = renderIndexOfTrackId(r.id, sourceCount);
+        if(t < 0 || !rendered[t]) return false;
+        if(trackRuntime_[(size_t)t].outputMode == SourceTrackOutputMode::ModOnly) return false;
+        L = modScratch_->bufL[(size_t)t].data();
+        R = modScratch_->bufR[(size_t)t].data();
+        return true;
+    }
+    if(r.kind == 1 && int(r.id) < kMaxPerVoiceFilters)
+    {
+        L = modScratch_->filterL[(size_t)r.id].data();
+        R = modScratch_->filterR[(size_t)r.id].data();
+        return true;
+    }
+    if(r.kind == 2 && int(r.id) < kMaxAmpEnvRouteNodes)
+    {
+        L = modScratch_->ampEnvL[(size_t)r.id].data();
+        R = modScratch_->ampEnvR[(size_t)r.id].data();
+        return true;
+    }
+    if(r.kind == 3 && int(r.id) < kMaxUtilNodes)
+    {
+        L = modScratch_->utilL[(size_t)r.id].data();
+        R = modScratch_->utilR[(size_t)r.id].data();
+        return true;
+    }
+    return false;
+}
+
+void Voice::collectNodeTrackDeps(const RouteNodeRef &ref, int sourceCount,
+                                 std::array<bool, kMaxSourceTracks> &deps) const
+{
+    std::array<bool, kMaxPerVoiceFilters> seenF {};
+    std::array<bool, kMaxAmpEnvRouteNodes> seenA {};
+    std::array<bool, kMaxUtilNodes> seenU {};
+    std::array<RouteNodeRef, kMaxPerVoiceFilters + kMaxAmpEnvRouteNodes + kMaxUtilNodes + 1> stack {};
+    int sp = 0;
+    const auto push = [&](const RouteNodeRef &r) {
+        if(r.kind == 0)
+        {
+            const int t = renderIndexOfTrackId(r.id, sourceCount);
+            if(t >= 0) deps[(size_t)t] = true;
+        }
+        else if(r.kind == 1 && int(r.id) < kMaxPerVoiceFilters && !seenF[(size_t)r.id])
+        { seenF[(size_t)r.id] = true; if(sp < int(stack.size())) stack[(size_t)sp++] = r; }
+        else if(r.kind == 2 && int(r.id) < kMaxAmpEnvRouteNodes && !seenA[(size_t)r.id])
+        { seenA[(size_t)r.id] = true; if(sp < int(stack.size())) stack[(size_t)sp++] = r; }
+        else if(r.kind == 3 && int(r.id) < kMaxUtilNodes && !seenU[(size_t)r.id])
+        { seenU[(size_t)r.id] = true; if(sp < int(stack.size())) stack[(size_t)sp++] = r; }
+    };
+    push(ref);
+    while(sp > 0)
+    {
+        const RouteNodeRef n = stack[(size_t)--sp];
+        const RouteNodeRef *arr = nullptr;
+        int c = 0;
+        if(n.kind == 1) { arr = route_.filterInputs[(size_t)n.id].data(); c = route_.filterInputCount[(size_t)n.id]; }
+        else if(n.kind == 2) { arr = route_.ampEnvInputs[(size_t)n.id].data(); c = route_.ampEnvInputCount[(size_t)n.id]; }
+        else if(n.kind == 3) { arr = route_.utilInputs[(size_t)n.id].data(); c = route_.utilInputCount[(size_t)n.id]; }
+        for(int k = 0; k < std::min(c, kMaxRouteInputs); ++k)
+            push(arr[k]);
+    }
+}
+
+void Voice::evaluateGraphNode(const RouteNodeRef &node, int numSamples, int sourceCount, const bool *rendered)
+{
+    const CompiledPerVoiceRoute &rt = route_;
+    // Global per-voice filter params (identical across tracks → use render track 0).
+    const RenderTrackRuntime &g = trackRuntime_[0];
+
+    if(node.kind == 1)
+    {
+        const int slot = int(node.id);
+        if(slot < 0 || slot >= kMaxPerVoiceFilters || filterEvalDone_[(size_t)slot]) return;
+        filterEvalDone_[(size_t)slot] = true;
+        float *fl = modScratch_->filterL[(size_t)slot].data();
+        float *fr = modScratch_->filterR[(size_t)slot].data();
+        std::fill(fl, fl + numSamples, 0.0f);
+        std::fill(fr, fr + numSamples, 0.0f);
+        const int inN = std::min<int>(rt.filterInputCount[(size_t)slot], kMaxRouteInputs);
+        for(int k = 0; k < inN; ++k)
+        {
+            const float *L = nullptr, *R = nullptr;
+            if(!resolveNodeBuf(rt.filterInputs[(size_t)slot][(size_t)k], sourceCount, rendered, L, R)) continue;
+            for(int s = 0; s < numSamples; ++s) { fl[s] += L[s]; fr[s] += R[s]; }
+        }
+        if(slot < g.perVoiceFilterCount)
+            processSourceFilterParams(fl, fr, numSamples, g.perVoiceFilters[(size_t)slot],
+                                      filterNodeStates_[(size_t)slot]);
+    }
+    else if(node.kind == 2)
+    {
+        const int e = int(node.id);
+        if(e < 0 || e >= kMaxAmpEnvRouteNodes || ampEnvEvalDone_[(size_t)e]) return;
+        ampEnvEvalDone_[(size_t)e] = true;
+        const int envSlot = std::clamp(int(rt.ampEnvSlot[(size_t)e]), 0, kMaxAmpEnvs - 1);
+        float *al = modScratch_->ampEnvL[(size_t)e].data();
+        float *ar = modScratch_->ampEnvR[(size_t)e].data();
+        std::fill(al, al + numSamples, 0.0f);
+        std::fill(ar, ar + numSamples, 0.0f);
+        const int inN = std::min<int>(rt.ampEnvInputCount[(size_t)e], kMaxRouteInputs);
+        for(int k = 0; k < inN; ++k)
+        {
+            const float *L = nullptr, *R = nullptr;
+            if(!resolveNodeBuf(rt.ampEnvInputs[(size_t)e][(size_t)k], sourceCount, rendered, L, R)) continue;
+            for(int s = 0; s < numSamples; ++s) { al[s] += L[s]; ar[s] += R[s]; }
+        }
+        // Multiply by this amp-env's per-sample level.
+        for(int s = 0; s < numSamples; ++s)
+        {
+            const float lv = ampEnvScratch_[(size_t)envSlot][(size_t)s];
+            al[s] *= lv;
+            ar[s] *= lv;
+        }
+    }
+    else if(node.kind == 3)
+    {
+        const int ui = int(node.id);
+        if(ui < 0 || ui >= kMaxUtilNodes || utilEvalDone_[(size_t)ui]) return;
+        utilEvalDone_[(size_t)ui] = true;
+        float *ul = modScratch_->utilL[(size_t)ui].data();
+        float *ur = modScratch_->utilR[(size_t)ui].data();
+        std::fill(ul, ul + numSamples, 0.0f);
+        std::fill(ur, ur + numSamples, 0.0f);
+        const int inN = std::min<int>(rt.utilInputCount[(size_t)ui], kMaxRouteInputs);
+        for(int k = 0; k < inN; ++k)
+        {
+            const float *L = nullptr, *R = nullptr;
+            if(!resolveNodeBuf(rt.utilInputs[(size_t)ui][(size_t)k], sourceCount, rendered, L, R)) continue;
+            for(int s = 0; s < numSamples; ++s) { ul[s] += L[s]; ur[s] += R[s]; }
+        }
+        const RouteUtilParams &up = rt.utilParams[(size_t)ui];
+        // Optional custom band-pass: 1-pole HP at bandLo + 1-pole LP at bandHi.
+        if(up.bandOn)
+        {
+            const float sr = float(sampleRate_);
+            const float gLo = clampf(1.0f - std::exp(-kTwoPi * clampf(up.bandLoHz, 20.0f, sr * 0.45f) / sr), 0.0f, 0.999f);
+            const float gHi = clampf(1.0f - std::exp(-kTwoPi * clampf(up.bandHiHz, 20.0f, sr * 0.45f) / sr), 0.0f, 0.999f);
+            UtilBandState &st = utilBandStates_[(size_t)ui];
+            for(int s = 0; s < numSamples; ++s)
+            {
+                st.loL += gLo * (ul[s] - st.loL); const float hpL = ul[s] - st.loL; st.hiL += gHi * (hpL - st.hiL); ul[s] = st.hiL;
+                st.loR += gLo * (ur[s] - st.loR); const float hpR = ur[s] - st.loR; st.hiR += gHi * (hpR - st.hiR); ur[s] = st.hiR;
+            }
+        }
+        // Level + equal-power pan (unity at center).
+        const float ang = (clampf(up.pan, -1.0f, 1.0f) + 1.0f) * 0.25f * kPi;
+        const float gL = up.level * std::cos(ang) * 1.41421356f;
+        const float gR = up.level * std::sin(ang) * 1.41421356f;
+        for(int s = 0; s < numSamples; ++s) { ul[s] *= gL; ur[s] *= gR; }
+    }
+}
+
 void Voice::evaluateRouteGraph(int numSamples, int sourceCount, const bool *rendered,
                                const std::function<void(int, const float *, const float *)> &flushTrack)
 {
@@ -776,135 +1001,15 @@ void Voice::evaluateRouteGraph(int numSamples, int sourceCount, const bool *rend
     if(renderTrackCount_ <= 0)
         return;
 
-    const auto renderIndexOf = [&](uint32_t tid) -> int {
-        for(int t = 0; t < sourceCount; ++t)
-            if(trackRuntime_[(size_t)t].trackId == tid) return t;
-        return -1;
-    };
-    // Resolve a node ref to its output buffers; false → skip (unrendered, bad
-    // slot, or a ModOnly source which must not reach the audio output).
-    const auto nodeBuf = [&](const RouteNodeRef &r, const float *&L, const float *&R) -> bool {
-        if(r.kind == 0)
-        {
-            const int t = renderIndexOf(r.id);
-            if(t < 0 || !rendered[t]) return false;
-            if(trackRuntime_[(size_t)t].outputMode == SourceTrackOutputMode::ModOnly) return false;
-            L = modScratch_->bufL[(size_t)t].data();
-            R = modScratch_->bufR[(size_t)t].data();
-            return true;
-        }
-        if(r.kind == 1 && int(r.id) < kMaxPerVoiceFilters)
-        {
-            L = modScratch_->filterL[(size_t)r.id].data();
-            R = modScratch_->filterR[(size_t)r.id].data();
-            return true;
-        }
-        if(r.kind == 2 && int(r.id) < kMaxAmpEnvRouteNodes)
-        {
-            L = modScratch_->ampEnvL[(size_t)r.id].data();
-            R = modScratch_->ampEnvR[(size_t)r.id].data();
-            return true;
-        }
-        if(r.kind == 3 && int(r.id) < kMaxUtilNodes)
-        {
-            L = modScratch_->utilL[(size_t)r.id].data();
-            R = modScratch_->utilR[(size_t)r.id].data();
-            return true;
-        }
-        return false;
-    };
-
-    // Global per-voice filter params (identical across tracks → use render track 0).
-    const RenderTrackRuntime &g = trackRuntime_[0];
-
-    // 1) Filter + amp-env nodes in topological order.
+    // 1) Filter + amp-env + util nodes in topological order (skips any node
+    //    already evaluated early as a mod-source tap).
     for(int oi = 0; oi < rt.evalOrderCount; ++oi)
-    {
-        const RouteNodeRef node = rt.evalOrder[(size_t)oi];
-        if(node.kind == 1)
-        {
-            const int slot = int(node.id);
-            if(slot < 0 || slot >= kMaxPerVoiceFilters) continue;
-            float *fl = modScratch_->filterL[(size_t)slot].data();
-            float *fr = modScratch_->filterR[(size_t)slot].data();
-            std::fill(fl, fl + numSamples, 0.0f);
-            std::fill(fr, fr + numSamples, 0.0f);
-            const int inN = std::min<int>(rt.filterInputCount[(size_t)slot], kMaxRouteInputs);
-            for(int k = 0; k < inN; ++k)
-            {
-                const float *L = nullptr, *R = nullptr;
-                if(!nodeBuf(rt.filterInputs[(size_t)slot][(size_t)k], L, R)) continue;
-                for(int s = 0; s < numSamples; ++s) { fl[s] += L[s]; fr[s] += R[s]; }
-            }
-            if(slot < g.perVoiceFilterCount)
-                processSourceFilterParams(fl, fr, numSamples, g.perVoiceFilters[(size_t)slot],
-                                          filterNodeStates_[(size_t)slot]);
-        }
-        else if(node.kind == 2)
-        {
-            const int e = int(node.id);
-            if(e < 0 || e >= kMaxAmpEnvRouteNodes) continue;
-            const int envSlot = std::clamp(int(rt.ampEnvSlot[(size_t)e]), 0, kMaxAmpEnvs - 1);
-            float *al = modScratch_->ampEnvL[(size_t)e].data();
-            float *ar = modScratch_->ampEnvR[(size_t)e].data();
-            std::fill(al, al + numSamples, 0.0f);
-            std::fill(ar, ar + numSamples, 0.0f);
-            const int inN = std::min<int>(rt.ampEnvInputCount[(size_t)e], kMaxRouteInputs);
-            for(int k = 0; k < inN; ++k)
-            {
-                const float *L = nullptr, *R = nullptr;
-                if(!nodeBuf(rt.ampEnvInputs[(size_t)e][(size_t)k], L, R)) continue;
-                for(int s = 0; s < numSamples; ++s) { al[s] += L[s]; ar[s] += R[s]; }
-            }
-            // Multiply by this amp-env's per-sample level.
-            for(int s = 0; s < numSamples; ++s)
-            {
-                const float lv = ampEnvScratch_[(size_t)envSlot][(size_t)s];
-                al[s] *= lv;
-                ar[s] *= lv;
-            }
-        }
-        else if(node.kind == 3)
-        {
-            const int ui = int(node.id);
-            if(ui < 0 || ui >= kMaxUtilNodes) continue;
-            float *ul = modScratch_->utilL[(size_t)ui].data();
-            float *ur = modScratch_->utilR[(size_t)ui].data();
-            std::fill(ul, ul + numSamples, 0.0f);
-            std::fill(ur, ur + numSamples, 0.0f);
-            const int inN = std::min<int>(rt.utilInputCount[(size_t)ui], kMaxRouteInputs);
-            for(int k = 0; k < inN; ++k)
-            {
-                const float *L = nullptr, *R = nullptr;
-                if(!nodeBuf(rt.utilInputs[(size_t)ui][(size_t)k], L, R)) continue;
-                for(int s = 0; s < numSamples; ++s) { ul[s] += L[s]; ur[s] += R[s]; }
-            }
-            const RouteUtilParams &up = rt.utilParams[(size_t)ui];
-            // Optional custom band-pass: 1-pole HP at bandLo + 1-pole LP at bandHi.
-            if(up.bandOn)
-            {
-                const float sr = float(sampleRate_);
-                const float gLo = clampf(1.0f - std::exp(-kTwoPi * clampf(up.bandLoHz, 20.0f, sr * 0.45f) / sr), 0.0f, 0.999f);
-                const float gHi = clampf(1.0f - std::exp(-kTwoPi * clampf(up.bandHiHz, 20.0f, sr * 0.45f) / sr), 0.0f, 0.999f);
-                UtilBandState &st = utilBandStates_[(size_t)ui];
-                for(int s = 0; s < numSamples; ++s)
-                {
-                    st.loL += gLo * (ul[s] - st.loL); const float hpL = ul[s] - st.loL; st.hiL += gHi * (hpL - st.hiL); ul[s] = st.hiL;
-                    st.loR += gLo * (ur[s] - st.loR); const float hpR = ur[s] - st.loR; st.hiR += gHi * (hpR - st.hiR); ur[s] = st.hiR;
-                }
-            }
-            // Level + equal-power pan (unity at center).
-            const float ang = (clampf(up.pan, -1.0f, 1.0f) + 1.0f) * 0.25f * kPi;
-            const float gL = up.level * std::cos(ang) * 1.41421356f;
-            const float gR = up.level * std::sin(ang) * 1.41421356f;
-            for(int s = 0; s < numSamples; ++s) { ul[s] *= gL; ur[s] *= gR; }
-        }
-    }
+        evaluateGraphNode(rt.evalOrder[(size_t)oi], numSamples, sourceCount, rendered);
 
     // 2) Each track's strip bus = sum of its feeders → gain/pan → flush.
     for(int ti = 0; ti < rt.trackCount; ++ti)
     {
-        const int t = renderIndexOf(rt.trackId[(size_t)ti]);
+        const int t = renderIndexOfTrackId(rt.trackId[(size_t)ti], sourceCount);
         if(t < 0) continue;
         const int inN = std::min<int>(rt.busInputCount[(size_t)ti], kMaxRouteInputs);
         if(inN <= 0) continue;
@@ -913,7 +1018,7 @@ void Voice::evaluateRouteGraph(int numSamples, int sourceCount, const bool *rend
         for(int k = 0; k < inN; ++k)
         {
             const float *L = nullptr, *R = nullptr;
-            if(!nodeBuf(rt.busInputs[(size_t)ti][(size_t)k], L, R)) continue;
+            if(!resolveNodeBuf(rt.busInputs[(size_t)ti][(size_t)k], sourceCount, rendered, L, R)) continue;
             for(int s = 0; s < numSamples; ++s) { sourceRawL_[(size_t)s] += L[s]; sourceRawR_[(size_t)s] += R[s]; }
         }
         applyGainPan(sourceRawL_.data(), sourceRawR_.data(), numSamples, sourceParams_[(size_t)t]);

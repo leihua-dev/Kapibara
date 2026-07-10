@@ -84,8 +84,9 @@ void KapibaraUI::drawModEditor(const Rect &region, synth::SourceTrackParams &tra
             const float dx = modTypeRects_[(size_t)i].x + modTypeRects_[(size_t)i].w + 6.0f;
             modDepthRects_[(size_t)i]  = { dx, ry, modDeleteRects_[(size_t)i].x - 6.0f - dx, rowH };
 
-            drawButton(modSrcRects_[(size_t)i], generator_.tracks[(size_t)m.sourceTrack].name.c_str(),
-                       selectedModSlot_ == i);
+            char srcLbl[32];
+            oscModSourceLabel(m, srcLbl, sizeof(srcLbl));
+            drawButton(modSrcRects_[(size_t)i], srcLbl, selectedModSlot_ == i);
             drawButton(modTypeRects_[(size_t)i], synth::sourceModTypeName(m.type), false);
             // Mode colour swatch matching the wire colour in the SOURCE column.
             beginPath();
@@ -218,8 +219,10 @@ void KapibaraUI::drawOscModDiagram(const Rect &r, synth::SourceTrackParams &trac
             uiFontSize(9.0f);
             textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
             fillColor(DesignTokens::textPrimary());
+            char srcLbl[32];
+            oscModSourceLabel(m, srcLbl, sizeof(srcLbl));
             scissor(box.x + 4.0f, box.y, box.w * 0.55f, box.h);
-            text(box.x + 6.0f, box.y + box.h * 0.5f, generator_.tracks[(size_t)m.sourceTrack].name.c_str(), nullptr);
+            text(box.x + 6.0f, box.y + box.h * 0.5f, srcLbl, nullptr);
             resetScissor();
             char lbl[24];
             std::snprintf(lbl, sizeof(lbl), "%s %.2f", synth::sourceModTypeName(m.type), m.depth);
@@ -440,6 +443,8 @@ bool KapibaraUI::handleModSourceMenuClick(float x, float y)
                 return true;  // invalid choice / no free slot
             auto &m = track.mods[(size_t)slot];
             m.sourceTrack = int8_t(i);
+            m.sourceKind = 0;  // picking a track resets any component tap
+            m.sourceNode = 0;
             m.enabled = true;
             if(m.depth <= 0.0f) m.depth = 0.5f;
             selectedTrack_ = self;

@@ -87,23 +87,26 @@ void KapibaraUI::drawSourceRouter(const Rect &r)
                 const auto &m = carrier.mods[(size_t)k];
                 if(!modEntryActive(m) || m.sourceTrack < 0 || m.sourceTrack >= n)
                     continue;
-                const Rect &srcRow = sourceRouterRects_[(size_t)m.sourceTrack];
-                if(srcRow.w <= 0.0f)
-                    continue;
                 const Color col = oscModTypeColor(m.type);
                 // Dots stack vertically when a carrier has several entries.
                 const float dy = row.y + row.h * (0.5f + 0.28f * float(k) - 0.28f);
                 const Rect dot { row.x - 5.0f, dy - 4.5f, 9.0f, 9.0f };
                 oscModDotRects_[(size_t)i][(size_t)k] = dot;
-                const float sy = srcRow.y + srcRow.h * 0.5f;
-                // Arc bulging into the left margin; deeper slots bulge slightly more.
-                const float bulge = 7.0f + 3.0f * float(k);
-                beginPath();
-                moveTo(srcRow.x, sy);
-                bezierTo(srcRow.x - bulge, sy, row.x - bulge, dy, dot.x + dot.w * 0.5f, dy);
-                strokeColor(col.withAlpha(0.8f));
-                strokeWidth(1.5f);
-                stroke();
+                // Arc from the modulator's source row — only for track taps; a
+                // component tap (FLT/AE node) has no row here, so just the dot.
+                const Rect &srcRow = sourceRouterRects_[(size_t)m.sourceTrack];
+                if(m.sourceKind == 0 && srcRow.w > 0.0f)
+                {
+                    const float sy = srcRow.y + srcRow.h * 0.5f;
+                    // Bulge into the left margin; deeper slots bulge slightly more.
+                    const float bulge = 7.0f + 3.0f * float(k);
+                    beginPath();
+                    moveTo(srcRow.x, sy);
+                    bezierTo(srcRow.x - bulge, sy, row.x - bulge, dy, dot.x + dot.w * 0.5f, dy);
+                    strokeColor(col.withAlpha(0.8f));
+                    strokeWidth(1.5f);
+                    stroke();
+                }
                 beginPath();
                 ellipse(dot.x + dot.w * 0.5f, dy, 3.0f, 3.0f);
                 fillColor(col);

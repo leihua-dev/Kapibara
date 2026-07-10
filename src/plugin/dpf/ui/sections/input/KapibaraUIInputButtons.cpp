@@ -56,6 +56,20 @@ bool KapibaraUI::handleButtonClick(float x, float y)
             if(s.contains(x, y) && i < generator_.tracks.size())
             {
                 auto &track = generator_.tracks[i];
+                // Double-click a source row → focus its detail; jump straight to the
+                // OSC MOD diagram page when the track has source mods.
+                if(currentClickIsDouble_ && !stripMuteRects_[i].contains(x, y)
+                   && !stripSoloRects_[i].contains(x, y))
+                {
+                    const uint32_t nodeId = 0x08000000u | (track.id & 0x00ffffffu); // sourceRouterNodeId
+                    focusedNodeId_ = (focusedNodeId_ == nodeId) ? 0u : nodeId;
+                    selectedTrack_ = int(i);
+                    selectedGroupView_ = -1;
+                    if(focusedNodeId_ != 0)
+                        focusPage_ = trackHasAnyMod(track) ? 2 : 0;
+                    repaint();
+                    return true;
+                }
                 // Clicking the source column exits a focused component detail view.
                 if(focusedNodeId_ != 0) { focusedNodeId_ = 0; repaint(); }
                 if(stripMuteRects_[i].contains(x, y))
