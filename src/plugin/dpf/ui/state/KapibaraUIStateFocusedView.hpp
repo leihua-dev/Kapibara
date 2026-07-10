@@ -2,8 +2,8 @@
     uint32_t focusedNodeId_ = 0; // 0 = normal 3-panel top
     Rect focusedCloseRect_ {};
     bool fxPanelHideDelete_ = false; // hide the insert delete "x" (focus detail)
-    int focusPage_ = 0;             // 0 = component detail, 1 = component structure (output router)
-    std::array<Rect, 2> focusPageTabRects_ {};
+    int focusPage_ = 0;             // 0 = detail, 1 = structure (output router), 2 = osc-mod diagram (sources only)
+    std::array<Rect, 3> focusPageTabRects_ {};
     Rect structAddOutRect_ {};
     Rect structRemoveOutRect_ {};
     Rect structAddUtilRect_ {};
@@ -32,3 +32,5 @@
     int  structUtilParamDrag_ = -1; // 0=level 1=pan 2=lo 3=hi
     float structUtilParamStartY_ = 0.0f, structUtilParamStartVal_ = 0.0f;
     std::array<Rect, 4> ampFocusKnobRects_ {};
+    // OSC MOD diagram (focus page 2): clickable modulator boxes, one per mod slot.
+    std::array<Rect, synth::kMaxTrackMods> oscModDiagRects_ {};

@@ -182,6 +182,14 @@ class KapibaraUI final : public KapibaraUIDrawing
     void drawWarpModeMenu();
     bool handleWarpModeMenuClick(float x, float y);
 
+    // menus/KapibaraUIOscModTypeMenu
+    void openOscModTypeMenu(int trackId, int slot, float x, float y);
+    void drawOscModTypeMenu();
+    bool handleOscModTypeMenuClick(float x, float y);
+    bool handleOscModDotRightClick(float x, float y);
+    bool handleModWireDrop(float x, float y);
+    void drawOscModDiagram(const Rect &r, synth::SourceTrackParams &track);
+
     // source/KapibaraUISourceEditor
     void drawGroupEditor(const Rect &r, int gi);
     void drawTrackEditor(const Rect &r);

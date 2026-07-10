@@ -87,6 +87,11 @@ void KapibaraUI::drawModEditor(const Rect &region, synth::SourceTrackParams &tra
             drawButton(modSrcRects_[(size_t)i], generator_.tracks[(size_t)m.sourceTrack].name.c_str(),
                        selectedModSlot_ == i);
             drawButton(modTypeRects_[(size_t)i], synth::sourceModTypeName(m.type), false);
+            // Mode colour swatch matching the wire colour in the SOURCE column.
+            beginPath();
+            roundedRect(modTypeRects_[(size_t)i].x + 2.0f, ry + 4.0f, 3.0f, rowH - 8.0f, 1.0f);
+            fillColor(oscModTypeColor(m.type));
+            fill();
 
             // Depth: recessed groove bar with a cyan fill + monospace value.
             const Rect &dr = modDepthRects_[(size_t)i];
@@ -110,6 +115,182 @@ void KapibaraUI::drawModEditor(const Rect &region, synth::SourceTrackParams &tra
             drawButton(modDeleteRects_[(size_t)i], "x", false);
             ry += rowH + rowGap;
         }
+    }
+
+// Focused-detail "OSC MOD" page: a signal diagram of how this carrier is
+// modulated. Phase-domain entries (FM/PM) sum into a Σ node feeding the PHASE
+// input, amp-domain entries (AM/Ring) combine multiplicatively at the AMP
+// stage, and a Sync entry resets phase — matching how Voice actually renders.
+void KapibaraUI::drawOscModDiagram(const Rect &r, synth::SourceTrackParams &track)
+{
+        // The generic OSC MOD row handlers must not misfire from stale rects while
+        // the diagram page is up.
+        modSrcRects_.fill({}); modTypeRects_.fill({}); modDepthRects_.fill({}); modDeleteRects_.fill({});
+        oscModAddRect_ = {};
+        oscModDiagRects_.fill({});
+
+        const auto arrowHead = [&](float ax, float ay, Color c) {
+            beginPath();
+            moveTo(ax, ay);
+            lineTo(ax - 7.0f, ay - 4.0f);
+            lineTo(ax - 7.0f, ay + 4.0f);
+            closePath();
+            fillColor(c);
+            fill();
+        };
+
+        // Partition active entries by domain.
+        std::array<int, synth::kMaxTrackMods> phaseSlots {}, ampSlots {}, syncSlots {};
+        int nPhase = 0, nAmp = 0, nSync = 0, nAll = 0;
+        for(int k = 0; k < synth::kMaxTrackMods; ++k)
+        {
+            const auto &m = track.mods[(size_t)k];
+            if(!modEntryActive(m) || m.sourceTrack < 0 || m.sourceTrack >= int(generator_.tracks.size()))
+                continue;
+            ++nAll;
+            if(m.type == synth::SourceModType::FM || m.type == synth::SourceModType::PM)
+                phaseSlots[(size_t)nPhase++] = k;
+            else if(m.type == synth::SourceModType::HardSync)
+                syncSlots[(size_t)nSync++] = k;
+            else
+                ampSlots[(size_t)nAmp++] = k;
+        }
+
+        if(nAll == 0)
+        {
+            useUiFont();
+            uiFontSize(10.0f);
+            textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
+            fillColor(DesignTokens::textSecondary());
+            text(r.x + r.w * 0.5f, r.y + r.h * 0.5f,
+                 "no osc mods — drag a wire from another source onto this track's row,"
+                 " or use + MOD in the source editor", nullptr);
+            return;
+        }
+
+        // Carrier box on the right with OUT arrow and the three input stages.
+        const Rect carrier { r.x + r.w - 200.0f, r.y + r.h * 0.5f - 27.0f, 150.0f, 54.0f };
+        drawPanel(carrier, rgba(0x17242cff), DesignTokens::accentGreen());
+        useUiFont();
+        uiFontSize(10.5f);
+        textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
+        fillColor(DesignTokens::textPrimary());
+        scissor(carrier.x + 2.0f, carrier.y, carrier.w - 4.0f, carrier.h);
+        text(carrier.x + carrier.w * 0.5f, carrier.y + carrier.h * 0.5f, track.name.c_str(), nullptr);
+        resetScissor();
+        strokeLine(carrier.x + carrier.w, carrier.y + carrier.h * 0.5f,
+                   r.x + r.w - 22.0f, carrier.y + carrier.h * 0.5f,
+                   DesignTokens::accentGreen(), 1.5f);
+        arrowHead(r.x + r.w - 22.0f, carrier.y + carrier.h * 0.5f, DesignTokens::accentGreen());
+        uiFontSize(8.5f);
+        textAlign(ALIGN_LEFT | ALIGN_BOTTOM);
+        fillColor(DesignTokens::textSecondary());
+        text(carrier.x + carrier.w + 6.0f, carrier.y + carrier.h * 0.5f - 4.0f, "OUT", nullptr);
+
+        const float phaseY = carrier.y + 12.0f;
+        const float ampY   = carrier.y + 27.0f;
+        const float syncY  = carrier.y + 42.0f;
+        uiFontSize(7.5f);
+        textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+        fillColor(nPhase > 0 ? DesignTokens::textPrimary() : DesignTokens::textSecondary().withAlpha(0.4f));
+        text(carrier.x + 5.0f, phaseY, "PHASE", nullptr);
+        fillColor(nAmp > 0 ? DesignTokens::textPrimary() : DesignTokens::textSecondary().withAlpha(0.4f));
+        text(carrier.x + 5.0f, ampY, "AMP", nullptr);
+        fillColor(nSync > 0 ? DesignTokens::textPrimary() : DesignTokens::textSecondary().withAlpha(0.4f));
+        text(carrier.x + 5.0f, syncY, "SYNC", nullptr);
+
+        // Modulator boxes on the left (slot order), coloured by mode.
+        constexpr float boxW = 150.0f, boxH = 26.0f, boxGap = 12.0f;
+        const float listH = float(nAll) * boxH + float(nAll - 1) * boxGap;
+        float by = r.y + std::max(6.0f, r.h * 0.5f - listH * 0.5f);
+        std::array<float, synth::kMaxTrackMods> boxMidY {};
+        for(int k = 0; k < synth::kMaxTrackMods; ++k)
+        {
+            const auto &m = track.mods[(size_t)k];
+            if(!modEntryActive(m) || m.sourceTrack < 0 || m.sourceTrack >= int(generator_.tracks.size()))
+                continue;
+            const Color col = oscModTypeColor(m.type);
+            const Rect box { r.x + 8.0f, by, boxW, boxH };
+            oscModDiagRects_[(size_t)k] = box;
+            boxMidY[(size_t)k] = box.y + box.h * 0.5f;
+            drawPanel(box, rgba(0x101820ff), col.withAlpha(0.8f));
+            useUiFont();
+            uiFontSize(9.0f);
+            textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+            fillColor(DesignTokens::textPrimary());
+            scissor(box.x + 4.0f, box.y, box.w * 0.55f, box.h);
+            text(box.x + 6.0f, box.y + box.h * 0.5f, generator_.tracks[(size_t)m.sourceTrack].name.c_str(), nullptr);
+            resetScissor();
+            char lbl[24];
+            std::snprintf(lbl, sizeof(lbl), "%s %.2f", synth::sourceModTypeName(m.type), m.depth);
+            useMonoFont();
+            uiFontSize(9.0f);
+            textAlign(ALIGN_RIGHT | ALIGN_MIDDLE);
+            fillColor(col);
+            text(box.x + box.w - 6.0f, box.y + box.h * 0.5f, lbl, nullptr);
+            by += boxH + boxGap;
+        }
+
+        // Combine nodes between the boxes and the carrier inputs.
+        const float leftEdge = r.x + 8.0f + boxW;
+        const float combineX = leftEdge + (carrier.x - leftEdge) * 0.52f;
+        const auto wireTo = [&](int slot, float nx, float ny, Color c) {
+            const float sy = boxMidY[(size_t)slot];
+            beginPath();
+            moveTo(leftEdge, sy);
+            bezierTo(leftEdge + (nx - leftEdge) * 0.5f, sy, leftEdge + (nx - leftEdge) * 0.5f, ny, nx, ny);
+            strokeColor(c.withAlpha(0.85f));
+            strokeWidth(1.5f);
+            stroke();
+        };
+        const auto combineNode = [&](float cx, float cy, const char *sym, Color c) {
+            beginPath();
+            circle(cx, cy, 10.0f);
+            fillColor(rgba(0x101820ff));
+            fill();
+            strokeColor(c);
+            strokeWidth(1.5f);
+            stroke();
+            useUiFont();
+            uiFontSize(11.0f);
+            textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
+            fillColor(c);
+            text(cx, cy, sym, nullptr);
+        };
+        if(nPhase > 0)
+        {
+            const Color c = rgba(0xe8b34aff); // phase-domain amber
+            for(int p = 0; p < nPhase; ++p)
+                wireTo(phaseSlots[(size_t)p], combineX - 10.0f, phaseY, oscModTypeColor(track.mods[(size_t)phaseSlots[(size_t)p]].type));
+            combineNode(combineX, phaseY, "+", c); // Σ: FM/PM offsets sum into the phase input
+            strokeLine(combineX + 10.0f, phaseY, carrier.x - 8.0f, phaseY, c, 1.5f);
+            arrowHead(carrier.x - 1.0f, phaseY, c);
+        }
+        if(nAmp > 0)
+        {
+            const Color c = DesignTokens::accentCyan();
+            for(int p = 0; p < nAmp; ++p)
+                wireTo(ampSlots[(size_t)p], combineX - 10.0f, ampY, oscModTypeColor(track.mods[(size_t)ampSlots[(size_t)p]].type));
+            combineNode(combineX, ampY, "x", c); // AM/Ring apply multiplicatively in series
+            strokeLine(combineX + 10.0f, ampY, carrier.x - 8.0f, ampY, c, 1.5f);
+            arrowHead(carrier.x - 1.0f, ampY, c);
+        }
+        if(nSync > 0)
+        {
+            const Color c = oscModTypeColor(synth::SourceModType::HardSync);
+            for(int p = 0; p < nSync; ++p)
+                wireTo(syncSlots[(size_t)p], carrier.x - 8.0f, syncY, c);
+            arrowHead(carrier.x - 1.0f, syncY, c);
+        }
+
+        // Honest footer: the mod graph is acyclic today.
+        useUiFont();
+        uiFontSize(8.0f);
+        textAlign(ALIGN_LEFT | ALIGN_BOTTOM);
+        fillColor(DesignTokens::textSecondary().withAlpha(0.6f));
+        text(r.x + 8.0f, r.y + r.h - 4.0f,
+             "click a box to change mode / remove - depth edits in the source editor - feedback loops not supported yet",
+             nullptr);
     }
 
 bool KapibaraUI::handleModColumnClick(float x, float y)
@@ -153,8 +334,9 @@ bool KapibaraUI::handleModEditorClick(float x, float y)
             }
             if(modTypeRects_[(size_t)i].w > 0.0f && modTypeRects_[(size_t)i].contains(x, y))
             {
-                m.type = static_cast<synth::SourceModType>((int(m.type) + 1) % synth::kSourceModTypeCount);
-                pushCurrentTrack();
+                // Pick from the full menu instead of blind-cycling five modes.
+                selectedModSlot_ = i;
+                openOscModTypeMenu(int(track->id), i, x, y);
                 return true;
             }
             if(modDeleteRects_[(size_t)i].w > 0.0f && modDeleteRects_[(size_t)i].contains(x, y))

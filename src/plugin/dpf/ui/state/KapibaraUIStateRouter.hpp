@@ -14,6 +14,8 @@
     int dragTrackIndex_ = -1; // source row whose gain/pan/send is being dragged
     std::array<Rect, synth::kMaxSourceTracks> sourceRouterRects_ {};
     std::array<Rect, synth::kMaxSourceTracks> sourceRouterOutputRects_ {};
+    // OSC MOD wire input dots on the carrier rows' left edge (one per mod slot).
+    std::array<std::array<Rect, synth::kMaxTrackMods>, synth::kMaxSourceTracks> oscModDotRects_ {};
     std::array<Rect, synth::kMaxPerVoiceFilters> perVoiceFilterNodeRects_ {};
     Rect perVoiceFilterAddRect_ {};
     bool perVoiceComponentMenuOpen_ = false;

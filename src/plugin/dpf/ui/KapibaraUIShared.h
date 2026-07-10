@@ -280,6 +280,21 @@ inline bool isBlackKey(int note)
     return pc == 1 || pc == 3 || pc == 6 || pc == 8 || pc == 10;
 }
 
+// Colour code for OSC MOD wires / badges: amp-domain mods cool, phase-domain warm,
+// sync red — the wire alone tells the mode at a glance.
+inline Color oscModTypeColor(synth::SourceModType t)
+{
+    switch(t)
+    {
+        case synth::SourceModType::AM:       return rgba(0x62d7dfff); // cyan
+        case synth::SourceModType::RingMod:  return rgba(0x4aa8e8ff); // blue
+        case synth::SourceModType::FM:       return rgba(0xe8b34aff); // amber
+        case synth::SourceModType::PM:       return rgba(0xc070e0ff); // purple
+        case synth::SourceModType::HardSync: return rgba(0xef6a5aff); // red
+    }
+    return rgba(0x62d7dfff);
+}
+
 inline const char *sourceName(synth::ModSource s)
 {
     switch(s)

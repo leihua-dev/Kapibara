@@ -12,6 +12,11 @@
     float warpModeMenuX_ = 0.0f, warpModeMenuY_ = 0.0f;
     uint32_t warpModeMenuTrackId_ = 0;
     std::array<Rect, 4> warpModeMenuRects_ {};
+    // OSC MOD type picker (mode button / mod-wire dot / wire-drop onto a source).
+    bool oscModTypeMenuOpen_ = false;
+    float oscModTypeMenuX_ = 0.0f, oscModTypeMenuY_ = 0.0f;
+    int oscModTypeMenuTrackId_ = -1, oscModTypeMenuSlot_ = -1;
+    std::array<Rect, 6> oscModTypeMenuRects_ {};  // 5 modes + remove
     bool routeContextMenuOpen_ = false;
     float routeContextX_ = 0.0f, routeContextY_ = 0.0f;
     int  routeContextRuleIndex_ = -1;

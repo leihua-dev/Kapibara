@@ -38,11 +38,20 @@ void KapibaraUI::drawFocusedNodeDetail(const Rect &r)
         drawPanel(r, rgba(0x0b1217ff), rgba(0x344852ff));
         focusedCloseRect_ = { r.x + r.w - 26.0f, r.y + 8.0f, 18.0f, 16.0f };
         drawButton(focusedCloseRect_, "x", false);
+        const bool isSourceNode = (focusedNodeId_ & 0xff000000u) == 0x08000000u;
+        if(!isSourceNode && focusPage_ == 2)
+            focusPage_ = 0;
         const float tabW = 78.0f, tabH = 16.0f;
         focusPageTabRects_[0] = { r.x + 10.0f, r.y + 8.0f, tabW, tabH };
         focusPageTabRects_[1] = { focusPageTabRects_[0].x + tabW + 4.0f, r.y + 8.0f, tabW, tabH };
+        focusPageTabRects_[2] = {};
         drawButton(focusPageTabRects_[0], "DETAIL", focusPage_ == 0);
         drawButton(focusPageTabRects_[1], "STRUCTURE", focusPage_ == 1);
+        if(isSourceNode)
+        {
+            focusPageTabRects_[2] = { focusPageTabRects_[1].x + tabW + 4.0f, r.y + 8.0f, tabW, tabH };
+            drawButton(focusPageTabRects_[2], "OSC MOD", focusPage_ == 2);
+        }
         ampFocusKnobRects_.fill({});
         clearTrackEditorRects();
         pvChainTabRects_.fill({}); pvChainEnableRect_ = {}; pvChainTypeRect_ = {};
@@ -55,6 +64,16 @@ void KapibaraUI::drawFocusedNodeDetail(const Rect &r)
         if(focusPage_ == 1)
         {
             drawFocusedStructure(content);
+            return;
+        }
+        if(focusPage_ == 2 && isSourceNode)
+        {
+            const int ti = trackIndexOfId(id & 0x00ffffffu);
+            if(ti >= 0)
+            {
+                drawSectionTitle(r.x + 268.0f, r.y + 10.0f, "OSC MOD SYSTEM");
+                drawOscModDiagram(content, generator_.tracks[(size_t)ti]);
+            }
             return;
         }
         structAddOutRect_ = {}; structRemoveOutRect_ = {}; structAddUtilRect_ = {};
@@ -111,8 +130,24 @@ bool KapibaraUI::handleFocusedDetailPress(float x, float y)
         if(routeBoardRect_.w > 0.0f && routeBoardRect_.contains(x, y))
             return false;
         if(focusedCloseRect_.contains(x, y)) { focusedNodeId_ = 0; repaint(); return true; }
-        for(int i = 0; i < 2; ++i)
-            if(focusPageTabRects_[(size_t)i].contains(x, y)) { focusPage_ = i; repaint(); return true; }
+        for(int i = 0; i < 3; ++i)
+            if(focusPageTabRects_[(size_t)i].w > 0.0f && focusPageTabRects_[(size_t)i].contains(x, y))
+            { focusPage_ = i; repaint(); return true; }
+        // OSC MOD diagram page: click a modulator box → mode / remove menu.
+        if(focusPage_ == 2 && (focusedNodeId_ & 0xff000000u) == 0x08000000u)
+        {
+            const int ti = trackIndexOfId(focusedNodeId_ & 0x00ffffffu);
+            if(ti >= 0)
+                for(int k = 0; k < synth::kMaxTrackMods; ++k)
+                    if(oscModDiagRects_[(size_t)k].w > 0.0f && oscModDiagRects_[(size_t)k].contains(x, y))
+                    {
+                        selectedTrack_ = ti;
+                        selectedModSlot_ = k;
+                        openOscModTypeMenu(int(generator_.tracks[(size_t)ti].id), k, x, y);
+                        repaint();
+                        return true;
+                    }
+        }
         if(focusPage_ == 1)
         {
             if(structAddOutRect_.w > 0.0f && structAddOutRect_.contains(x, y))

@@ -77,6 +77,10 @@ bool KapibaraUI::handlePageClick(float x, float y)
         // Matrix grid node create / depth-drag.
         if(modMode && handleMatrixGridPress(x, y))
             return true;
+        // A pending wire draft dropped on a source ROW creates an osc-mod entry —
+        // must run before row selection consumes the click.
+        if(handleModWireDrop(x, y))
+            return true;
         // Source column is always present → its faders/selection are never gated.
         if(handleStripFaderPress(x, y))
             return true;

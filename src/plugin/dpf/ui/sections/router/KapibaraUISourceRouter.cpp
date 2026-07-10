@@ -71,6 +71,46 @@ void KapibaraUI::drawSourceRouter(const Rect &r)
             fill();
         }
 
+        // --- OSC MOD wires: arcs along the column's left margin from modulator row
+        // to carrier row, coloured by mode; a dot on the carrier's left edge marks
+        // the entry (right-click it to change mode / remove).
+        for(auto &trackDots : oscModDotRects_)
+            trackDots.fill({});
+        for(int i = 0; i < n && i < int(sourceRouterRects_.size()); ++i)
+        {
+            const auto &carrier = generator_.tracks[(size_t)i];
+            const Rect &row = sourceRouterRects_[(size_t)i];
+            if(row.w <= 0.0f)
+                continue;
+            for(int k = 0; k < synth::kMaxTrackMods; ++k)
+            {
+                const auto &m = carrier.mods[(size_t)k];
+                if(!modEntryActive(m) || m.sourceTrack < 0 || m.sourceTrack >= n)
+                    continue;
+                const Rect &srcRow = sourceRouterRects_[(size_t)m.sourceTrack];
+                if(srcRow.w <= 0.0f)
+                    continue;
+                const Color col = oscModTypeColor(m.type);
+                // Dots stack vertically when a carrier has several entries.
+                const float dy = row.y + row.h * (0.5f + 0.28f * float(k) - 0.28f);
+                const Rect dot { row.x - 5.0f, dy - 4.5f, 9.0f, 9.0f };
+                oscModDotRects_[(size_t)i][(size_t)k] = dot;
+                const float sy = srcRow.y + srcRow.h * 0.5f;
+                // Arc bulging into the left margin; deeper slots bulge slightly more.
+                const float bulge = 7.0f + 3.0f * float(k);
+                beginPath();
+                moveTo(srcRow.x, sy);
+                bezierTo(srcRow.x - bulge, sy, row.x - bulge, dy, dot.x + dot.w * 0.5f, dy);
+                strokeColor(col.withAlpha(0.8f));
+                strokeWidth(1.5f);
+                stroke();
+                beginPath();
+                ellipse(dot.x + dot.w * 0.5f, dy, 3.0f, 3.0f);
+                fillColor(col);
+                fill();
+            }
+        }
+
         const float addY = rowTop + float(n) * (rowH + gap);
         if(addY + rowH < bottomY - 6.0f)
         {

@@ -108,6 +108,12 @@ bool KapibaraUI::onMouse(const MouseEvent &ev)
         }
         if(ev.button == kMouseButtonRight)
         {
+            // Mod-wire dot in the SOURCE column → mode / remove menu.
+            if(handleOscModDotRightClick(x, y))
+            {
+                repaint();
+                return true;
+            }
             if(openRouteNodeContext(x, y))
             {
                 repaint();
@@ -217,6 +223,12 @@ bool KapibaraUI::onMouse(const MouseEvent &ev)
         }
 
         if(handleWarpModeMenuClick(x, y))
+        {
+            repaint();
+            return true;
+        }
+
+        if(handleOscModTypeMenuClick(x, y))
         {
             repaint();
             return true;
