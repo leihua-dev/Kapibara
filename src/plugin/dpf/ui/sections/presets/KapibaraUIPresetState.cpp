@@ -79,6 +79,16 @@ void KapibaraUI::saveModernState(const std::string &path)
         }
         for(const auto &w : routeWires_)
             out << "mwire " << w.from.nodeId << ' ' << int(w.from.port) << ' ' << w.to.nodeId << ' ' << int(w.to.port) << "\n";
+        // Matrix rules (legacy preset never stored them; without this they vanish
+        // on save/load).
+        for(int ri = 0; ri < synth::kMaxMatrixRules; ++ri)
+        {
+            const auto &ru = rules_[(size_t)ri];
+            if(!ru.enabled) continue;
+            out << "mrule " << ri << ' ' << int(ru.source) << ' ' << int(ru.dest) << ' ' << ru.depth << ' '
+                << int(ru.weight) << ' ' << ru.bandLo << ' ' << ru.bandHi << ' ' << ru.targetTrackId << ' '
+                << ru.targetSlot << ' ' << int(ru.maskSlot) << ' ' << int(ru.maskAxis) << "\n";
+        }
         for(const auto &kv : nodeOutPortCount_)
             out << "moutp " << kv.first << ' ' << kv.second << "\n";
         for(const auto &kv : structUtilCount_)
@@ -106,6 +116,8 @@ void KapibaraUI::loadModernState(const std::string &path)
         std::unordered_map<uint64_t, synth::RouteUtilParams> utilParams;
         std::unordered_map<uint32_t, std::unordered_map<int, synth::GridPoint>> nodePos;
         std::unordered_map<uint32_t, std::vector<synth::GridWire>> sWires;
+        std::array<synth::MatrixRule, synth::kMaxMatrixRules> parsedRules {};
+        bool hasRules = false;
         const auto ensureTrack = [&](int ti) { if(ti >= 0 && ti >= int(tracks.size())) tracks.resize((size_t)ti + 1); };
         std::string line;
         while(std::getline(in, line))
@@ -154,6 +166,26 @@ void KapibaraUI::loadModernState(const std::string &path)
                 m.depth = depth;
                 m.sourceKind = uint8_t(kind);
                 m.sourceNode = uint8_t(node);
+            }
+            else if(tok == "mrule")
+            {
+                int ri, src, dst, weight, lo, hi, slot, mask = -1, axis = 0;
+                unsigned tid = 0; float depth = 0.0f;
+                ss >> ri >> src >> dst >> depth >> weight >> lo >> hi >> tid >> slot >> mask >> axis;
+                if(ri < 0 || ri >= synth::kMaxMatrixRules) continue;
+                auto &ru = parsedRules[(size_t)ri];
+                ru.enabled = true;
+                ru.source = synth::ModSource(src);
+                ru.dest = synth::ModDestination(dst);
+                ru.depth = depth;
+                ru.weight = synth::WeightMode(weight);
+                ru.bandLo = lo;
+                ru.bandHi = hi;
+                ru.targetTrackId = tid;
+                ru.targetSlot = slot;
+                ru.maskSlot = int8_t(mask);
+                ru.maskAxis = uint8_t(axis);
+                hasRules = true;
             }
             else if(tok == "mins")
             {
@@ -205,9 +237,17 @@ void KapibaraUI::loadModernState(const std::string &path)
         structNodePos_ = nodePos;
         structWires_ = sWires;
         selectedTrack_ = clampi(selectedTrack_, 0, std::max(0, int(generator_.tracks.size()) - 1));
+        // Rules restored before the rebuild so any strip-insert adoption during the
+        // rebuild remaps them consistently with the wires.
+        if(hasRules)
+            rules_ = parsedRules;
         // Recomputes each track's routing fields (filter/insert order, connectedToMaster)
         // from the restored wires, then pushes all tracks + the compiled route to the engine.
         rebuildSelectedPerVoiceRouteFromWires();
+        if(hasRules)
+            if(auto *p = plugin())
+                for(int i = 0; i < synth::kMaxMatrixRules; ++i)
+                    p->updateMatrixRule(i, rules_[(size_t)i]);
     }
 
 void KapibaraUI::appendPresetNameChar(char ch)

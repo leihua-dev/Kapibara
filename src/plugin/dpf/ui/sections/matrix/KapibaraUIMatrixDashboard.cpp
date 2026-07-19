@@ -199,6 +199,40 @@ void KapibaraUI::drawMatrixGrid(const Rect &r)
                            && ru.targetTrackId == track->id) { rule = &ru; break; }
                 drawMatrixGridNode(cell, rule);
             }
+
+        // Selected-rule inspector row: weight mode + spatial mask (a MOD slot's
+        // curve mapped over the partial axis instead of time).
+        ruleWeightRect_ = {}; ruleMaskRect_ = {}; ruleMaskAxisRect_ = {};
+        if(selectedRule_ >= 0 && selectedRule_ < synth::kMaxMatrixRules
+           && rules_[(size_t)selectedRule_].enabled)
+        {
+            const auto &ru = rules_[(size_t)selectedRule_];
+            static const char *kWeightNames[] = { "ALL", "LOW", "HIGH", "GRP LO", "GRP MID", "GRP HI", "BAND" };
+            const float iy = r.y + r.h - 18.0f;
+            useUiFont();
+            uiFontSize(8.0f);
+            textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+            fillColor(DesignTokens::textSecondary());
+            char hdr[64];
+            std::snprintf(hdr, sizeof(hdr), "RULE  %s > %s", sourceName(ru.source), destName(ru.dest));
+            text(r.x, iy + 8.0f, hdr, nullptr);
+
+            ruleWeightRect_ = { r.x + 150.0f, iy, 62.0f, 16.0f };
+            drawButton(ruleWeightRect_, kWeightNames[std::min<int>(int(ru.weight), 6)], false);
+
+            char mlbl[16];
+            if(ru.maskSlot >= 0)
+                std::snprintf(mlbl, sizeof(mlbl), "MASK MOD%d", int(ru.maskSlot) + 1);
+            else
+                std::snprintf(mlbl, sizeof(mlbl), "MASK OFF");
+            ruleMaskRect_ = { ruleWeightRect_.x + 68.0f, iy, 84.0f, 16.0f };
+            drawButton(ruleMaskRect_, mlbl, ru.maskSlot >= 0);
+            if(ru.maskSlot >= 0)
+            {
+                ruleMaskAxisRect_ = { ruleMaskRect_.x + 90.0f, iy, 58.0f, 16.0f };
+                drawButton(ruleMaskAxisRect_, ru.maskAxis == 1 ? "SPEC X" : "IDX", false);
+            }
+        }
     }
 
 void KapibaraUI::drawGridAxisPicker()
@@ -257,6 +291,32 @@ bool KapibaraUI::handleMatrixGridPress(float x, float y)
         auto *track = currentTrack();
         if(track == nullptr)
             return false;
+        // Selected-rule inspector row (weight / spatial mask / mask axis).
+        if(selectedRule_ >= 0 && selectedRule_ < synth::kMaxMatrixRules
+           && rules_[(size_t)selectedRule_].enabled)
+        {
+            auto &ru = rules_[(size_t)selectedRule_];
+            if(ruleWeightRect_.w > 0.0f && ruleWeightRect_.contains(x, y))
+            {
+                ru.weight = synth::WeightMode((int(ru.weight) + 1) % 7);
+                pushRuleOnly();
+                return true;
+            }
+            if(ruleMaskRect_.w > 0.0f && ruleMaskRect_.contains(x, y))
+            {
+                // OFF → MOD1 … MOD8 → OFF
+                ru.maskSlot = ru.maskSlot >= synth::kMaxModSlots - 1 ? int8_t(-1)
+                                                                     : int8_t(ru.maskSlot + 1);
+                pushRuleOnly();
+                return true;
+            }
+            if(ruleMaskAxisRect_.w > 0.0f && ruleMaskAxisRect_.contains(x, y))
+            {
+                ru.maskAxis = ru.maskAxis == 0 ? 1 : 0;
+                pushRuleOnly();
+                return true;
+            }
+        }
         for(const auto &c : matrixGridCells_)
         {
             if(!c.rect.contains(x, y))

@@ -215,6 +215,7 @@ void ModMatrix::evaluateForVoice(MatrixVoiceOutput &out,
                                               : 0.0f);
                 return shapeOutput(shapeParams_, axis);
             }
+            case ModSource::Unit: return 1.0f;
             case ModSource::None: return 0.0f;
             default: return 0.0f;
         }
@@ -247,7 +248,18 @@ void ModMatrix::evaluateForVoice(MatrixVoiceOutput &out,
         for(int i = begin; i < end; ++i)
         {
             const float m = sourceValue(rule.source, i);
-            const float w = weightFn(rule, i, frame);
+            float w = weightFn(rule, i, frame);
+            // Spatial mask: the mask slot's CURVE sampled over a countable axis
+            // (partial index within the rule's range, or spectral x) scales the
+            // weight — a drawn distribution across simultaneous elements.
+            if(rule.maskSlot >= 0 && rule.maskSlot < kMaxModSlots && w > 0.0f)
+            {
+                const auto &mp = slotParams_[(size_t)rule.maskSlot];
+                const float ax = rule.maskAxis == 1
+                                     ? clampf(frame.x[i], 0.0f, 1.0f)
+                                     : (end - begin > 1 ? float(i - begin) / float(end - begin - 1) : 0.0f);
+                w *= pointCurveEval(mp.points.data(), mp.pointCount, ax);
+            }
             const float contrib = rule.depth * m * w;
             switch(rule.dest)
             {
@@ -294,6 +306,7 @@ float ModMatrix::globalModSource(ModSource s, float adsrRep,
         case ModSource::Adsr:  return clampf(adsrRep, 0.0f, 1.0f);
         case ModSource::Chaos: return chaosValue_;
         case ModSource::Shape: return shapeOutput(shapeParams_, 0.5f);
+        case ModSource::Unit:  return 1.0f;
         default:               return 0.0f;
     }
 }

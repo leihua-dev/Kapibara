@@ -25,7 +25,10 @@ enum class ModSource : uint8_t
     GeneratorSelf = 13,
     Chaos = 14,
     Shape = 15,
-    Adsr1 = 16, Adsr2, Adsr3, Adsr4
+    Adsr1 = 16, Adsr2, Adsr3, Adsr4,
+    // Constant 1.0 — combined with a rule's spatial mask it yields a pure static
+    // distribution (e.g. a drawn per-partial pitch-offset profile).
+    Unit = 20
 };
 
 enum class ModDestination : uint8_t
@@ -93,6 +96,12 @@ struct MatrixRule
     int bandHi = kMaxPartials;
     uint32_t targetTrackId = 0;
     int targetSlot = 0;
+    // Spatial mask: sample a MOD slot's breakpoint curve across a countable axis
+    // and multiply it into the per-partial weight — a drawable distribution over
+    // "things that exist at once" instead of over time. -1 = no mask.
+    // maskAxis 0 = partial index within the rule's target range, 1 = spectral x.
+    int8_t maskSlot = -1;
+    uint8_t maskAxis = 0;
 };
 
 // -----------------------------------------------------------------------------

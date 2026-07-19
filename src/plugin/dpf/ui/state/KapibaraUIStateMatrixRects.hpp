@@ -6,4 +6,5 @@
     Rect envEnableRect_ {};
     Rect matrixEnvCurveRect_ {};
     Rect ruleEnableRect_ {}, ruleSourceRect_ {}, ruleDestRect_ {}, ruleWeightRect_ {}, ruleDepthRect_ {}, ruleBandLoRect_ {}, ruleBandHiRect_ {};
+    Rect ruleMaskRect_ {}, ruleMaskAxisRect_ {};  // spatial-mask controls in the grid inspector row
     Rect chaosEnableRect_ {}, chaosRateRect_ {}, chaosAmountRect_ {}, shapeAxisRect_ {}, shapePhaseRect_ {}, shapeRhoRect_ {}, shapeUpRect_ {}, shapeDownRect_ {};

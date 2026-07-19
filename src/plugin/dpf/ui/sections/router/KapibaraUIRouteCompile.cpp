@@ -4,6 +4,73 @@ START_NAMESPACE_DISTRHO
 
 using namespace routeui;
 
+// Move one strip insert from another track into `to`'s chain (appended at the
+// end; the wire walk defines execution order, not vector order). Rewrites every
+// reference to the old node id — wires, node positions, per-component structure
+// maps, and matrix rules targeting insert params — plus the shifted locals of
+// the old owner's later inserts. Returns the new node id (0 = failed).
+uint32_t KapibaraUI::adoptStripInsert(int fromTrackIdx, int insIdx, synth::SourceTrackParams &to)
+{
+        if(fromTrackIdx < 0 || fromTrackIdx >= int(generator_.tracks.size()))
+            return 0;
+        auto &from = generator_.tracks[(size_t)fromTrackIdx];
+        if(&from == &to || insIdx < 0 || insIdx >= int(from.inserts.size())
+           || to.inserts.size() >= size_t(synth::kMaxStripInserts))
+            return 0;
+        const uint32_t fromId = from.id, toId = to.id;
+        to.inserts.push_back(from.inserts[(size_t)insIdx]);
+        from.inserts.erase(from.inserts.begin() + insIdx);
+        const int newLocal = int(to.inserts.size());
+        const uint32_t oldNode = stripNodeId(fromId, insIdx + 1);
+        const uint32_t newNode = stripNodeId(toId, newLocal);
+
+        const auto remap = [&](uint32_t id) -> uint32_t {
+            if(id == oldNode) return newNode;
+            if(id != masterNodeId() && isStripNode(id) && stripTrackId(id) == fromId)
+            {
+                const int l = stripLocalId(id);
+                if(l > insIdx + 1) return stripNodeId(fromId, l - 1);
+            }
+            return id;
+        };
+        for(auto &w : routeWires_)
+        {
+            w.from.nodeId = remap(w.from.nodeId);
+            w.to.nodeId = remap(w.to.nodeId);
+        }
+        const auto remapKeys = [&](auto &m) {
+            std::decay_t<decltype(m)> next;
+            for(auto &kv : m) next[remap(kv.first)] = std::move(kv.second);
+            m = std::move(next);
+        };
+        remapKeys(routeNodePositions_);
+        remapKeys(nodeOutPortCount_);
+        remapKeys(structWires_);
+        remapKeys(structUtilCount_);
+        remapKeys(structNodePos_);
+        {
+            std::unordered_map<uint64_t, synth::RouteUtilParams> next;
+            for(auto &kv : structUtilParams_)
+                next[(uint64_t(remap(uint32_t(kv.first >> 8))) << 8) | (kv.first & 0xffu)] = kv.second;
+            structUtilParams_ = std::move(next);
+        }
+        // Matrix rules aiming at insert macro params follow the insert.
+        bool rulesChanged = false;
+        for(auto &ru : rules_)
+        {
+            if(synth::insertModParamForDest(ru.dest) < 0) continue;
+            if(ru.targetTrackId == fromId && ru.targetSlot == insIdx)
+            { ru.targetTrackId = toId; ru.targetSlot = newLocal - 1; rulesChanged = true; }
+            else if(ru.targetTrackId == fromId && ru.targetSlot > insIdx)
+            { --ru.targetSlot; rulesChanged = true; }
+        }
+        if(rulesChanged) pushMatrix();
+        if(focusedNodeId_ == oldNode) focusedNodeId_ = newNode;
+        if(multibandEditorTrackId_ >= 0 && uint32_t(multibandEditorTrackId_) == fromId)
+        { multibandEditorTrackId_ = -1; multibandEditorInsertIdx_ = -1; }
+        return newNode;
+    }
+
 void KapibaraUI::rebuildSelectedPerVoiceRouteFromWires()
 {
         // Nodes from which MASTER is forward-reachable (reverse closure from
@@ -39,8 +106,9 @@ void KapibaraUI::rebuildSelectedPerVoiceRouteFromWires()
 
             synth::GridPortRef cursor { sourceRouterNodeId(tid), 0 };
 
+            // Extra kMaxStripInserts headroom: each cross-track adoption retries a step.
             const int maxSteps = synth::kMaxPerVoiceFilters + synth::kMaxAmpEnvRouteNodes
-                                  + synth::kMaxStripInserts + 4;
+                                  + synth::kMaxStripInserts * 2 + 4;
             for(int guard = 0; guard < maxSteps; ++guard)
             {
                 // Find a wire that starts at cursor and belongs to this track's chain.
@@ -113,7 +181,28 @@ void KapibaraUI::rebuildSelectedPerVoiceRouteFromWires()
                     continue;
                 }
 
-                // Anything else (wrong track's strip node, etc.) — dead end.
+                // The chain crossed into a strip insert OWNED BY ANOTHER TRACK.
+                // The engine executes strip chains per owning track, so silently
+                // truncating here left wired FX never running (the classic "the
+                // router shows it connected but it does nothing"). Adopt the
+                // insert into this track's chain and retry the step against the
+                // rewritten node id.
+                if(dest != masterNodeId() && isStripNode(dest) && stripTrackId(dest) != tid)
+                {
+                    int fromIdx = -1;
+                    for(int t2 = 0; t2 < int(generator_.tracks.size()); ++t2)
+                        if(generator_.tracks[(size_t)t2].id == stripTrackId(dest)) { fromIdx = t2; break; }
+                    const int oldLocal = stripLocalId(dest);
+                    if(fromIdx < 0 || oldLocal <= 0
+                       || oldLocal > int(generator_.tracks[(size_t)fromIdx].inserts.size())
+                       || track.inserts.size() >= size_t(synth::kMaxStripInserts))
+                        break;
+                    if(adoptStripInsert(fromIdx, oldLocal - 1, track) == 0)
+                        break;
+                    continue; // wires now point at this track's strip node
+                }
+
+                // Anything else — dead end.
                 break;
             }
 

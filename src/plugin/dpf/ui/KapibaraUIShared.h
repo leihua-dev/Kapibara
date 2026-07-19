@@ -50,7 +50,8 @@ constexpr synth::ModSource kGridSourcePool[] = {
     synth::ModSource::Lfo1, synth::ModSource::Lfo2, synth::ModSource::Lfo3, synth::ModSource::Lfo4,
     synth::ModSource::Env1, synth::ModSource::Env2, synth::ModSource::Env3, synth::ModSource::Env4,
     synth::ModSource::Velocity, synth::ModSource::KeyTrack, synth::ModSource::Random, synth::ModSource::Chaos,
-    synth::ModSource::Adsr1, synth::ModSource::Adsr2, synth::ModSource::Adsr3, synth::ModSource::Adsr4
+    synth::ModSource::Adsr1, synth::ModSource::Adsr2, synth::ModSource::Adsr3, synth::ModSource::Adsr4,
+    synth::ModSource::Unit
 };
 
 constexpr synth::ModDestination kGridDestPool[] = {
@@ -328,6 +329,7 @@ inline const char *sourceName(synth::ModSource s)
         case synth::ModSource::Adsr2: return "AE2";
         case synth::ModSource::Adsr3: return "AE3";
         case synth::ModSource::Adsr4: return "AE4";
+        case synth::ModSource::Unit: return "ONE";
     }
     return "Source";
 }

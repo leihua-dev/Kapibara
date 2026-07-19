@@ -172,6 +172,7 @@ class KapibaraUI final : public KapibaraUIDrawing
     void drawModEditor(const Rect &region, synth::SourceTrackParams &track);
     bool handleModColumnClick(float x, float y);
     bool handleModEditorClick(float x, float y);
+    uint32_t adoptStripInsert(int fromTrackIdx, int insIdx, synth::SourceTrackParams &to);
     void openModSourceMenu(int trackId, int slot, float x, float y);
     void drawModSourceMenu();
     bool modSourceCausesCycleFor(int selfIdx, int cand) const;
