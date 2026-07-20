@@ -2,7 +2,8 @@
 
 START_NAMESPACE_DISTRHO
 
-// Top-row MATRIX view (opened from the toolbar): tabs + close X + the dashboard.
+// Top-row MATRIX view (opened from the toolbar): the matrix IS the grid.
+// Modulator / amp-env editors stay in the bottom dashboard.
 void KapibaraUI::drawMatrixView(const Rect &r)
 {
         drawPanel(r, rgba(0x0b1217ff), rgba(0x344852ff));
@@ -15,37 +16,24 @@ void KapibaraUI::drawMatrixView(const Rect &r)
         fxKnobHits_.clear(); fxBypassHits_.clear(); fxDeleteHits_.clear(); fxModeHits_.clear();
         fxRackPanelRects_.clear();
 
+        drawSectionTitle(r.x + 12.0f, r.y + 10.0f, "MATRIX");
         matrixViewCloseRect_ = { r.x + r.w - 26.0f, r.y + 8.0f, 18.0f, 16.0f };
         drawButton(matrixViewCloseRect_, "x", false);
 
-        static const char *kTabs[3] = { "GRID", "MODULATORS", "AMP ENV" };
-        const float tabW = 84.0f, tabH = 16.0f;
-        for(int i = 0; i < 3; ++i)
-        {
-            matrixTabRects_[(size_t)i] = { r.x + 10.0f + float(i) * (tabW + 4.0f), r.y + 8.0f, tabW, tabH };
-            drawButton(matrixTabRects_[(size_t)i], kTabs[i], matrixTab_ == i);
-        }
-
-        drawMatrixDashboard({ r.x + 8.0f, r.y + 30.0f, r.w - 16.0f, r.h - 38.0f });
+        drawMatrixGrid({ r.x + 16.0f, r.y + 32.0f, r.w - 32.0f, r.h - 42.0f });
     }
 
 void KapibaraUI::drawMatrixDashboard(const Rect &r)
 {
         drawPanel(r, rgba(0x0d151aff), rgba(0x4b6972ff));
-        drawSectionTitle(r.x + 16.0f, r.y + 14.0f, "Matrix");
+        drawSectionTitle(r.x + 16.0f, r.y + 14.0f, "Modulators");
 
-        // (Tabs are drawn by drawMatrixView, which owns matrixTabRects_.)
+        // The grid lives in the toolbar MATRIX view now; this bottom panel hosts
+        // only the modulator curve editors and the amp envelopes.
+        if(matrixTab_ == 0) matrixTab_ = 1;
+        matrixTabRects_.fill({});
         const Rect body { r.x + 16.0f, r.y + 38.0f, r.w - 32.0f, r.h - 50.0f };
 
-        matrixGridCells_.clear();
-        if(matrixTab_ != 0)
-        {
-            gridSrcLabelRects_.clear();
-            gridDestLabelRects_.clear();
-            gridAddSrcRect_ = {};
-            gridAddDstRect_ = {};
-            gridPickerMode_ = 0;
-        }
         for(auto &rc : modSlotSelectRects_) rc = {};
         for(auto &rc : ampEnvTabRects_) rc = {};
         lfoEnableRect_ = {}; envEnableRect_ = {}; adsrSourceRect_ = {};
@@ -60,9 +48,8 @@ void KapibaraUI::drawMatrixDashboard(const Rect &r)
         chaosRateRect_ = {}; chaosAmountRect_ = {};
         shapePhaseRect_ = {}; shapeRhoRect_ = {}; shapeUpRect_ = {}; shapeDownRect_ = {};
 
-        if(matrixTab_ == 1)      drawMatrixModulators(body);
-        else if(matrixTab_ == 2) drawMatrixAmpEnv(body);
-        else                     drawMatrixGrid(body);
+        if(matrixTab_ == 2) drawMatrixAmpEnv(body);
+        else                drawMatrixModulators(body);
     }
 
 void KapibaraUI::drawMatrixModulators(const Rect &r)

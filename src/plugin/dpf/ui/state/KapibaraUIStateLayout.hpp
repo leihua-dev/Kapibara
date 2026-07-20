@@ -4,10 +4,12 @@
     float layoutRackRatio_   = 0.20f;
     float layoutStripRatio_  = 0.25f;
     Rect layoutVSplitHandle_ {}, layoutRackSplitHandle_ {}, layoutStripSplitHandle_ {};
-    // Bottom workspace: the Source column on the left + the full Source Structure
-    // router (the Matrix moved to a top-row view opened from the toolbar).
-    int bottomPanelMode_ = 1;  // kept for old saved state; bottom is always the router
+    // Bottom workspace: the Source column is always shown on the left; the rest
+    // shows the Modulators panel (curve / amp-env editors) when collapsed (0) or
+    // the full Source Structure router when expanded (1). The matrix GRID lives
+    // in the toolbar-opened top-row MATRIX view.
+    int bottomPanelMode_ = 0;
     Rect bottomExpandArrowRect_ {};
     Rect bottomCollapseArrowRect_ {};
-    // Matrix view: replaces the top editor row while open (toolbar MATRIX button).
+    // MATRIX view (the grid): replaces the top editor row while open.
     bool matrixViewOpen_ = false;

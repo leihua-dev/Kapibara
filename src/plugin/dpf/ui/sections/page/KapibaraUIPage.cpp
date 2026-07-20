@@ -8,6 +8,19 @@ void KapibaraUI::drawCurrentPage()
                           static_cast<float>(uiH()) - 172.0f };
         drawPanel(page, rgba(0x10171bff), rgba(0x293842ff));
 
+        // Grid rects only exist while the MATRIX view draws them; ungated handlers
+        // (right-click axis removal etc.) must not see stale ones.
+        if(!matrixViewOpen_)
+        {
+            gridSrcLabelRects_.clear();
+            gridDestLabelRects_.clear();
+            gridAddSrcRect_ = {};
+            gridAddDstRect_ = {};
+            matrixGridCells_.clear();
+            ruleWeightRect_ = {}; ruleMaskRect_ = {}; ruleMaskAxisRect_ = {};
+            gridPickerMode_ = 0;
+        }
+
         // New layout:
         //   Top row:  Source Editor | Per-Voice Chain Editor | FX Rack Editor
         //   Thin strip: draggable MOD sources
@@ -261,9 +274,7 @@ bool KapibaraUI::handleBottomLayoutPress(float x, float y)
             {
                 const auto src = modStripChipSources_[(size_t)i];
                 enableModSource(src);
-                // Pre-select the matching MATRIX tab for the next time the view
-                // opens, but don't open it here — the drag targets are the knobs
-                // in the top-row editors, which must stay visible.
+                // Show the matching editor in the collapsed bottom panel.
                 if(src >= synth::ModSource::Adsr1 && src <= synth::ModSource::Adsr4)
                 {
                     selectedAmpEnv_ = int(src) - int(synth::ModSource::Adsr1);
@@ -273,6 +284,7 @@ bool KapibaraUI::handleBottomLayoutPress(float x, float y)
                 {
                     matrixTab_ = 1;
                 }
+                bottomPanelMode_ = 0;
                 beginModRouteDrag(src, modStripChipRects_[(size_t)i], x, y);
                 return true;
             }

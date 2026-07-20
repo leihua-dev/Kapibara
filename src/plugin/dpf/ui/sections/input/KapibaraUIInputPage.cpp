@@ -40,10 +40,12 @@ bool KapibaraUI::handlePageClick(float x, float y)
             return true;
         }
         // Handlers are gated by which view is showing so stale rects from a
-        // hidden panel can't trigger phantom clicks. The matrix now lives in the
-        // toolbar-opened top-row view; the bottom router is always present.
-        const bool modMode    = matrixViewOpen_;
-        const bool structMode = true;
+        // hidden panel can't trigger phantom clicks. The grid lives in the
+        // toolbar-opened top-row MATRIX view (gridMode); the bottom collapsed
+        // panel hosts the modulator/amp-env editors (modMode).
+        const bool gridMode   = matrixViewOpen_;
+        const bool modMode    = (bottomPanelMode_ == 0);
+        const bool structMode = (bottomPanelMode_ == 1);
         if(matrixViewOpen_ && matrixViewCloseRect_.w > 0.0f && matrixViewCloseRect_.contains(x, y))
         {
             matrixViewOpen_ = false;
@@ -55,17 +57,8 @@ bool KapibaraUI::handlePageClick(float x, float y)
             multibandEditorTrackId_ = -1;
             multibandEditorInsertIdx_ = -1;
         }
-        // Matrix dashboard tab switch (GRID / MODULATORS / AMP ENV).
-        if(modMode)
-        for(int i = 0; i < int(matrixTabRects_.size()); ++i)
-            if(matrixTabRects_[(size_t)i].contains(x, y))
-            {
-                matrixTab_ = i;
-                repaint();
-                return true;
-            }
         // Grid axis "+" add buttons.
-        if(modMode && gridAddSrcRect_.contains(x, y))
+        if(gridMode && gridAddSrcRect_.contains(x, y))
         {
             gridPickerMode_ = 1;
             gridPickerX_ = gridAddSrcRect_.x;
@@ -73,7 +66,7 @@ bool KapibaraUI::handlePageClick(float x, float y)
             repaint();
             return true;
         }
-        if(modMode && gridAddDstRect_.contains(x, y))
+        if(gridMode && gridAddDstRect_.contains(x, y))
         {
             gridPickerMode_ = 2;
             gridPickerX_ = gridAddDstRect_.x;
@@ -82,7 +75,7 @@ bool KapibaraUI::handlePageClick(float x, float y)
             return true;
         }
         // Matrix grid node create / depth-drag.
-        if(modMode && handleMatrixGridPress(x, y))
+        if(gridMode && handleMatrixGridPress(x, y))
             return true;
         // A pending wire draft dropped on a source ROW creates an osc-mod entry —
         // must run before row selection consumes the click.
