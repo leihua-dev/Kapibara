@@ -243,9 +243,9 @@ void KapibaraUI::drawMatrixGrid(const Rect &r)
             drawButton(ruleMaskRect_, mlbl, ru.maskSlot >= 0);
             if(ru.maskSlot >= 0)
             {
-                static const char *kAxisNames[4] = { "IDX", "SPEC X", "FREQ", "IDX+PH" };
+                static const char *kAxisNames[5] = { "IDX", "SPEC X", "FREQ", "IDX+PH", "TRACK" };
                 ruleMaskAxisRect_ = { ruleMaskRect_.x + 90.0f, iy, 58.0f, 16.0f };
-                drawButton(ruleMaskAxisRect_, kAxisNames[std::min<int>(int(ru.maskAxis), 3)], false);
+                drawButton(ruleMaskAxisRect_, kAxisNames[std::min<int>(int(ru.maskAxis), 4)], false);
             }
         }
     }
@@ -327,7 +327,7 @@ bool KapibaraUI::handleMatrixGridPress(float x, float y)
             }
             if(ruleMaskAxisRect_.w > 0.0f && ruleMaskAxisRect_.contains(x, y))
             {
-                ru.maskAxis = uint8_t((ru.maskAxis + 1) % 4);
+                ru.maskAxis = uint8_t((ru.maskAxis + 1) % 5);
                 pushRuleOnly();
                 return true;
             }

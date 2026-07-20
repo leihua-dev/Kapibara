@@ -99,7 +99,9 @@ struct MatrixRule
     // Spatial mask: sample a MOD slot's breakpoint curve across a countable axis
     // and multiply it into the per-partial weight — a drawable distribution over
     // "things that exist at once" instead of over time. -1 = no mask.
-    // maskAxis 0 = partial index within the rule's target range, 1 = spectral x.
+    // maskAxis: 0 = partial index within the rule's target range, 1 = spectral x,
+    // 2 = normalized log-frequency, 3 = index scrolled by the mask slot's phase,
+    // 4 = source-track index (the curve distributes across the SOURCE rack).
     int8_t maskSlot = -1;
     uint8_t maskAxis = 0;
 };

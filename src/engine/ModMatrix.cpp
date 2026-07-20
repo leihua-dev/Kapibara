@@ -245,6 +245,26 @@ void ModMatrix::evaluateForVoice(MatrixVoiceOutput &out,
     };
 
     const int N = frame.partialCount;
+
+    // Per-partial "which source track" axis, normalized 0..1 over the track list.
+    // Built lazily — only rules with a TRACK-axis mask pay for it (one fill per
+    // voice per control block).
+    std::array<float, kMaxPartials> trackAxis {};
+    bool trackAxisBuilt = false;
+    const auto buildTrackAxis = [&]() {
+        if(trackAxisBuilt) return;
+        trackAxisBuilt = true;
+        std::fill(trackAxis.begin(), trackAxis.begin() + N, 0.0f);
+        if(trackBegin != nullptr && trackEnd != nullptr && trackCount > 1)
+            for(int t = 0; t < trackCount; ++t)
+            {
+                const int b = std::clamp(trackBegin[t], 0, N);
+                const int e = std::clamp(trackEnd[t], b, N);
+                const float v = float(t) / float(trackCount - 1);
+                for(int i = b; i < e; ++i) trackAxis[(size_t)i] = v;
+            }
+    };
+
     for(int r = 0; r < kMaxMatrixRules; ++r)
     {
         const auto &rule = rules_[(size_t)r];
@@ -295,6 +315,11 @@ void ModMatrix::evaluateForVoice(MatrixVoiceOutput &out,
                         ax = frac01(base + slotPhase_[(size_t)rule.maskSlot]);
                         break;
                     }
+                    case 4: // source-track index: the curve distributes across the
+                            // SOURCE rack (all partials of one track share a weight)
+                        buildTrackAxis();
+                        ax = trackAxis[(size_t)i];
+                        break;
                     default: // partial index within the rule's target range
                         ax = end - begin > 1 ? float(i - begin) / float(end - begin - 1) : 0.0f;
                         break;
