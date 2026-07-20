@@ -421,8 +421,8 @@ bool KapibaraUI::handleButtonClick(float x, float y)
             }
         }
 
-        // Matrix source chips (only present while the Modulation panel is showing).
-        if(bottomPanelMode_ == 0)
+        // Matrix source chips (only present while the MATRIX view is showing).
+        if(matrixViewOpen_)
         {
             for(int i = 0; i < synth::kMaxLfos; ++i)
                 if(modSlotSelectRects_[(size_t)i].contains(x, y))

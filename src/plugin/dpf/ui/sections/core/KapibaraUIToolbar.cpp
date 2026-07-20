@@ -83,15 +83,19 @@ void KapibaraUI::drawToolbar()
         menuRect_ = { aboutRect_.x - 86.0f, 12.0f, 78.0f, 36.0f };
         panicRect_ = { menuRect_.x - 76.0f, 12.0f, 68.0f, 36.0f };
         const Rect abRect { panicRect_.x - 102.0f, 12.0f, 94.0f, 36.0f };
+        // MATRIX entry sits between the preset selector and A->B; the preset
+        // selector gives up the width for it.
+        matrixToolbarRect_ = { abRect.x - 96.0f, 12.0f, 88.0f, 36.0f };
         presetPrevRect_ = { 220.0f, 14.0f, 38.0f, 34.0f };
-        presetNextRect_ = { abRect.x - 48.0f, 14.0f, 38.0f, 34.0f };
-        presetSelectRect_ = { 264.0f, 8.0f, std::max(180.0f, presetNextRect_.x - 272.0f), 46.0f };
+        presetNextRect_ = { matrixToolbarRect_.x - 48.0f, 14.0f, 38.0f, 34.0f };
+        presetSelectRect_ = { 264.0f, 8.0f, std::max(140.0f, presetNextRect_.x - 272.0f), 46.0f };
         presetSaveRect_ = {};
         presetLoadRect_ = {};
 
         drawButton(presetPrevRect_, "<", false);
         drawButton(presetSelectRect_, presetLabel_.empty() ? "Select preset" : presetLabel_.c_str(), presetMenuOpen_);
         drawButton(presetNextRect_, ">", false);
+        drawButton(matrixToolbarRect_, "MATRIX", matrixViewOpen_);
         drawButton(abRect, "A -> B", false);
         drawButton(panicRect_, "Panic", false);
         drawButton(menuRect_, "MENU", false);

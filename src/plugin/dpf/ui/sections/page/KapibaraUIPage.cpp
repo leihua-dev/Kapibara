@@ -55,6 +55,12 @@ void KapibaraUI::drawCurrentPage()
             const Rect detail { sourceEditor.x, topY, fxRack.x + fxRack.w - sourceEditor.x, topH };
             drawFocusedNodeDetail(detail);
         }
+        else if(!drewMultibandEditor && matrixViewOpen_)
+        {
+            // Toolbar MATRIX view: the whole top row becomes the matrix panel.
+            const Rect matrixR { sourceEditor.x, topY, fxRack.x + fxRack.w - sourceEditor.x, topH };
+            drawMatrixView(matrixR);
+        }
         else if(!drewMultibandEditor)
         {
             drawTrackEditor(sourceEditor);
@@ -255,6 +261,9 @@ bool KapibaraUI::handleBottomLayoutPress(float x, float y)
             {
                 const auto src = modStripChipSources_[(size_t)i];
                 enableModSource(src);
+                // Pre-select the matching MATRIX tab for the next time the view
+                // opens, but don't open it here — the drag targets are the knobs
+                // in the top-row editors, which must stay visible.
                 if(src >= synth::ModSource::Adsr1 && src <= synth::ModSource::Adsr4)
                 {
                     selectedAmpEnv_ = int(src) - int(synth::ModSource::Adsr1);
@@ -264,7 +273,6 @@ bool KapibaraUI::handleBottomLayoutPress(float x, float y)
                 {
                     matrixTab_ = 1;
                 }
-                bottomPanelMode_ = 0;
                 beginModRouteDrag(src, modStripChipRects_[(size_t)i], x, y);
                 return true;
             }

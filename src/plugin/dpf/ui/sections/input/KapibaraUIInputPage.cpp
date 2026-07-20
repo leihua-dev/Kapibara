@@ -39,10 +39,17 @@ bool KapibaraUI::handlePageClick(float x, float y)
             repaint();
             return true;
         }
-        // Bottom panel handlers are gated by which workspace is showing so stale
-        // rects from the hidden panel can't trigger phantom clicks.
-        const bool modMode    = (bottomPanelMode_ == 0); // Modulation / Matrix
-        const bool structMode = (bottomPanelMode_ == 1); // Source Structure
+        // Handlers are gated by which view is showing so stale rects from a
+        // hidden panel can't trigger phantom clicks. The matrix now lives in the
+        // toolbar-opened top-row view; the bottom router is always present.
+        const bool modMode    = matrixViewOpen_;
+        const bool structMode = true;
+        if(matrixViewOpen_ && matrixViewCloseRect_.w > 0.0f && matrixViewCloseRect_.contains(x, y))
+        {
+            matrixViewOpen_ = false;
+            repaint();
+            return true;
+        }
         if(multibandEditorTrackId_ >= 0 && routeBoardRect_.contains(x, y))
         {
             multibandEditorTrackId_ = -1;

@@ -2,12 +2,39 @@
 
 START_NAMESPACE_DISTRHO
 
+// Top-row MATRIX view (opened from the toolbar): tabs + close X + the dashboard.
+void KapibaraUI::drawMatrixView(const Rect &r)
+{
+        drawPanel(r, rgba(0x0b1217ff), rgba(0x344852ff));
+        // The three top editors aren't drawn while the matrix view is up — their
+        // stale rects must not eat clicks.
+        clearTrackEditorRects();
+        ampFocusKnobRects_.fill({});
+        pvChainTabRects_.fill({}); pvChainEnableRect_ = {}; pvChainTypeRect_ = {};
+        pvChainKnobRects_.fill({}); pvChainAddRect_ = {}; pvChainCount_ = 0;
+        fxKnobHits_.clear(); fxBypassHits_.clear(); fxDeleteHits_.clear(); fxModeHits_.clear();
+        fxRackPanelRects_.clear();
+
+        matrixViewCloseRect_ = { r.x + r.w - 26.0f, r.y + 8.0f, 18.0f, 16.0f };
+        drawButton(matrixViewCloseRect_, "x", false);
+
+        static const char *kTabs[3] = { "GRID", "MODULATORS", "AMP ENV" };
+        const float tabW = 84.0f, tabH = 16.0f;
+        for(int i = 0; i < 3; ++i)
+        {
+            matrixTabRects_[(size_t)i] = { r.x + 10.0f + float(i) * (tabW + 4.0f), r.y + 8.0f, tabW, tabH };
+            drawButton(matrixTabRects_[(size_t)i], kTabs[i], matrixTab_ == i);
+        }
+
+        drawMatrixDashboard({ r.x + 8.0f, r.y + 30.0f, r.w - 16.0f, r.h - 38.0f });
+    }
+
 void KapibaraUI::drawMatrixDashboard(const Rect &r)
 {
         drawPanel(r, rgba(0x0d151aff), rgba(0x4b6972ff));
         drawSectionTitle(r.x + 16.0f, r.y + 14.0f, "Matrix");
 
-        matrixTabRects_.fill({});
+        // (Tabs are drawn by drawMatrixView, which owns matrixTabRects_.)
         const Rect body { r.x + 16.0f, r.y + 38.0f, r.w - 32.0f, r.h - 50.0f };
 
         matrixGridCells_.clear();

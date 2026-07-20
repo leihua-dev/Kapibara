@@ -5,6 +5,14 @@ START_NAMESPACE_DISTRHO
 // Direct gain/pan/send drag on ANY strip (no need to select the strip first).
 bool KapibaraUI::handleToolbarClick(float x, float y)
 {
+        if(matrixToolbarRect_.contains(x, y))
+        {
+            matrixViewOpen_ = !matrixViewOpen_;
+            if(matrixViewOpen_)
+                focusedNodeId_ = 0;  // the matrix view takes over the top row
+            repaint();
+            return true;
+        }
         if(presetSelectRect_.contains(x, y))
         {
             presetMenuOpen_ = !presetMenuOpen_;
