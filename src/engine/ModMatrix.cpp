@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace synth
 {
@@ -30,11 +31,30 @@ void ModMatrix::reset()
     chaosCounter_ = 0;
 }
 
+void ModMatrix::bakeMaskLut(int slot, const ModSlotParams &p)
+{
+    auto &lut = maskLut_[(size_t)slot];
+    for(int k = 0; k <= kMaskLutSize; ++k)
+        lut[(size_t)k] = pointCurveEval(p.points.data(), p.pointCount, float(k) / float(kMaskLutSize));
+}
+
 void ModMatrix::setParams(const std::array<ModSlotParams, kMaxModSlots> &slots,
                           const std::array<MatrixRule, kMaxMatrixRules> &rules,
                           const ChaosParams &chaos,
                           const ShapeSourceParams &shape)
 {
+    // Called per control block on the audio thread: rebake a slot's mask LUT
+    // only when its curve actually changed (a small memcmp per slot).
+    for(int i = 0; i < kMaxModSlots; ++i)
+    {
+        const auto &np = slots[(size_t)i];
+        const auto &op = slotParams_[(size_t)i];
+        if(!maskLutReady_ || np.pointCount != op.pointCount
+           || std::memcmp(np.points.data(), op.points.data(),
+                          sizeof(MatrixEnvPoint) * size_t(kMaxMatrixEnvPoints)) != 0)
+            bakeMaskLut(i, np);
+    }
+    maskLutReady_ = true;
     slotParams_ = slots;
     rules_ = rules;
     chaosParams_ = chaos;
@@ -44,7 +64,10 @@ void ModMatrix::setParams(const std::array<ModSlotParams, kMaxModSlots> &slots,
 void ModMatrix::setModSlotParams(int idx, const ModSlotParams &p)
 {
     if(idx >= 0 && idx < kMaxModSlots)
+    {
         slotParams_[(size_t)idx] = p;
+        bakeMaskLut(idx, p);
+    }
 }
 ModSlotParams ModMatrix::getModSlotParams(int idx) const
 {
@@ -249,16 +272,34 @@ void ModMatrix::evaluateForVoice(MatrixVoiceOutput &out,
         {
             const float m = sourceValue(rule.source, i);
             float w = weightFn(rule, i, frame);
-            // Spatial mask: the mask slot's CURVE sampled over a countable axis
-            // (partial index within the rule's range, or spectral x) scales the
-            // weight — a drawn distribution across simultaneous elements.
+            // Spatial mask: the mask slot's CURVE (pre-baked LUT — one lerp per
+            // partial, no breakpoint scan) sampled over a countable axis scales
+            // the weight — a drawn distribution across simultaneous elements.
             if(rule.maskSlot >= 0 && rule.maskSlot < kMaxModSlots && w > 0.0f)
             {
-                const auto &mp = slotParams_[(size_t)rule.maskSlot];
-                const float ax = rule.maskAxis == 1
-                                     ? clampf(frame.x[i], 0.0f, 1.0f)
-                                     : (end - begin > 1 ? float(i - begin) / float(end - begin - 1) : 0.0f);
-                w *= pointCurveEval(mp.points.data(), mp.pointCount, ax);
+                float ax;
+                switch(rule.maskAxis)
+                {
+                    case 1: // spectral x
+                        ax = clampf(frame.x[i], 0.0f, 1.0f);
+                        break;
+                    case 2: // normalized log-frequency
+                    {
+                        const float ln = std::log(std::max(1e-6f, frame.nu[i]));
+                        ax = (logMax > logMin + 1e-6f) ? (ln - logMin) / (logMax - logMin) : 0.0f;
+                        break;
+                    }
+                    case 3: // partial index, scrolled by the mask slot's own phase
+                    {
+                        const float base = end - begin > 1 ? float(i - begin) / float(end - begin - 1) : 0.0f;
+                        ax = frac01(base + slotPhase_[(size_t)rule.maskSlot]);
+                        break;
+                    }
+                    default: // partial index within the rule's target range
+                        ax = end - begin > 1 ? float(i - begin) / float(end - begin - 1) : 0.0f;
+                        break;
+                }
+                w *= maskLookup(rule.maskSlot, ax);
             }
             const float contrib = rule.depth * m * w;
             switch(rule.dest)

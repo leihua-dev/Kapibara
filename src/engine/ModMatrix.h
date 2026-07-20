@@ -173,6 +173,23 @@ class ModMatrix
     static float weightFn(const MatrixRule &r, int i, const StaticSpectralFrame &frame);
     static float shapeOutput(const ShapeSourceParams &p, float x);
 
+    // Spatial-mask lookup table: each slot's curve is baked to a small LUT when
+    // its points change (dirty-checked in setParams — which runs per control
+    // block on the audio thread), so per-partial mask sampling is one lerp
+    // instead of a breakpoint scan with pow().
+    static constexpr int kMaskLutSize = 128;
+    void bakeMaskLut(int slot, const ModSlotParams &p);
+    float maskLookup(int slot, float x) const
+    {
+        const float fx = (x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x)) * float(kMaskLutSize);
+        const int k = std::min(int(fx), kMaskLutSize - 1);
+        const float t = fx - float(k);
+        const auto &lut = maskLut_[(size_t)slot];
+        return lut[(size_t)k] + (lut[(size_t)k + 1] - lut[(size_t)k]) * t;
+    }
+    std::array<std::array<float, kMaskLutSize + 1>, kMaxModSlots> maskLut_ {};
+    bool maskLutReady_ = false;
+
     std::array<ModSlotParams, kMaxModSlots> slotParams_ {};
     std::array<float, kMaxModSlots> slotPhase_ {};
     std::array<float, kMaxModSlots> slotValue_ {};
