@@ -77,6 +77,7 @@ class KapibaraUI final : public KapibaraUIDrawing
     void pushMatrix();
     void pushCurModSlot();
     void pushRuleOnly();
+    void pushRule(int idx);
     void pushChaosOnly();
     void pushShapeOnly();
     void pushAmpEnv();

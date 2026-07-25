@@ -301,6 +301,13 @@ void KapibaraUI::pushCurModSlot()
 void KapibaraUI::pushRuleOnly()
 { if(auto *p = plugin()) p->updateMatrixRule(selectedRule_, rules_[(size_t)selectedRule_]); }
 
+// Push a specific rule index — card flows must never push via selectedRule_.
+void KapibaraUI::pushRule(int idx)
+{
+        if(auto *p = plugin(); p != nullptr && idx >= 0 && idx < synth::kMaxMatrixRules)
+            p->updateMatrixRule(idx, rules_[(size_t)idx]);
+    }
+
 void KapibaraUI::pushChaosOnly()
 { if(auto *p = plugin()) p->updateChaos(chaos_); }
 

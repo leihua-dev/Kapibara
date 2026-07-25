@@ -23,19 +23,26 @@ void KapibaraUI::finishModRouteDrag(float x, float y)
         if(!target.valid)
             return;
         const bool isEffectDest = synth::insertModParamForDest(target.destination) >= 0;
-        int ruleIndex = -1;
+        int ruleIndex = -1, freeIndex = -1;
         for(int i = 0; i < synth::kMaxMatrixRules; ++i)
         {
             const auto &rule = rules_[(size_t)i];
-            if(rule.source == modRouteSource_ && rule.dest == target.destination
+            // Only ENABLED rules count as a match — matching a disabled slot
+            // would resurrect whatever stale config it still carries.
+            if(rule.enabled && rule.source == modRouteSource_ && rule.dest == target.destination
                && rule.targetTrackId == target.trackId
                && (!isEffectDest || rule.targetSlot == target.slot))
             {
                 ruleIndex = i;
                 break;
             }
-            if(ruleIndex < 0 && !rule.enabled)
-                ruleIndex = i;
+            if(freeIndex < 0 && !rule.enabled)
+                freeIndex = i;
+        }
+        if(ruleIndex < 0 && freeIndex >= 0)
+        {
+            ruleIndex = freeIndex;
+            rules_[(size_t)ruleIndex] = synth::MatrixRule {};  // fresh slot, no stale fields
         }
         if(ruleIndex < 0)
             return;

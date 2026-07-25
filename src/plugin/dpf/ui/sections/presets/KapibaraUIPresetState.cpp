@@ -155,8 +155,12 @@ void KapibaraUI::loadModernState(const std::string &path)
             }
             else if(tok == "mmod")
             {
-                int ti, s, src, type, kind = 0, node = 0; float depth = 0.0f;
-                ss >> ti >> s >> src >> type >> depth >> kind >> node;
+                int ti, s, src, type; float depth;
+                if(!(ss >> ti >> s >> src >> type >> depth))
+                    continue;
+                int kind = 0, node = 0;
+                if(!(ss >> kind)) kind = 0;
+                if(!(ss >> node)) node = 0;
                 ensureTrack(ti);
                 if(ti < 0 || s < 0 || s >= synth::kMaxTrackMods) continue;
                 auto &m = tracks[(size_t)ti].mods[(size_t)s];
@@ -169,9 +173,16 @@ void KapibaraUI::loadModernState(const std::string &path)
             }
             else if(tok == "mrule")
             {
-                int ri, src, dst, weight, lo, hi, slot, mask = -1, axis = 0;
-                unsigned tid = 0; float depth = 0.0f;
-                ss >> ri >> src >> dst >> depth >> weight >> lo >> hi >> tid >> slot >> mask >> axis;
+                // NOTE: since C++11 a failed >> extraction WRITES 0 into the
+                // target — optional tail fields must be re-defaulted explicitly,
+                // never just pre-initialized.
+                int ri, src, dst, weight, lo, hi, slot;
+                unsigned tid; float depth;
+                if(!(ss >> ri >> src >> dst >> depth >> weight >> lo >> hi >> tid >> slot))
+                    continue;
+                int mask = -1, axis = 0;
+                if(!(ss >> mask)) mask = -1;
+                if(!(ss >> axis)) axis = 0;
                 if(ri < 0 || ri >= synth::kMaxMatrixRules) continue;
                 auto &ru = parsedRules[(size_t)ri];
                 ru.enabled = true;

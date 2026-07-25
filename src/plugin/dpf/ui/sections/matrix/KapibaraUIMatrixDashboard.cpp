@@ -351,14 +351,18 @@ bool KapibaraUI::handleMatrixGridPress(float x, float y)
                     return true;
                 idx = freeIdx;
                 auto &ru = rules_[(size_t)idx];
+                // A freed slot keeps its old mask/band/curve fields — reset to
+                // defaults so a fresh route never inherits stale config.
+                ru = synth::MatrixRule {};
                 ru.enabled = true;
                 ru.source = c.src;
                 ru.dest = c.dst;
                 ru.targetTrackId = track->id;
-                ru.targetSlot = 0;
-                ru.weight = synth::WeightMode::All;
                 ru.depth = defaultModulationDepth(c.dst);
                 enableModSource(c.src);
+                // pushMatrix() sends rules_[selectedRule_]; select BEFORE pushing
+                // or a click-create (no drag) never reaches the engine.
+                selectedRule_ = idx;
                 pushMatrix();
             }
             selectedRule_ = idx;
