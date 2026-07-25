@@ -19,57 +19,12 @@ void KapibaraUI::beginModRouteDrag(synth::ModSource source, const Rect &sourceRe
 
 void KapibaraUI::finishModRouteDrag(float x, float y)
 {
-        // While the MATRIX view is up, the knob targets are hidden — dropping a
-        // chip routes via the grid / card list instead.
-        if(matrixViewOpen_)
+        // While the MATRIX view is the drawn top-row branch, the knob targets are
+        // hidden — dropping a chip on the card list adds a route instead.
+        if(matrixViewInteractive())
         {
-            const auto *track = currentTrack();
-            if(matrixViewTab_ == 0 && track != nullptr)
+            if(matrixRoutesListRect_.w > 0.0f && matrixRoutesListRect_.contains(x, y))
             {
-                // Drop on a cell or a dest column header = route chip source
-                // to that column's destination for the current track.
-                synth::ModDestination dest {};
-                bool haveDest = false;
-                for(const auto &c : matrixGridCells_)
-                    if(c.rect.contains(x, y)) { dest = c.dst; haveDest = true; break; }
-                if(!haveDest)
-                    for(size_t d = 0; d < gridDestLabelRects_.size() && d < gridDests_.size(); ++d)
-                        if(gridDestLabelRects_[d].contains(x, y))
-                        { dest = gridDests_[d]; haveDest = true; break; }
-                if(haveDest)
-                {
-                    int idx = -1, freeIdx = -1;
-                    for(int i = 0; i < synth::kMaxMatrixRules; ++i)
-                    {
-                        const auto &ru = rules_[(size_t)i];
-                        if(ru.enabled && ru.source == modRouteSource_ && ru.dest == dest
-                           && ru.targetTrackId == track->id) { idx = i; break; }
-                        if(freeIdx < 0 && !ru.enabled) freeIdx = i;
-                    }
-                    if(idx < 0 && freeIdx >= 0)
-                    {
-                        idx = freeIdx;
-                        auto &ru = rules_[(size_t)idx];
-                        ru = synth::MatrixRule {};
-                        ru.enabled = true;
-                        ru.source = modRouteSource_;
-                        ru.dest = dest;
-                        ru.targetTrackId = track->id;
-                        ru.depth = defaultModulationDepth(dest);
-                        enableModSource(modRouteSource_);
-                    }
-                    if(idx >= 0)
-                    {
-                        selectedRule_ = idx;
-                        pushRule(idx);
-                    }
-                }
-            }
-            else if(matrixViewTab_ == 1 && matrixRoutesListRect_.w > 0.0f
-                    && matrixRoutesListRect_.contains(x, y))
-            {
-                // Drop on the card list = new card with the chip as source; pick
-                // the destination right away.
                 int freeIdx = -1;
                 for(int i = 0; i < synth::kMaxMatrixRules; ++i)
                     if(!rules_[(size_t)i].enabled) { freeIdx = i; break; }
@@ -80,13 +35,13 @@ void KapibaraUI::finishModRouteDrag(float x, float y)
                     ru.enabled = true;
                     ru.source = modRouteSource_;
                     ru.dest = synth::ModDestination::Amp;
-                    if(track != nullptr) ru.targetTrackId = track->id;
+                    if(const auto *track = currentTrack()) ru.targetTrackId = track->id;
                     ru.depth = defaultModulationDepth(ru.dest);
                     enableModSource(modRouteSource_);
                     selectedRule_ = freeIdx;
                     matrixRoutesScrollTo_ = freeIdx;
                     pushRule(freeIdx);
-                    gridPickerMode_ = 4;
+                    gridPickerMode_ = 4;  // pick the destination right away
                     gridPickerRuleIdx_ = freeIdx;
                     gridPickerX_ = x;
                     gridPickerY_ = y;

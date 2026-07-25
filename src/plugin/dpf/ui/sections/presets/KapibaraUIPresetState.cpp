@@ -80,7 +80,10 @@ void KapibaraUI::saveModernState(const std::string &path)
         for(const auto &w : routeWires_)
             out << "mwire " << w.from.nodeId << ' ' << int(w.from.port) << ' ' << w.to.nodeId << ' ' << int(w.to.port) << "\n";
         // Matrix rules (legacy preset never stored them; without this they vanish
-        // on save/load).
+        // on save/load). The unconditional marker lets the loader distinguish "this
+        // preset intentionally has zero routes" (clear everything) from "old preset
+        // without a rules section" (preserve current rules).
+        out << "mrules 1\n";
         for(int ri = 0; ri < synth::kMaxMatrixRules; ++ri)
         {
             const auto &ru = rules_[(size_t)ri];
@@ -171,6 +174,12 @@ void KapibaraUI::loadModernState(const std::string &path)
                 m.depth = depth;
                 m.sourceKind = uint8_t(kind);
                 m.sourceNode = uint8_t(node);
+            }
+            else if(tok == "mrules")
+            {
+                // Rules-section marker: even with zero mrule lines, restore (i.e.
+                // clear) the rule table instead of preserving the previous preset's.
+                hasRules = true;
             }
             else if(tok == "mrule")
             {

@@ -23,12 +23,7 @@
     std::array<Rect, 2> editorTabRects_ {};
     int matrixTab_ = 0;  // 0=GRID 1=MODULATORS 2=AMP ENV
     std::array<Rect, 3> matrixTabRects_ {};
-    std::vector<MatrixCell> matrixGridCells_;
-    // User-chosen grid axes (start with a small default; add/remove via the grid).
-    std::vector<synth::ModSource> gridSources_ { synth::ModSource::Lfo1, synth::ModSource::Env1 };
-    std::vector<synth::ModDestination> gridDests_ { synth::ModDestination::Amp, synth::ModDestination::Freq };
-    std::vector<Rect> gridSrcLabelRects_, gridDestLabelRects_, gridPickerItemRects_;
+    std::vector<Rect> gridPickerItemRects_;
     std::vector<int> gridPickerPoolIdx_;
-    Rect gridAddSrcRect_ {}, gridAddDstRect_ {};
-    int gridPickerMode_ = 0;  // 0=closed 1=pick source 2=pick destination
+    int gridPickerMode_ = 0;  // 0=closed 3=card source 4=card destination
     float gridPickerX_ = 0.0f, gridPickerY_ = 0.0f;

@@ -261,13 +261,16 @@ class KapibaraUI final : public KapibaraUIDrawing
     void drawMatrixDashboard(const Rect &r);
     void drawMatrixModulators(const Rect &r);
     void drawMatrixAmpEnv(const Rect &r);
-    void drawMatrixGridNode(const Rect &cell, const synth::MatrixRule *rule);
-    void drawMatrixGrid(const Rect &r);
     void drawGridAxisPicker();
     void enableModSource(synth::ModSource src);
-    bool handleMatrixGridPress(float x, float y);
-    bool handleMatrixGridDelete(float x, float y);
     void drawMatrixRoutes(const Rect &r);
+    void clearMatrixRects();
+    // The matrix view accepts input only while it is actually the drawn top-row
+    // branch (multiband / focused detail take priority and overdraw it).
+    bool matrixViewInteractive() const
+    {
+        return matrixViewOpen_ && multibandEditorTrackId_ < 0 && focusedNodeId_ == 0;
+    }
     void drawXferCurve(const Rect &r, float curve);
     bool handleMatrixRoutesPress(float x, float y);
     bool onScroll(const ScrollEvent &ev) override;

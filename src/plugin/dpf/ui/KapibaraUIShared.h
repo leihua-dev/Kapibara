@@ -46,22 +46,9 @@ constexpr const char *kDistAlgoNames[] = {
     "Soft","Hard","Tube","Diode","Fold","SinFld","Crush","Tanh"
 };
 
-constexpr synth::ModSource kGridSourcePool[] = {
-    synth::ModSource::Lfo1, synth::ModSource::Lfo2, synth::ModSource::Lfo3, synth::ModSource::Lfo4,
-    synth::ModSource::Env1, synth::ModSource::Env2, synth::ModSource::Env3, synth::ModSource::Env4,
-    synth::ModSource::Velocity, synth::ModSource::KeyTrack, synth::ModSource::Random, synth::ModSource::Chaos,
-    synth::ModSource::Adsr1, synth::ModSource::Adsr2, synth::ModSource::Adsr3, synth::ModSource::Adsr4,
-    synth::ModSource::Unit
-};
-
-constexpr synth::ModDestination kGridDestPool[] = {
-    synth::ModDestination::Amp, synth::ModDestination::Freq, synth::ModDestination::Phase,
-    synth::ModDestination::MetaMorph, synth::ModDestination::MetaWarp, synth::ModDestination::MetaPan,
-    synth::ModDestination::TrackGain, synth::ModDestination::TrackPan,
-    synth::ModDestination::PitchOct, synth::ModDestination::PitchSem, synth::ModDestination::PitchFine
-};
-
-// Wider pools for the ROUTES card pickers (no taken-filter there).
+// Pools for the ROUTES card pickers. DecayTime/SpectralDecay are deliberately
+// absent: the engine has no evaluation path for them yet — offering them would
+// create permanently dead routes.
 constexpr synth::ModSource kCardSourcePool[] = {
     synth::ModSource::Lfo1, synth::ModSource::Lfo2, synth::ModSource::Lfo3, synth::ModSource::Lfo4,
     synth::ModSource::Env1, synth::ModSource::Env2, synth::ModSource::Env3, synth::ModSource::Env4,
@@ -74,7 +61,7 @@ constexpr synth::ModDestination kCardDestPool[] = {
     synth::ModDestination::MetaMorph, synth::ModDestination::MetaWarp, synth::ModDestination::MetaPan,
     synth::ModDestination::TrackGain, synth::ModDestination::TrackPan,
     synth::ModDestination::PitchOct, synth::ModDestination::PitchSem, synth::ModDestination::PitchFine,
-    synth::ModDestination::PitchCrs, synth::ModDestination::DecayTime, synth::ModDestination::SpectralDecay
+    synth::ModDestination::PitchCrs
 };
 
 struct StripGroup
@@ -163,13 +150,6 @@ struct MatrixCardHit
     Rect rect {};
     int rule = -1;
     uint8_t kind = Row;
-};
-
-struct MatrixCell
-{
-    Rect rect;
-    synth::ModSource src;
-    synth::ModDestination dst;
 };
 
 enum class DragTarget

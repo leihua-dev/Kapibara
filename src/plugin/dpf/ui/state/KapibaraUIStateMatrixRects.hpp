@@ -6,8 +6,6 @@
     Rect envEnableRect_ {};
     Rect matrixEnvCurveRect_ {};
     Rect ruleEnableRect_ {}, ruleSourceRect_ {}, ruleDestRect_ {}, ruleWeightRect_ {}, ruleDepthRect_ {}, ruleBandLoRect_ {}, ruleBandHiRect_ {};
-    Rect ruleMaskRect_ {}, ruleMaskAxisRect_ {};  // spatial-mask controls (ROUTES cards)
-    Rect ruleXferRect_ {}, ruleEditRect_ {};      // grid inspector: transfer bend + EDIT > jump
     std::vector<MatrixCardHit> matrixCardHits_;   // ROUTES card controls
     int gridPickerRuleIdx_ = -1;                  // rule a card picker (mode 3/4) edits; -2 = staged + ROUTE
     Rect matrixToolbarRect_ {};    // toolbar MATRIX entry button

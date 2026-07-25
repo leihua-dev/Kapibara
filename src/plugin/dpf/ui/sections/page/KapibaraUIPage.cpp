@@ -8,28 +8,11 @@ void KapibaraUI::drawCurrentPage()
                           static_cast<float>(uiH()) - 172.0f };
         drawPanel(page, rgba(0x10171bff), rgba(0x293842ff));
 
-        // Grid / ROUTES rects only exist while the MATRIX view draws them; ungated
-        // handlers (right-click axis removal etc.) must not see stale ones.
+        // MATRIX rects only exist while drawMatrixView is the drawn branch — every
+        // other branch (and the closed state) clears them so ungated handlers
+        // can't hit stale ones under another editor.
         if(!matrixViewOpen_)
-        {
-            gridSrcLabelRects_.clear();
-            gridDestLabelRects_.clear();
-            gridAddSrcRect_ = {};
-            gridAddDstRect_ = {};
-            matrixGridCells_.clear();
-            ruleWeightRect_ = {}; ruleMaskRect_ = {}; ruleMaskAxisRect_ = {};
-            ruleXferRect_ = {}; ruleEditRect_ = {};
-            matrixMoreRect_ = {};
-            matrixViewTabRects_.fill({});
-            matrixViewCloseRect_ = {};
-            matrixCardHits_.clear();
-            matrixRoutesScrollbarRect_ = {};
-            matrixRoutesAddRect_ = {};
-            matrixRoutesListRect_ = {};
-            gridPickerMode_ = 0;
-            gridPickerRuleIdx_ = -1;
-        }
-
+            clearMatrixRects();
         // New layout:
         //   Top row:  Source Editor | Per-Voice Chain Editor | FX Rack Editor
         //   Thin strip: draggable MOD sources
@@ -60,6 +43,7 @@ void KapibaraUI::drawCurrentPage()
             {
                 const Rect mbEditor { sourceEditor.x, topY,
                                       fxRack.x + fxRack.w - sourceEditor.x, topH };
+                clearMatrixRects();
                 drawMultibandFxEditor(mbEditor);
                 drewMultibandEditor = true;
             }
@@ -75,6 +59,7 @@ void KapibaraUI::drawCurrentPage()
         {
             // Double-clicked a component → the whole top row shows its detail.
             const Rect detail { sourceEditor.x, topY, fxRack.x + fxRack.w - sourceEditor.x, topH };
+            clearMatrixRects();
             drawFocusedNodeDetail(detail);
         }
         else if(!drewMultibandEditor && matrixViewOpen_)
@@ -85,6 +70,7 @@ void KapibaraUI::drawCurrentPage()
         }
         else if(!drewMultibandEditor)
         {
+            clearMatrixRects();
             drawTrackEditor(sourceEditor);
             drawPerVoiceChainEditor(perVoice);
             drawFxRackEditor(fxRack);

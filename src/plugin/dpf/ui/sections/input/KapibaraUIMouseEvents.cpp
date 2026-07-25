@@ -6,9 +6,10 @@ bool KapibaraUI::onScroll(const ScrollEvent &ev)
 {
         const float x = (static_cast<float>(ev.pos.getX()) - lbX_) / uiRenderScale_;
         const float y = (static_cast<float>(ev.pos.getY()) - lbY_) / uiRenderScale_;
-        // Wheel scroll for the ROUTES card list. Never mid-drag: shifting card
-        // rects under an active gesture retargets it.
-        if(matrixViewOpen_ && matrixViewTab_ == 1 && dragTarget_ == DragTarget::None
+        // Wheel scroll for the MATRIX card list. Never mid-drag: shifting card
+        // rects under an active gesture retargets it. The list rect is zeroed
+        // whenever another branch overdraws the view.
+        if(dragTarget_ == DragTarget::None
            && matrixRoutesListRect_.w > 0.0f && matrixRoutesListRect_.contains(x, y))
         {
             matrixRoutesScroll_ -= static_cast<float>(ev.delta.getY()) * 28.0f;
@@ -138,33 +139,9 @@ bool KapibaraUI::onMouse(const MouseEvent &ev)
                 repaint();
                 return true;
             }
-            // Right-click a matrix grid node → clear that route. Gated to the
-            // GRID tab so stale cell rects can't fire under the ROUTES cards.
-            if(matrixViewOpen_ && matrixViewTab_ == 0 && handleMatrixGridDelete(x, y))
-            {
-                repaint();
-                return true;
-            }
-            // Right-click a grid axis label → remove that source/destination row/col.
-            if(matrixViewOpen_ && matrixViewTab_ == 0)
-            {
-                for(size_t s = 0; s < gridSrcLabelRects_.size() && s < gridSources_.size(); ++s)
-                    if(gridSrcLabelRects_[s].contains(x, y))
-                    {
-                        gridSources_.erase(gridSources_.begin() + long(s));
-                        repaint();
-                        return true;
-                    }
-                for(size_t d = 0; d < gridDestLabelRects_.size() && d < gridDests_.size(); ++d)
-                    if(gridDestLabelRects_[d].contains(x, y))
-                    {
-                        gridDests_.erase(gridDests_.begin() + long(d));
-                        repaint();
-                        return true;
-                    }
-            }
-            // Right-click a ROUTES card → clear that rule (grid-consistent).
-            if(matrixViewOpen_ && matrixViewTab_ == 1)
+            // Right-click a MATRIX card → clear that rule. Card hits are empty
+            // whenever the view isn't the drawn top-row branch.
+            if(matrixViewOpen_)
                 for(const auto &h : matrixCardHits_)
                     if(h.kind == MatrixCardHit::Row && h.rect.contains(x, y)
                        && h.rule >= 0 && h.rule < synth::kMaxMatrixRules)
