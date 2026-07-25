@@ -104,6 +104,12 @@ struct MatrixRule
     // 4 = source-track index (the curve distributes across the SOURCE rack).
     int8_t maskSlot = -1;
     uint8_t maskAxis = 0;
+    // Serum-style response bend on the SOURCE value, -1..+1 (0 = linear).
+    // Applied sign-magnitude (sign(m)·bend(|m|)) so zero stays zero for both
+    // bipolar and unipolar sources.
+    float transferCurve = 0.0f;
+    // Bypass without losing the configuration (enabled still means "slot used").
+    uint8_t muted = 0;
 };
 
 // -----------------------------------------------------------------------------
@@ -170,6 +176,10 @@ class ModMatrix
 
     float globalModSource(ModSource s, float adsrRep, const std::array<float, kMaxModSlots> &slotRep,
                           const std::array<float, kMaxAmpEnvs> &ampRep) const;
+
+    // Serum-style response bend on a source value (see MatrixRule::transferCurve).
+    // Public/static so the insert-param path in SynthCore shares the exact math.
+    static float applyTransfer(const MatrixRule &r, float m);
 
   private:
     static float weightFn(const MatrixRule &r, int i, const StaticSpectralFrame &frame);

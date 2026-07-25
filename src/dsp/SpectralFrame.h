@@ -17,7 +17,7 @@ constexpr int kMaxModSlots = 8;        // Unified modulator slots (loop + one-sh
 constexpr int kMaxLfos = 4;            // kept for backward compat (= first half of kMaxModSlots)
 constexpr int kMaxModEnvs = 4;         // kept for backward compat (= second half of kMaxModSlots)
 constexpr int kMaxAmpEnvs = 4;         // Shared ADSR envelopes referenced by source tracks
-constexpr int kMaxMatrixRules = 16;    // R_k count (§3.6)
+constexpr int kMaxMatrixRules = 32;    // routing rules (was 16; presets with rules ≥16 don't load in older builds)
 constexpr int kControlBlockSize = 32;  // control-rate granularity (§6)
 
 // Manual UI helper. It does not impose a realtime partial budget.

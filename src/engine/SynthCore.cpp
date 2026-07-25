@@ -1443,14 +1443,15 @@ void SynthCore::renderBlock(float *left, float *right, int numSamples)
                 for(const auto &rule : snap->matrixRules)
                 {
                     const int param = insertModParamForDest(rule.dest);
-                    if(!rule.enabled || param < 0 || std::abs(rule.depth) < 1e-6f) continue;
+                    if(!rule.enabled || rule.muted || param < 0 || std::abs(rule.depth) < 1e-6f) continue;
                     if(rule.targetSlot < 0 || rule.targetSlot >= kMaxModInserts) continue;
                     int rt = -1;
                     for(int t = 0; t < snap->renderTrackCount; ++t)
                         if(snap->trackRuntime[(size_t)t].trackId == rule.targetTrackId) { rt = t; break; }
                     if(rt < 0) continue;
                     trackInsertMod_[(size_t)rt][(size_t)insertModIndex(rule.targetSlot, param)] +=
-                        rule.depth * matrix.globalModSource(rule.source, adsrRep, slotRep, ampRep);
+                        rule.depth * ModMatrix::applyTransfer(
+                                         rule, matrix.globalModSource(rule.source, adsrRep, slotRep, ampRep));
                 }
             }
 

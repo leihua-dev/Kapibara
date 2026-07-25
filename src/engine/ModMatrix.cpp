@@ -129,6 +129,19 @@ void ModMatrix::advanceControl(int samples)
     chaosValue_ = clampf(chaosValue_ * chaosParams_.amount, -1.0f, 1.0f);
 }
 
+float ModMatrix::applyTransfer(const MatrixRule &r, float m)
+{
+    const float c = clampf(r.transferCurve, -1.0f, 1.0f);
+    if(std::abs(c) < 1.0e-4f)
+        return m;
+    // Same bend family as the MOD-curve segments (ModCurve.h): drag up = convex
+    // (fast onset), down = concave. Sign-magnitude keeps f(0) = 0.
+    const float a = std::min(std::abs(m), 1.0f);
+    const float shaped = c >= 0.0f ? std::pow(a, 1.0f + c * 4.0f)
+                                   : 1.0f - std::pow(1.0f - a, 1.0f - c * 4.0f);
+    return m < 0.0f ? -shaped : shaped;
+}
+
 float ModMatrix::weightFn(const MatrixRule &r, int i, const StaticSpectralFrame &frame)
 {
     const float xi = frame.x[i];
@@ -268,7 +281,8 @@ void ModMatrix::evaluateForVoice(MatrixVoiceOutput &out,
     for(int r = 0; r < kMaxMatrixRules; ++r)
     {
         const auto &rule = rules_[(size_t)r];
-        if(!rule.enabled || rule.source == ModSource::None || std::abs(rule.depth) < 1e-6f)
+        if(!rule.enabled || rule.muted || rule.source == ModSource::None
+           || std::abs(rule.depth) < 1e-6f)
             continue;
         if(insertModParamForDest(rule.dest) >= 0)
             continue;
@@ -288,9 +302,16 @@ void ModMatrix::evaluateForVoice(MatrixVoiceOutput &out,
             if(begin >= end)
                 continue;
         }
+        // Response bend: most sources are partial-invariant, so shape once and
+        // hoist; only GeneratorSelf/Shape vary with the partial index.
+        const bool perPartialSrc = rule.source == ModSource::GeneratorSelf
+                                   || rule.source == ModSource::Shape;
+        const float mHoisted = perPartialSrc ? 0.0f
+                                             : applyTransfer(rule, sourceValue(rule.source, begin));
         for(int i = begin; i < end; ++i)
         {
-            const float m = sourceValue(rule.source, i);
+            const float m = perPartialSrc ? applyTransfer(rule, sourceValue(rule.source, i))
+                                          : mHoisted;
             float w = weightFn(rule, i, frame);
             // Spatial mask: the mask slot's CURVE (pre-baked LUT — one lerp per
             // partial, no breakpoint scan) sampled over a countable axis scales

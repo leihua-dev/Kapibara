@@ -87,7 +87,8 @@ void KapibaraUI::saveModernState(const std::string &path)
             if(!ru.enabled) continue;
             out << "mrule " << ri << ' ' << int(ru.source) << ' ' << int(ru.dest) << ' ' << ru.depth << ' '
                 << int(ru.weight) << ' ' << ru.bandLo << ' ' << ru.bandHi << ' ' << ru.targetTrackId << ' '
-                << ru.targetSlot << ' ' << int(ru.maskSlot) << ' ' << int(ru.maskAxis) << "\n";
+                << ru.targetSlot << ' ' << int(ru.maskSlot) << ' ' << int(ru.maskAxis) << ' '
+                << ru.transferCurve << ' ' << int(ru.muted) << "\n";
         }
         for(const auto &kv : nodeOutPortCount_)
             out << "moutp " << kv.first << ' ' << kv.second << "\n";
@@ -180,9 +181,12 @@ void KapibaraUI::loadModernState(const std::string &path)
                 unsigned tid; float depth;
                 if(!(ss >> ri >> src >> dst >> depth >> weight >> lo >> hi >> tid >> slot))
                     continue;
-                int mask = -1, axis = 0;
+                int mask = -1, axis = 0, mutedIn = 0;
+                float xfer = 0.0f;
                 if(!(ss >> mask)) mask = -1;
                 if(!(ss >> axis)) axis = 0;
+                if(!(ss >> xfer)) xfer = 0.0f;
+                if(!(ss >> mutedIn)) mutedIn = 0;
                 if(ri < 0 || ri >= synth::kMaxMatrixRules) continue;
                 auto &ru = parsedRules[(size_t)ri];
                 ru.enabled = true;
@@ -194,8 +198,10 @@ void KapibaraUI::loadModernState(const std::string &path)
                 ru.bandHi = hi;
                 ru.targetTrackId = tid;
                 ru.targetSlot = slot;
-                ru.maskSlot = int8_t(mask);
-                ru.maskAxis = uint8_t(axis);
+                ru.maskSlot = int8_t(clampi(mask, -1, synth::kMaxModSlots - 1));
+                ru.maskAxis = uint8_t(clampi(axis, 0, 4));
+                ru.transferCurve = clampf(xfer, -1.0f, 1.0f);
+                ru.muted = uint8_t(mutedIn != 0);
                 hasRules = true;
             }
             else if(tok == "mins")
