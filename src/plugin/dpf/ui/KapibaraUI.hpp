@@ -267,6 +267,10 @@ class KapibaraUI final : public KapibaraUIDrawing
     void enableModSource(synth::ModSource src);
     bool handleMatrixGridPress(float x, float y);
     bool handleMatrixGridDelete(float x, float y);
+    void drawMatrixRoutes(const Rect &r);
+    void drawXferCurve(const Rect &r, float curve);
+    bool handleMatrixRoutesPress(float x, float y);
+    bool onScroll(const ScrollEvent &ev) override;
 
     // osc/partialbank/KapibaraUIHarmonicEditor
     void drawPartialTableEditor(synth::SourceTrackParams &track);

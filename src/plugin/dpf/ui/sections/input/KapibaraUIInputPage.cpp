@@ -22,28 +22,69 @@ bool KapibaraUI::handlePageClick(float x, float y)
                 repaint();
                 return true;
             }
-        // Grid axis picker (open): pick an item, or click outside to dismiss.
+        // Grid axis / card picker (open): pick an item, or click outside to dismiss.
         if(gridPickerMode_ != 0)
         {
             for(size_t k = 0; k < gridPickerItemRects_.size(); ++k)
                 if(gridPickerItemRects_[k].contains(x, y))
                 {
                     const int idx = gridPickerPoolIdx_[k];
-                    if(gridPickerMode_ == 1) gridSources_.push_back(kGridSourcePool[idx]);
-                    else                     gridDests_.push_back(kGridDestPool[idx]);
+                    if(gridPickerMode_ == 1)      gridSources_.push_back(kGridSourcePool[idx]);
+                    else if(gridPickerMode_ == 2) gridDests_.push_back(kGridDestPool[idx]);
+                    else if(gridPickerMode_ == 3)
+                    {
+                        // Card source pick. -2 = staged "+ ROUTE": allocate only now,
+                        // so a dismissed picker never leaves a ghost rule behind.
+                        int ri = gridPickerRuleIdx_;
+                        if(ri == -2)
+                        {
+                            ri = -1;
+                            for(int i = 0; i < synth::kMaxMatrixRules; ++i)
+                                if(!rules_[(size_t)i].enabled) { ri = i; break; }
+                            if(ri >= 0)
+                            {
+                                auto &ru = rules_[(size_t)ri];
+                                ru = synth::MatrixRule {};
+                                ru.enabled = true;
+                                ru.dest = synth::ModDestination::Amp;
+                                if(const auto *t = currentTrack()) ru.targetTrackId = t->id;
+                                ru.depth = defaultModulationDepth(ru.dest);
+                            }
+                        }
+                        if(ri >= 0 && ri < synth::kMaxMatrixRules)
+                        {
+                            rules_[(size_t)ri].source = kCardSourcePool[idx];
+                            enableModSource(kCardSourcePool[idx]);
+                            selectedRule_ = ri;
+                            matrixRoutesScrollTo_ = ri;
+                            pushRule(ri);
+                        }
+                    }
+                    else if(gridPickerMode_ == 4 && gridPickerRuleIdx_ >= 0
+                            && gridPickerRuleIdx_ < synth::kMaxMatrixRules)
+                    {
+                        auto &ru = rules_[(size_t)gridPickerRuleIdx_];
+                        ru.dest = kCardDestPool[idx];
+                        if(std::abs(ru.depth) < 1.0e-6f)
+                            ru.depth = defaultModulationDepth(ru.dest);
+                        selectedRule_ = gridPickerRuleIdx_;
+                        pushRule(gridPickerRuleIdx_);
+                    }
                     gridPickerMode_ = 0;
+                    gridPickerRuleIdx_ = -1;
                     repaint();
                     return true;
                 }
             gridPickerMode_ = 0;
+            gridPickerRuleIdx_ = -1;
             repaint();
             return true;
         }
         // Handlers are gated by which view is showing so stale rects from a
         // hidden panel can't trigger phantom clicks. The grid lives in the
-        // toolbar-opened top-row MATRIX view (gridMode); the bottom collapsed
-        // panel hosts the modulator/amp-env editors (modMode).
-        const bool gridMode   = matrixViewOpen_;
+        // toolbar-opened top-row MATRIX view (gridMode = its GRID tab); the
+        // bottom collapsed panel hosts the modulator/amp-env editors (modMode).
+        const bool gridMode   = matrixViewOpen_ && matrixViewTab_ == 0;
         const bool modMode    = (bottomPanelMode_ == 0);
         const bool structMode = (bottomPanelMode_ == 1);
         if(matrixViewOpen_ && matrixViewCloseRect_.w > 0.0f && matrixViewCloseRect_.contains(x, y))
@@ -52,6 +93,16 @@ bool KapibaraUI::handlePageClick(float x, float y)
             repaint();
             return true;
         }
+        if(matrixViewOpen_)
+            for(int i = 0; i < 2; ++i)
+                if(matrixViewTabRects_[(size_t)i].contains(x, y))
+                {
+                    matrixViewTab_ = i;
+                    repaint();
+                    return true;
+                }
+        if(matrixViewOpen_ && matrixViewTab_ == 1 && handleMatrixRoutesPress(x, y))
+            return true;
         if(multibandEditorTrackId_ >= 0 && routeBoardRect_.contains(x, y))
         {
             multibandEditorTrackId_ = -1;

@@ -2,6 +2,25 @@
 
 START_NAMESPACE_DISTRHO
 
+bool KapibaraUI::onScroll(const ScrollEvent &ev)
+{
+        const float x = (static_cast<float>(ev.pos.getX()) - lbX_) / uiRenderScale_;
+        const float y = (static_cast<float>(ev.pos.getY()) - lbY_) / uiRenderScale_;
+        // Wheel scroll for the ROUTES card list. Never mid-drag: shifting card
+        // rects under an active gesture retargets it.
+        if(matrixViewOpen_ && matrixViewTab_ == 1 && dragTarget_ == DragTarget::None
+           && matrixRoutesListRect_.w > 0.0f && matrixRoutesListRect_.contains(x, y))
+        {
+            matrixRoutesScroll_ -= static_cast<float>(ev.delta.getY()) * 28.0f;
+            // Range is re-clamped in the draw pass; a rough clamp here keeps the
+            // value sane between frames.
+            matrixRoutesScroll_ = clampf(matrixRoutesScroll_, 0.0f, matrixRoutesMaxScroll_);
+            repaint();
+            return true;
+        }
+        return false;
+    }
+
 bool KapibaraUI::onMouse(const MouseEvent &ev)
 {
         const float x = (static_cast<float>(ev.pos.getX()) - lbX_) / uiRenderScale_;
@@ -119,27 +138,42 @@ bool KapibaraUI::onMouse(const MouseEvent &ev)
                 repaint();
                 return true;
             }
-            // Right-click a matrix grid node → clear that route.
-            if(handleMatrixGridDelete(x, y))
+            // Right-click a matrix grid node → clear that route. Gated to the
+            // GRID tab so stale cell rects can't fire under the ROUTES cards.
+            if(matrixViewOpen_ && matrixViewTab_ == 0 && handleMatrixGridDelete(x, y))
             {
                 repaint();
                 return true;
             }
             // Right-click a grid axis label → remove that source/destination row/col.
-            for(size_t s = 0; s < gridSrcLabelRects_.size() && s < gridSources_.size(); ++s)
-                if(gridSrcLabelRects_[s].contains(x, y))
-                {
-                    gridSources_.erase(gridSources_.begin() + long(s));
-                    repaint();
-                    return true;
-                }
-            for(size_t d = 0; d < gridDestLabelRects_.size() && d < gridDests_.size(); ++d)
-                if(gridDestLabelRects_[d].contains(x, y))
-                {
-                    gridDests_.erase(gridDests_.begin() + long(d));
-                    repaint();
-                    return true;
-                }
+            if(matrixViewOpen_ && matrixViewTab_ == 0)
+            {
+                for(size_t s = 0; s < gridSrcLabelRects_.size() && s < gridSources_.size(); ++s)
+                    if(gridSrcLabelRects_[s].contains(x, y))
+                    {
+                        gridSources_.erase(gridSources_.begin() + long(s));
+                        repaint();
+                        return true;
+                    }
+                for(size_t d = 0; d < gridDestLabelRects_.size() && d < gridDests_.size(); ++d)
+                    if(gridDestLabelRects_[d].contains(x, y))
+                    {
+                        gridDests_.erase(gridDests_.begin() + long(d));
+                        repaint();
+                        return true;
+                    }
+            }
+            // Right-click a ROUTES card → clear that rule (grid-consistent).
+            if(matrixViewOpen_ && matrixViewTab_ == 1)
+                for(const auto &h : matrixCardHits_)
+                    if(h.kind == MatrixCardHit::Row && h.rect.contains(x, y)
+                       && h.rule >= 0 && h.rule < synth::kMaxMatrixRules)
+                    {
+                        rules_[(size_t)h.rule] = synth::MatrixRule {};
+                        pushRule(h.rule);
+                        repaint();
+                        return true;
+                    }
             // Right-click a strip MOD slot → pick / change the modulation source
             for(const auto &hit : modHits_)
                 if(hit.rect.contains(x, y))

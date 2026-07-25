@@ -13,3 +13,12 @@
     Rect bottomCollapseArrowRect_ {};
     // MATRIX view (the grid): replaces the top editor row while open.
     bool matrixViewOpen_ = false;
+    int matrixViewTab_ = 0;          // 0 = GRID, 1 = ROUTES (card list)
+    std::array<Rect, 2> matrixViewTabRects_ {};
+    Rect matrixMoreRect_ {};         // "N more >" chip on the GRID tab
+    float matrixRoutesScroll_ = 0.0f; // ROUTES card list scroll offset (px)
+    float matrixRoutesMaxScroll_ = 0.0f; // computed at draw (drag/wheel clamp range)
+    int matrixRoutesScrollTo_ = -1;   // rule index to scroll into view next draw
+    Rect matrixRoutesScrollbarRect_ {};
+    Rect matrixRoutesAddRect_ {};
+    Rect matrixRoutesListRect_ {};    // card list area (wheel target, chip drop zone)

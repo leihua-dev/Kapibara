@@ -61,6 +61,22 @@ constexpr synth::ModDestination kGridDestPool[] = {
     synth::ModDestination::PitchOct, synth::ModDestination::PitchSem, synth::ModDestination::PitchFine
 };
 
+// Wider pools for the ROUTES card pickers (no taken-filter there).
+constexpr synth::ModSource kCardSourcePool[] = {
+    synth::ModSource::Lfo1, synth::ModSource::Lfo2, synth::ModSource::Lfo3, synth::ModSource::Lfo4,
+    synth::ModSource::Env1, synth::ModSource::Env2, synth::ModSource::Env3, synth::ModSource::Env4,
+    synth::ModSource::Velocity, synth::ModSource::KeyTrack, synth::ModSource::Random, synth::ModSource::Chaos,
+    synth::ModSource::Shape, synth::ModSource::Adsr1, synth::ModSource::Adsr2, synth::ModSource::Adsr3,
+    synth::ModSource::Adsr4, synth::ModSource::Unit
+};
+constexpr synth::ModDestination kCardDestPool[] = {
+    synth::ModDestination::Amp, synth::ModDestination::Freq, synth::ModDestination::Phase,
+    synth::ModDestination::MetaMorph, synth::ModDestination::MetaWarp, synth::ModDestination::MetaPan,
+    synth::ModDestination::TrackGain, synth::ModDestination::TrackPan,
+    synth::ModDestination::PitchOct, synth::ModDestination::PitchSem, synth::ModDestination::PitchFine,
+    synth::ModDestination::PitchCrs, synth::ModDestination::DecayTime, synth::ModDestination::SpectralDecay
+};
+
 struct StripGroup
 {
     std::string name;
@@ -136,6 +152,19 @@ struct OscModDiagHit
     int slot = -1;
 };
 
+// One clickable zone on a ROUTES card → (rule index, control kind).
+struct MatrixCardHit
+{
+    enum Kind : uint8_t
+    {
+        Row = 0, Mute, Source, Dest, Depth, Delete, Xfer,
+        Weight, BandLo, BandHi, Mask, MaskAxis, Target
+    };
+    Rect rect {};
+    int rule = -1;
+    uint8_t kind = Row;
+};
+
 struct MatrixCell
 {
     Rect rect;
@@ -157,7 +186,7 @@ enum class DragTarget
     MetaFrameScan, MetaWaveform, MetaHarmonicRatio, MetaHarmonicAmp, MetaHarmonicPhase,
     PartialTableAmp, PartialTablePhase,
     MatrixEnvCurve, MatrixEnvSeg, ModEnvRate, AmpAdsrSeg, HarmonicEditor, MetaTimeEditor, MetaSpectrumEditor,
-    RuleDepth, RuleBandLo, RuleBandHi,
+    RuleDepth, RuleBandLo, RuleBandHi, RuleXfer, MatrixRoutesScroll,
     ModDepth,
     ChaosRate, ChaosAmount, ShapePhase, ShapeRho, ShapeUp, ShapeDown,
     EqLow, EqMid, EqHigh, EqDrive,

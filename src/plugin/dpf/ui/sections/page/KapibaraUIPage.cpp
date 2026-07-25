@@ -8,8 +8,8 @@ void KapibaraUI::drawCurrentPage()
                           static_cast<float>(uiH()) - 172.0f };
         drawPanel(page, rgba(0x10171bff), rgba(0x293842ff));
 
-        // Grid rects only exist while the MATRIX view draws them; ungated handlers
-        // (right-click axis removal etc.) must not see stale ones.
+        // Grid / ROUTES rects only exist while the MATRIX view draws them; ungated
+        // handlers (right-click axis removal etc.) must not see stale ones.
         if(!matrixViewOpen_)
         {
             gridSrcLabelRects_.clear();
@@ -18,7 +18,16 @@ void KapibaraUI::drawCurrentPage()
             gridAddDstRect_ = {};
             matrixGridCells_.clear();
             ruleWeightRect_ = {}; ruleMaskRect_ = {}; ruleMaskAxisRect_ = {};
+            ruleXferRect_ = {}; ruleEditRect_ = {};
+            matrixMoreRect_ = {};
+            matrixViewTabRects_.fill({});
+            matrixViewCloseRect_ = {};
+            matrixCardHits_.clear();
+            matrixRoutesScrollbarRect_ = {};
+            matrixRoutesAddRect_ = {};
+            matrixRoutesListRect_ = {};
             gridPickerMode_ = 0;
+            gridPickerRuleIdx_ = -1;
         }
 
         // New layout:

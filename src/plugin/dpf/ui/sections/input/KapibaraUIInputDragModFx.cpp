@@ -39,6 +39,20 @@ bool KapibaraUI::applyModFxLayoutDragValue(float x, float y)
                 break;
             }
             case DragTarget::RuleDepth: rule.depth = knobNorm() * 24.0f - 12.0f; pushRuleOnly(); break;
+            case DragTarget::RuleXfer:
+                // Serum-style bend: drag up = convex, down = concave.
+                rule.transferCurve = clampf(dragStartDepth_ + (dragStartY_ - y) * uiRenderScale_ / 120.0f,
+                                            -1.0f, 1.0f);
+                pushRuleOnly();
+                break;
+            case DragTarget::MatrixRoutesScroll:
+                // Absolute thumb position within the scrollbar groove.
+                if(matrixRoutesScrollbarRect_.h > 1.0f)
+                    matrixRoutesScroll_ = clampf((y - matrixRoutesScrollbarRect_.y)
+                                                     / matrixRoutesScrollbarRect_.h,
+                                                 0.0f, 1.0f)
+                                          * matrixRoutesMaxScroll_;
+                break;
             case DragTarget::ModDepth:
                 rule.depth = clampf(dragStartDepth_ + (dragStartY_ - y) * dragDepthLimit_ / 80.0f,
                                     -dragDepthLimit_, dragDepthLimit_);
