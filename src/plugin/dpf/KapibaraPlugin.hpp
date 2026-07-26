@@ -61,6 +61,8 @@ class KapibaraPlugin final : public Plugin
     synth::ModSlotParams modSlotParams(int index) const;
     synth::MatrixRule matrixRule(int index) const;
     synth::MaskGroup maskGroup(int index) const;
+    // Real lane count of a mask group's fan, as resolved by the engine.
+    int maskGroupLanes(int index) const;
     synth::ChaosParams chaosParams() const;
     synth::ShapeSourceParams shapeSourceParams() const;
     synth::MasterEffectsParams effectsParams() const;

@@ -45,6 +45,9 @@ struct RenderSnapshot
     std::array<ModSlotParams, kMaxModSlots> modSlotParams {};
     std::array<MatrixRule, kMaxMatrixRules> matrixRules {};
     std::array<MaskGroup, kMaxMaskGroups> maskGroups {};
+    // Lane counts + baked lane waveforms for the mask-group fans. Shared, not
+    // copied: rebuilt only when a group's lane count or wavetable changes.
+    std::shared_ptr<const MaskWaveBank> maskWaves;
     ChaosParams chaosParams {};
     ShapeSourceParams shapeSourceParams {};
     MasterEffectsParams effectsParams {};
@@ -114,6 +117,9 @@ class SynthCore
     void setMatrixRule(int idx, const MatrixRule &r);
     void setMaskGroup(int idx, const MaskGroup &g);
     MaskGroup getMaskGroup(int idx) const;
+    // How many real lanes group `idx`'s fan currently spans (16 for the discrete
+    // slots, one per partial for a family). UI readout only.
+    int getMaskGroupLanes(int idx) const;
     void setMatrixRuleWithUndo(int idx, const MatrixRule &r);
     MatrixRule getMatrixRule(int idx) const;
     void setSeedMatrixRule(uint64_t seedPresetId, int idx, const MatrixRule &r);
@@ -173,6 +179,7 @@ class SynthCore
     void rebuildTrackRenderStateNoLock(bool rebakeTables);
     void updateMetaTrackRenderParamsNoLock(uint32_t trackId);
     void publishSnapshotNoLock();
+    void rebuildMaskWaveBankNoLock();
     void pushUndoSnapshotNoLock();
     void applyOutputSafetyBuffer(float *left, float *right, int numSamples);
     Voice *allocateVoice(int note);
@@ -188,6 +195,23 @@ class SynthCore
     std::array<ModSlotParams, kMaxModSlots> modSlotParams_ {};
     std::array<MatrixRule, kMaxMatrixRules> matrixRules {};
     std::array<MaskGroup, kMaxMaskGroups> maskGroups_ {};
+    // Published mask-group fan bank + the key that decides when it must be
+    // rebuilt. Frames are cached per group so a lane-count change costs a
+    // pointer copy instead of a rebake. See rebuildMaskWaveBankNoLock.
+    struct MaskWaveKey
+    {
+        uint8_t waveSource = 0;
+        uint32_t trackId = 0;
+        const void *framesData = nullptr;  // COW identity of the frame array
+        int frameCount = 0;
+        int lanes = kMaskGroupSlots;
+    };
+    std::shared_ptr<const MaskWaveBank> maskWaveBank_;
+    std::array<MaskWaveKey, kMaxMaskGroups> maskWaveKey_ {};
+    std::array<std::shared_ptr<const MaskWaveFrames>, kMaxMaskGroups> maskWaveFrames_ {};
+    // Mirror of the bank's lane counts for the UI readout, which polls it every
+    // repaint — going through paramMutex for that would put a lock in a draw path.
+    std::array<std::atomic<int>, kMaxMaskGroups> maskGroupLanes_ {};
     ChaosParams chaosParams {};
     ShapeSourceParams shapeSourceParams {};
     MasterEffectsParams effectsParams {};

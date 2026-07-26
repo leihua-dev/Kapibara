@@ -442,30 +442,132 @@ bool KapibaraUI::handleMatrixRoutesPress(float x, float y)
         return false;
     }
 
-// 3D fan preview: the base MOD-slot curve stacked lane-behind-lane with the
-// group's successive rate/phase offsets applied — the wavetable-view feel.
-void KapibaraUI::drawMaskGroupPreview(const Rect &r, const synth::MaskGroup &g)
+// Resolve the wavetable a group's fan reads its lane shapes from. Both meta
+// oscillators and partial banks carry a frame table; the engine bakes whichever
+// one this returns, so the preview must agree on the choice.
+bool KapibaraUI::maskGroupWaveFrames(const synth::MaskGroup &g,
+                                     const synth::WavetableFrameStorage *&frames, int &count) const
+{
+        frames = nullptr;
+        count = 0;
+        if(g.waveSource == 0 || g.waveTrackId == 0)
+            return false;
+        for(const auto &t : generator_.tracks)
+        {
+            if(t.id != g.waveTrackId)
+                continue;
+            if(t.type == synth::SourceTrackType::MetaOscillator)
+            {
+                frames = &t.metaOsc.frames;
+                count = t.metaOsc.frameCount;
+            }
+            else if(t.type == synth::SourceTrackType::PartialBank)
+            {
+                frames = &t.partialBank.frames;
+                count = t.partialBank.frameCount;
+            }
+            break;
+        }
+        // The TRUE frame count, not the lane cap: the caller has to subsample the
+        // whole table exactly the way the engine does, which needs the real size.
+        count = clampi(count, 0, synth::kMaxWavetableFrames);
+        if(frames == nullptr || !frames->data || count <= 0)
+        {
+            frames = nullptr;
+            count = 0;
+            return false;
+        }
+        return true;
+    }
+
+// Mirror of SynthCore's lane bake, at preview resolution. Rebuilt only when the
+// table's copy-on-write identity changes — sampleFrame() sums up to 1024 sines
+// per point, which is far too expensive to run per lane per repaint.
+void KapibaraUI::ensureMaskPreviewLut(const synth::MaskGroup &g)
+{
+        const synth::WavetableFrameStorage *frames = nullptr;
+        int count = 0;
+        if(!maskGroupWaveFrames(g, frames, count))
+        {
+            maskPreviewLut_.clear();
+            maskPreviewFramesKey_ = nullptr;
+            maskPreviewTrackKey_ = 0;
+            maskPreviewFrameCount_ = 0;
+            return;
+        }
+        const void *key = static_cast<const void *>(frames->data.get());
+        if(key == maskPreviewFramesKey_ && g.waveTrackId == maskPreviewTrackKey_
+           && count == maskPreviewFrameCount_)
+            return;
+        maskPreviewFramesKey_ = key;
+        maskPreviewTrackKey_ = g.waveTrackId;
+        maskPreviewFrameCount_ = count;
+        // Same subsampling AND the same band limit as SynthCore's lane bake — a
+        // table with more frames than lanes must show the frames that actually
+        // play, spread over the whole table, not just its first 64.
+        const int baked = std::min(count, synth::kMaskFanLanes);
+        maskPreviewLut_.assign((size_t)baked, {});
+        float peak = 0.0f;
+        for(int f = 0; f < baked; ++f)
+        {
+            const int src = baked > 1 ? (f * (count - 1)) / (baked - 1) : 0;
+            peak = std::max(peak, synth::bakeModWaveLut((*frames)[(size_t)src],
+                                                        maskPreviewLut_[(size_t)f].data(),
+                                                        kMaskPreviewLut));
+        }
+        if(peak <= 1.0e-6f)
+        {
+            maskPreviewLut_.clear();  // matches the engine's fall back to the MOD curve
+            return;
+        }
+        const float gain = 1.0f / peak;
+        for(auto &lut : maskPreviewLut_)
+            for(auto &v : lut)
+                v *= gain;
+    }
+
+int KapibaraUI::maskGroupLaneCount(int gi) const
+{
+        if(const auto *p = plugin())
+            return clampi(p->maskGroupLanes(gi), 2, synth::kMaskFanLanes);
+        return synth::kMaskGroupSlots;
+    }
+
+// 3D fan preview: the base shape stacked lane-behind-lane with the group's
+// successive rate/phase offsets applied — the wavetable-view feel. With a
+// wavetable base each lane draws its OWN frame, so the stack really is the
+// table morphing across the fan.
+void KapibaraUI::drawMaskGroupPreview(const Rect &r, const synth::MaskGroup &g, int lanes)
 {
         beginPath();
         roundedRect(r.x, r.y, r.w, r.h, 2.0f);
         fillColor(DesignTokens::appBackground().withAlpha(0.35f));
         fill();
 
+        ensureMaskPreviewLut(g);
+        const int waveFrames = int(maskPreviewLut_.size());
         const auto &mp = modSlots_[(size_t)clampi(int(g.baseSlot), 0, synth::kMaxModSlots - 1)];
-        constexpr int kLanes = 12;
+        // Draw every lane when the fan is small enough to read; beyond that step
+        // through it so a 64-partial family still shows its shape.
+        const int drawLanes = clampi(lanes, 2, 24);
         constexpr int kSteps = 48;
-        const float perspH = std::min(r.h * 0.45f, float(kLanes) * 6.0f);
+        const float perspH = std::min(r.h * 0.45f, float(drawLanes) * 6.0f);
         const float waveH = (r.h - perspH - 14.0f) * 0.5f;
         scissor(r.x + 2.0f, r.y + 2.0f, r.w - 4.0f, r.h - 4.0f);
-        for(int L = kLanes - 1; L >= 0; --L)  // back to front; lane 0 = fan start
+        for(int L = drawLanes - 1; L >= 0; --L)  // back to front; lane 0 = fan start
         {
-            const float x = float(L) / float(kLanes - 1);
+            const float x = float(L) / float(drawLanes - 1);
             const float xb = synth::ModMatrix::bend01(x, g.spreadCurve);
             const float base = r.y + r.h - 8.0f - waveH - perspH * x;
             const float amp = waveH * (1.0f - 0.40f * x);
             const float xL = r.x + 8.0f + x * 16.0f;
             const float xR = r.x + r.w - 8.0f - (1.0f - x) * 4.0f;
             const float alpha = 0.30f + 0.70f * (1.0f - x);
+            // This lane's frame position in the table (same bend the engine uses).
+            const float fpos = xb * float(std::max(0, waveFrames - 1));
+            const int fa = clampi(int(fpos), 0, std::max(0, waveFrames - 1));
+            const int fb = std::min(fa + 1, std::max(0, waveFrames - 1));
+            const float ft = fpos - float(fa);
             // Faint per-lane baseline carries the perspective.
             strokeLine(xL, base, xR, base, DesignTokens::divider().withAlpha(0.5f * alpha), 0.8f);
             beginPath();
@@ -474,10 +576,25 @@ void KapibaraUI::drawMaskGroupPreview(const Rect &r, const synth::MaskGroup &g)
                 const float s01 = float(sIdx) / float(kSteps);
                 const double ph = double(s01) * (1.0 + double(xb) * double(g.freqSpread))
                                   + double(xb) * double(g.phaseSpread);
-                const float v = synth::pointCurveEval(mp.points.data(), mp.pointCount,
-                                                      float(ph - std::floor(ph)));
+                const float t01 = float(ph - std::floor(ph));
+                float v;  // bipolar -1..+1
+                if(waveFrames > 0)
+                {
+                    const float pos = t01 * float(kMaskPreviewLut);
+                    const int k = std::min(int(pos), kMaskPreviewLut - 1);
+                    const float kt = pos - float(k);
+                    const auto &la = maskPreviewLut_[(size_t)fa];
+                    const auto &lb = maskPreviewLut_[(size_t)fb];
+                    const float a = la[(size_t)k] + (la[(size_t)k + 1] - la[(size_t)k]) * kt;
+                    const float b = lb[(size_t)k] + (lb[(size_t)k + 1] - lb[(size_t)k]) * kt;
+                    v = a + (b - a) * ft;
+                }
+                else
+                {
+                    v = synth::pointCurveEval(mp.points.data(), mp.pointCount, t01) * 2.0f - 1.0f;
+                }
                 const float px = xL + s01 * (xR - xL);
-                const float py = base - (v - 0.5f) * 2.0f * amp;
+                const float py = base - v * amp;
                 if(sIdx == 0) moveTo(px, py); else lineTo(px, py);
             }
             strokeColor((L == 0 ? DesignTokens::accentCyan() : DesignTokens::accentCyan().withAlpha(alpha)));
@@ -512,17 +629,51 @@ void KapibaraUI::drawMaskGroups(const Rect &r)
         }
         groupEnableRect_ = { r.x + 4.0f * 34.0f + 8.0f, r.y, 36.0f, 16.0f };
         drawButton(groupEnableRect_, "ON", g.enabled);
-        char bl[16];
-        std::snprintf(bl, sizeof(bl), "BASE MOD%d", clampi(int(g.baseSlot), 0, synth::kMaxModSlots - 1) + 1);
-        groupBaseRect_ = { groupEnableRect_.x + 42.0f, r.y, 86.0f, 16.0f };
-        drawButton(groupBaseRect_, bl, false);
+        // One chip cycles the whole base-shape pool: MOD1..MOD8, then every track
+        // that owns a wavetable. A wavetable replaces the lane SHAPES only — the
+        // MOD slot still supplies the fan's rate.
+        char bl[40];
+        const int baseSlot = clampi(int(g.baseSlot), 0, synth::kMaxModSlots - 1);
+        if(g.waveSource != 0)
+        {
+            // The MOD slot is still the rate reference, so name it — right-click
+            // advances it (see onMouse right-click handling).
+            const int ti = trackIndexOfId(g.waveTrackId);
+            std::snprintf(bl, sizeof(bl), "WT:%s @M%d",
+                          ti >= 0 ? generator_.tracks[(size_t)ti].name.c_str() : "?",
+                          baseSlot + 1);
+        }
+        else
+        {
+            std::snprintf(bl, sizeof(bl), "BASE MOD%d", baseSlot + 1);
+        }
+        groupBaseRect_ = { groupEnableRect_.x + 42.0f, r.y, 132.0f, 16.0f };
+        drawButton(groupBaseRect_, bl, g.waveSource != 0);
+
+        const int lanes = maskGroupLaneCount(selectedMaskGroup_);
+        char ll[24];
+        std::snprintf(ll, sizeof(ll), "%d LANES", lanes);
+        useMonoFont();
+        uiFontSize(8.5f);
+        textAlign(ALIGN_RIGHT | ALIGN_MIDDLE);
+        fillColor(DesignTokens::accentCyan().withAlpha(0.85f));
+        text(r.x + r.w - 2.0f, r.y + 8.0f, ll, nullptr);
+
         useUiFont();
         uiFontSize(7.5f);
         textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
         fillColor(DesignTokens::textSecondary().withAlpha(0.6f));
-        text(groupBaseRect_.x + groupBaseRect_.w + 10.0f, r.y + 8.0f,
-             "edit the base curve in MODULATORS below - drag FREQ/PHASE/CURVE to fan the lanes",
-             nullptr);
+        {
+            const float hintX = groupBaseRect_.x + groupBaseRect_.w + 10.0f;
+            const float hintW = std::max(0.0f, r.x + r.w - 62.0f - hintX);
+            scissor(hintX, r.y, hintW, 16.0f);
+            text(hintX, r.y + 8.0f,
+                 g.waveSource != 0
+                     ? "each lane plays its own frame - right-click BASE to move the rate slot"
+                     : "edit the base curve in MODULATORS below - drag FREQ/PHASE/CURVE to fan",
+                 nullptr);
+            resetScissor();
+        }
 
         const Rect body { r.x, r.y + 22.0f, r.w, r.h - 22.0f };
         const float leftW = body.w * 0.54f;
@@ -530,7 +681,7 @@ void KapibaraUI::drawMaskGroups(const Rect &r)
         // --- Left: 3D fan preview + spread params ---------------------------
         constexpr float paramH = 18.0f;
         groupPreviewRect_ = { body.x, body.y, leftW - 12.0f, body.h - paramH - 6.0f };
-        drawMaskGroupPreview(groupPreviewRect_, g);
+        drawMaskGroupPreview(groupPreviewRect_, g, lanes);
         const float py = body.y + body.h - paramH;
         const float pw = (leftW - 12.0f - 12.0f) / 3.0f;
         const auto paramChip = [&](Rect &rc, float px, const char *label, float value) {
@@ -697,9 +848,59 @@ bool KapibaraUI::handleMaskGroupsPress(float x, float y)
         }
         if(groupBaseRect_.w > 0.0f && groupBaseRect_.contains(x, y))
         {
-            g.baseSlot = int8_t((clampi(int(g.baseSlot), 0, synth::kMaxModSlots - 1) + 1)
-                                % synth::kMaxModSlots);
-            selectedMatrixModSlot_ = int(g.baseSlot);  // show it in MODULATORS below
+            // Cycle MOD1..MOD8 -> every wavetable-owning track -> back to MOD1.
+            const auto hasTable = [&](const synth::SourceTrackParams &t) {
+                return (t.type == synth::SourceTrackType::MetaOscillator
+                        && t.metaOsc.frameCount > 0)
+                       || (t.type == synth::SourceTrackType::PartialBank
+                           && t.partialBank.frameCount > 0);
+            };
+            const int n = int(generator_.tracks.size());
+            const auto nextTableTrack = [&](int from) {
+                for(int i = from; i < n; ++i)
+                    if(hasTable(generator_.tracks[(size_t)i]))
+                        return i;
+                return -1;
+            };
+            if(g.waveSource == 0)
+            {
+                const int next = clampi(int(g.baseSlot), 0, synth::kMaxModSlots - 1) + 1;
+                if(next < synth::kMaxModSlots)
+                {
+                    g.baseSlot = int8_t(next);
+                    selectedMatrixModSlot_ = int(g.baseSlot);  // show it in MODULATORS below
+                }
+                else
+                {
+                    const int ti = nextTableTrack(0);
+                    if(ti >= 0)
+                    {
+                        g.waveSource = 1;
+                        g.waveTrackId = generator_.tracks[(size_t)ti].id;
+                    }
+                    else
+                    {
+                        g.baseSlot = 0;
+                        selectedMatrixModSlot_ = 0;
+                    }
+                }
+            }
+            else
+            {
+                const int cur = trackIndexOfId(g.waveTrackId);
+                const int ti = nextTableTrack(cur < 0 ? 0 : cur + 1);
+                if(ti >= 0)
+                {
+                    g.waveTrackId = generator_.tracks[(size_t)ti].id;
+                }
+                else
+                {
+                    g.waveSource = 0;
+                    g.waveTrackId = 0;
+                    g.baseSlot = 0;
+                    selectedMatrixModSlot_ = 0;
+                }
+            }
             pushGroup(selectedMaskGroup_);
             repaint();
             return true;

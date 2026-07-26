@@ -26,6 +26,10 @@ void ModMatrix::reset()
 {
     slotPhase_.fill(0.0f);
     slotValue_.fill(0.0f);
+    // Mask-group fans are global, not per-voice: a reset must put every lane
+    // back on a common phase or the next note inherits the old scatter.
+    for(auto &g : lanePhase_) g.fill(0.0);
+    laneCount_.fill(0);
     chaosValue_ = 0.0f;
     chaosTarget_ = 0.0f;
     chaosCounter_ = 0;
@@ -101,15 +105,75 @@ void ModMatrix::advanceControl(int samples)
         const int bs = std::clamp(int(g.baseSlot), 0, kMaxModSlots - 1);
         const double dt = double(std::max(0.0f, slotParams_[(size_t)bs].rateHz))
                           * double(samples) / sampleRate_;
+        // Lane count comes from the bank: 16 for the discrete slots, one lane per
+        // element for a partial family. Latched here so evaluateForVoice cannot
+        // read a different count than the one these phases were advanced with.
+        const int lanes = std::clamp(waveBank_ ? waveBank_->group[(size_t)gi].lanes
+                                               : kMaskGroupSlots,
+                                     2, kMaskFanLanes);
+        const int prevLanes = laneCount_[(size_t)gi];
+        laneCount_[(size_t)gi] = lanes;
         auto &lp = lanePhase_[(size_t)gi];
         auto &lx = laneXb_[(size_t)gi];
-        for(int k = 0; k < kFanLanes; ++k)
+
+        // The fan just changed width (family toggled, partial count edited...).
+        // Lane k now sits at a different fan position, and lanes that were never
+        // active still hold phase 0 — leaving them would split the fan into an
+        // old half and a frozen half that never reconverge. Resample the old
+        // fan's phases onto the new lane grid so the shape carries over.
+        if(prevLanes >= 2 && prevLanes != lanes)
         {
-            const float xb = bend01(float(k) / float(kFanLanes - 1), g.spreadCurve);
-            lx[(size_t)k] = xb;
-            const double p = lp[(size_t)k] + dt * (1.0 + double(xb) * double(g.freqSpread));
+            std::array<double, kMaskFanLanes> resampled {};
+            for(int k = 0; k < lanes; ++k)
+            {
+                const int src = int(float(k) / float(lanes - 1) * float(prevLanes - 1) + 0.5f);
+                resampled[(size_t)k] = lp[(size_t)std::clamp(src, 0, prevLanes - 1)];
+            }
+            for(int k = 0; k < lanes; ++k)
+                lp[(size_t)k] = resampled[(size_t)k];
+        }
+
+        // With no rate spread the lanes have no reason to diverge — one LFO is
+        // exactly what the preview draws and what the user asked for. Free
+        // accumulators alone would keep whatever scatter an earlier spread drag
+        // left behind forever, so pull them back onto lane 0. Smoothly: a snap
+        // would click, and this way lowering FREQ SPRD visibly gathers the fan.
+        if(std::abs(g.freqSpread) < 1.0e-4f)
+        {
+            constexpr double kRelock = 0.02;  // ~33 ms at a 32-sample control block
+            const double ref = lp[0];
+            for(int k = 1; k < lanes; ++k)
+            {
+                double d = lp[(size_t)k] - ref;
+                d -= std::floor(d + 0.5);  // shortest signed distance around the circle
+                const double p = lp[(size_t)k] - d * kRelock;
+                lp[(size_t)k] = p - std::floor(p);
+            }
+        }
+        // The bent fan positions depend only on the curve and the lane count, and
+        // bend01 is a pow() — rebuild them when they actually change, not 64×4
+        // times per control block.
+        if(lanes != xbLanes_[(size_t)gi] || g.spreadCurve != xbCurve_[(size_t)gi])
+        {
+            for(int k = 0; k < lanes; ++k)
+                lx[(size_t)k] = bend01(float(k) / float(lanes - 1), g.spreadCurve);
+            xbLanes_[(size_t)gi] = lanes;
+            xbCurve_[(size_t)gi] = g.spreadCurve;
+        }
+        for(int k = 0; k < lanes; ++k)
+        {
+            const double p = lp[(size_t)k]
+                             + dt * (1.0 + double(lx[(size_t)k]) * double(g.freqSpread));
             lp[(size_t)k] = p - std::floor(p);
         }
+
+        // Freeze this block's lane outputs. Everything laneValue reads is fixed
+        // for the block, and evaluateForVoice would otherwise redo this work
+        // once per partial per voice — up to millions of times a second on a
+        // wide family fan, for at most 64 distinct answers.
+        auto &lv = laneVal_[(size_t)gi];
+        for(int k = 0; k < lanes; ++k)
+            lv[(size_t)k] = laneValue(gi, g, k);
     }
 
     for(int i = 0; i < kMaxModSlots; ++i)
@@ -435,7 +499,7 @@ void ModMatrix::evaluateForVoice(MatrixVoiceOutput &out,
             for(int i = begin; i < end; ++i)
             {
                 const float x = end - begin > 1 ? float(i - begin) / float(end - begin - 1) : 0.0f;
-                applyDest(g.familyDest, i, g.familyDepth * maskGroupLane(gi, g, x));
+                applyDest(g.familyDest, i, g.familyDepth * maskGroupLane(gi, x));
             }
         }
         else
@@ -451,7 +515,7 @@ void ModMatrix::evaluateForVoice(MatrixVoiceOutput &out,
                 int begin, end;
                 if(!resolveRange(t.targetTrackId, begin, end))
                     continue;
-                const float v = t.depth * maskGroupLane(gi, g, float(k) / float(kMaskGroupSlots - 1));
+                const float v = t.depth * maskGroupLane(gi, float(k) / float(kMaskGroupSlots - 1));
                 for(int i = begin; i < end; ++i)
                     applyDest(t.dest, i, v);
             }

@@ -454,6 +454,61 @@ void bakePartialTableCache(const WavetablePartialSlot &src, WavetablePartialRend
 }
 } // namespace
 
+float bakeModWaveLut(const WavetableFrame &frame, float *out, int lutSize)
+{
+    if(out == nullptr || lutSize <= 0)
+        return 0.0f;
+
+    float peak = 0.0f;
+    if(frame.useImportedWaveform && frame.waveform)
+    {
+        // Box-average each bin instead of point-sampling: decimating 2048 -> 128
+        // by picking every 16th sample would fold the waveform's top octaves
+        // straight into the modulation band.
+        const auto &wave = *frame.waveform;
+        for(int k = 0; k < lutSize; ++k)
+        {
+            const int lo = (k * kWavetableSize) / lutSize;
+            const int hi = std::max(lo + 1, ((k + 1) * kWavetableSize) / lutSize);
+            double acc = 0.0;
+            for(int s = lo; s < hi; ++s)
+                acc += double(wave[(size_t)s]);
+            out[k] = float(acc / double(hi - lo));
+            peak = std::max(peak, std::abs(out[k]));
+        }
+    }
+    else
+    {
+        // Band limit is tied to the LUT the caller asked for, not a constant:
+        // at `lutSize` points anything at or above lutSize/2 folds back with an
+        // inverted sign, so a fixed limit would make a smaller LUT render a
+        // different waveform than a larger one from the same frame.
+        const int limit = std::min(64, std::max(1, lutSize / 2 - 1));
+        // Collect the live harmonics once — the array is 1024 slots wide but a
+        // drawn table usually fills a handful, and this loop runs per LUT point.
+        struct Partial { float ratio, amp, phase; };
+        std::vector<Partial> active;
+        active.reserve(64);
+        for(const auto &h : frame.harmonics)
+        {
+            if(h.amp <= 0.0f || h.ratio <= 0.0f || h.ratio > float(limit) + 0.001f)
+                continue;
+            active.push_back(Partial { h.ratio, h.amp, h.phase });
+        }
+        for(int k = 0; k < lutSize; ++k)
+        {
+            const float phase = kTwoPi * float(k) / float(lutSize);
+            float v = 0.0f;
+            for(const auto &p : active)
+                v += p.amp * std::sin(phase * p.ratio + p.phase);
+            out[k] = v;
+            peak = std::max(peak, std::abs(v));
+        }
+    }
+    out[lutSize] = out[0];
+    return peak;
+}
+
 WavetableFrameStorage::WavetableFrameStorage(const WavetableFrameStorage &other)
 {
     data = other.data;

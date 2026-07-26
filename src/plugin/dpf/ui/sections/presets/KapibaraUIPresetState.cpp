@@ -100,14 +100,14 @@ void KapibaraUI::saveModernState(const std::string &path)
             // Persist by CONTENT, not by enabled — the ON toggle is a bypass, so
             // gating the write on it would silently discard a configured group's
             // whole setup once the user bypasses it.
-            bool hasContent = g.enabled || g.family != 0;
+            bool hasContent = g.enabled || g.family != 0 || g.waveSource != 0;
             for(const auto &t : g.targets)
                 if(t.enabled) { hasContent = true; break; }
             if(!hasContent) continue;
             out << "mgrp " << gi << ' ' << int(g.baseSlot) << ' ' << g.freqSpread << ' '
                 << g.phaseSpread << ' ' << g.spreadCurve << ' ' << int(g.family) << ' '
                 << int(g.familyDest) << ' ' << g.familyTrackId << ' ' << g.familyDepth << ' '
-                << int(g.enabled) << "\n";
+                << int(g.enabled) << ' ' << int(g.waveSource) << ' ' << g.waveTrackId << "\n";
             for(int k = 0; k < synth::kMaskGroupSlots; ++k)
             {
                 const auto &t = g.targets[(size_t)k];
@@ -211,11 +211,18 @@ void KapibaraUI::loadModernState(const std::string &path)
                 int gi, base, family, fdest; unsigned ftid; float fs, ps, sc, fdepth;
                 if(!(ss >> gi >> base >> fs >> ps >> sc >> family >> fdest >> ftid >> fdepth))
                     continue;
-                int en = 1;
-                if(!(ss >> en)) en = 1;  // lines written before the field existed
+                // Optional tail fields, newest last. Each needs its own re-default:
+                // once one >> fails the stream stays in fail state AND writes 0.
+                int en = 1, wsrc = 0;
+                unsigned wtid = 0;
+                if(!(ss >> en)) en = 1;      // lines written before the field existed
+                if(!(ss >> wsrc)) wsrc = 0;
+                if(!(ss >> wtid)) wtid = 0;
                 if(gi < 0 || gi >= synth::kMaxMaskGroups) continue;
                 auto &g = parsedGroups[(size_t)gi];
                 g.enabled = (en != 0);
+                g.waveSource = uint8_t(wsrc != 0);
+                g.waveTrackId = wtid;
                 g.baseSlot = int8_t(clampi(base, 0, synth::kMaxModSlots - 1));
                 g.freqSpread = clampf(fs, -1.0f, 1.0f);
                 g.phaseSpread = clampf(ps, -1.0f, 1.0f);

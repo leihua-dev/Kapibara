@@ -430,6 +430,16 @@ struct SourceGenParams
     RenderQualityMode renderQuality = RenderQualityMode::Normal;
 };
 
+// Decimate one wavetable frame into a bipolar modulation LUT: `lutSize`+1 floats
+// with out[lutSize] repeating out[0] so a lerp needs no wrap test. Band-limited
+// to a modulation-sane harmonic count — a mask lane is sampled at control rate,
+// so the audio table's 1024 harmonics would only alias.
+// Deliberately does NOT normalize (unlike the audio-path bakeFrameTable, which
+// peak-normalizes each frame in isolation): it returns the frame's peak so the
+// caller can scale a whole table by one factor and keep the frame-to-frame
+// amplitude contour, which for a modulation fan is signal, not loudness.
+float bakeModWaveLut(const WavetableFrame &frame, float *out, int lutSize);
+
 void initDefaultWavetableSeed(WavetableSeedParams &p);
 int sanitizeGeneratorSourceCount(int sourceCount);
 int partialsPerGeneratorSource(int sourceCount);

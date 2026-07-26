@@ -6,6 +6,8 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
+#include <vector>
 
 namespace synth
 {
@@ -121,6 +123,13 @@ struct MatrixRule
 // -----------------------------------------------------------------------------
 constexpr int kMaxMaskGroups = 4;
 constexpr int kMaskGroupSlots = 16;
+// Real phase accumulators available to one group's fan. The fan spans exactly as
+// many lanes as the group has sampling positions: 16 for the discrete slots, one
+// per element for a partial family — 64 partials really are 64 independent
+// layers, not 16 interpolated ones. Families larger than this crossfade.
+constexpr int kMaskFanLanes = 64;
+// Per-lane waveform resolution when a wavetable drives the fan.
+constexpr int kMaskWaveLut = 128;
 
 struct MaskGroupTarget
 {
@@ -138,10 +147,39 @@ struct MaskGroup
     float phaseSpread = 0.0f;    // -1..+1: lane phase offset at fan end, in cycles
     float spreadCurve = 0.0f;    // progression bend across the fan (0 = linear)
     uint8_t family = 0;          // 0 = discrete slots, 1 = per-partial fan
+    // Lane SHAPE source: 0 = the base MOD slot's curve on every lane,
+    // 1 = a multi-frame wavetable, morphed across the fan so lane k plays the
+    // frame sitting at its own bent fan position. The base MOD slot still
+    // supplies the fan's rate in both cases.
+    uint8_t waveSource = 0;
+    uint32_t waveTrackId = 0;    // source track whose wavetable feeds the fan
     ModDestination familyDest = ModDestination::Freq;
     uint32_t familyTrackId = 0;  // 0 = all partials
     float familyDepth = 0.0f;
     std::array<MaskGroupTarget, kMaskGroupSlots> targets {};
+};
+
+// A wavetable decimated to modulation resolution: one bipolar LUT per frame.
+// Baked on the parameter thread (SynthCore) whenever the table's identity
+// changes; the audio thread only ever reads it.
+struct MaskWaveFrames
+{
+    int count = 0;
+    std::vector<std::array<float, kMaskWaveLut + 1>> frame;
+};
+
+struct MaskWaveLanes
+{
+    int lanes = kMaskGroupSlots;                   // real accumulators in the fan
+    std::shared_ptr<const MaskWaveFrames> frames;  // null = fan the base MOD curve
+};
+
+// Published in the render snapshot; rebuilt only when a group's lane count or
+// wavetable identity actually changes, so the audio thread's per-control-block
+// handoff is a pointer compare.
+struct MaskWaveBank
+{
+    std::array<MaskWaveLanes, kMaxMaskGroups> group {};
 };
 
 // -----------------------------------------------------------------------------
@@ -192,6 +230,12 @@ class ModMatrix
     MatrixRule getRule(int idx) const;
 
     void setMaskGroups(const std::array<MaskGroup, kMaxMaskGroups> &groups);
+    // Borrowed, NOT owned: the bank belongs to the RenderSnapshot the caller is
+    // holding for this control block. Taking a shared_ptr here would make the
+    // audio thread the last owner of the previous bank and free ~33 KB inside
+    // renderBlock. Must be refreshed at the top of every control block, before
+    // any evaluate — see SynthCore::renderBlock.
+    void setMaskWaveBank(const MaskWaveBank *bank) { waveBank_ = bank; }
 
     void advanceControl(int samples);
 
@@ -238,25 +282,66 @@ class ModMatrix
     std::array<std::array<float, kMaskLutSize + 1>, kMaxModSlots> maskLut_ {};
     bool maskLutReady_ = false;
 
-    // Lane value of a mask group at normalized fan position x (0 = first lane).
-    // The fan is kFanLanes real phase accumulators (each advancing at its own
-    // spread rate, wrapped mod 1 individually); positions between them crossfade
-    // the two neighbouring lanes' OUTPUT values. Parameter edits therefore only
-    // change future lane rates — no elapsed-time-scaled phase jumps.
-    float maskGroupLane(int gi, const MaskGroup &g, float x) const
+    // Straight lerp over a baked wave frame LUT.
+    static float waveLookup(const std::array<float, kMaskWaveLut + 1> &lut, float x)
     {
-        const int bs = std::min(std::max(int(g.baseSlot), 0), kMaxModSlots - 1);
-        x = x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x);
-        const float fx = x * float(kFanLanes - 1);
-        const int k = std::min(int(fx), kFanLanes - 2);
+        const float fx = (x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x)) * float(kMaskWaveLut);
+        const int k = std::min(int(fx), kMaskWaveLut - 1);
         const float t = fx - float(k);
-        const auto lane = [&](int kk) {
-            const double ph = lanePhase_[(size_t)gi][(size_t)kk]
-                              + double(laneXb_[(size_t)gi][(size_t)kk]) * double(g.phaseSpread);
-            return maskLookup(bs, float(ph - std::floor(ph))) * 2.0f - 1.0f;
-        };
-        const float v0 = lane(k);
-        return v0 + (lane(k + 1) - v0) * t;
+        return lut[(size_t)k] + (lut[(size_t)k + 1] - lut[(size_t)k]) * t;
+    }
+
+    const MaskWaveFrames *waveFramesFor(int gi) const
+    {
+        if(!waveBank_)
+            return nullptr;
+        const auto *fr = waveBank_->group[(size_t)gi].frames.get();
+        return (fr != nullptr && fr->count > 0) ? fr : nullptr;
+    }
+
+    // One lane's live output, bipolar ±1. Every lane owns a real phase
+    // accumulator; its bent fan position supplies both the phase offset and —
+    // when a wavetable drives the fan — the frame it morphs to.
+    float laneValue(int gi, const MaskGroup &g, int k) const
+    {
+        const double raw = lanePhase_[(size_t)gi][(size_t)k]
+                           + double(laneXb_[(size_t)gi][(size_t)k]) * double(g.phaseSpread);
+        const float ph = float(raw - std::floor(raw));
+        if(const MaskWaveFrames *fr = waveFramesFor(gi))
+        {
+            const float fpos = laneXb_[(size_t)gi][(size_t)k] * float(fr->count - 1);
+            const int fa = std::min(std::max(int(fpos), 0), fr->count - 1);
+            const int fb = std::min(fa + 1, fr->count - 1);
+            const float ft = fpos - float(fa);
+            const float a = waveLookup(fr->frame[(size_t)fa], ph);
+            const float b = waveLookup(fr->frame[(size_t)fb], ph);
+            return a + (b - a) * ft;
+        }
+        const int bs = std::min(std::max(int(g.baseSlot), 0), kMaxModSlots - 1);
+        return maskLookup(bs, ph) * 2.0f - 1.0f;
+    }
+
+    // Lane value of a mask group at normalized fan position x (0 = first lane).
+    // The fan is laneCount_[gi] real phase accumulators (each advancing at its
+    // own spread rate, wrapped mod 1 individually); positions between them
+    // crossfade the two neighbouring lanes' OUTPUT values. Parameter edits
+    // therefore only change future lane rates — no elapsed-time-scaled phase
+    // jumps. When the lane count matches the element count (the normal case) x
+    // lands exactly on integer lanes and nothing is interpolated.
+    //
+    // Lane outputs are constant for the whole control block, so advanceControl
+    // evaluates them once per lane into laneVal_ and this — called per partial
+    // per voice — is only ever a lerp between two floats.
+    float maskGroupLane(int gi, float x) const
+    {
+        const int lanes = std::min(std::max(laneCount_[(size_t)gi], 2), kMaskFanLanes);
+        x = x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x);
+        const float fx = x * float(lanes - 1);
+        const int k = std::min(int(fx), lanes - 2);
+        const float t = fx - float(k);
+        const auto &lv = laneVal_[(size_t)gi];
+        const float v0 = lv[(size_t)k];
+        return v0 + (lv[(size_t)k + 1] - v0) * t;
     }
 
     std::array<ModSlotParams, kMaxModSlots> slotParams_ {};
@@ -264,11 +349,20 @@ class ModMatrix
     std::array<float, kMaxModSlots> slotValue_ {};
     std::array<MatrixRule, kMaxMatrixRules> rules_ {};
     std::array<MaskGroup, kMaxMaskGroups> groups_ {};
-    // Fan lane state per group: accumulated phase (mod 1) and the cached bent
-    // fan position of each lane (refreshed every control block).
-    static constexpr int kFanLanes = 33;
-    std::array<std::array<double, kFanLanes>, kMaxMaskGroups> lanePhase_ {};
-    std::array<std::array<float, kFanLanes>, kMaxMaskGroups> laneXb_ {};
+    const MaskWaveBank *waveBank_ = nullptr;  // borrowed for one control block
+    // Fan lane state per group: accumulated phase (mod 1), the cached bent fan
+    // position of each lane, this block's lane outputs, and the lane count both
+    // advance and evaluate agree on (latched in advanceControl so a mid-block
+    // bank swap can't desync them).
+    std::array<std::array<double, kMaskFanLanes>, kMaxMaskGroups> lanePhase_ {};
+    std::array<std::array<float, kMaskFanLanes>, kMaxMaskGroups> laneXb_ {};
+    std::array<std::array<float, kMaskFanLanes>, kMaxMaskGroups> laneVal_ {};
+    // Latched by advanceControl before any evaluate; the clamp in maskGroupLane
+    // keeps the zero-initialized state harmless.
+    std::array<int, kMaxMaskGroups> laneCount_ {};
+    // Dirty keys for the laneXb_ cache (bend01 is a pow — see advanceControl).
+    std::array<int, kMaxMaskGroups> xbLanes_ {};
+    std::array<float, kMaxMaskGroups> xbCurve_ {};
     ChaosParams chaosParams_ {};
     ShapeSourceParams shapeParams_ {};
     float chaosValue_ = 0.0f;

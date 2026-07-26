@@ -18,6 +18,17 @@
     Rect groupFamilyRect_ {}, groupFamilyDestRect_ {}, groupFamilyTrackRect_ {}, groupFamilyDepthRect_ {};
     Rect groupPreviewRect_ {};
     int groupDragSlot_ = -1;
+    // Preview mirror of the engine's baked lane waveforms, so the 3D fan draws
+    // the exact shapes the audio thread plays without re-summing harmonics per
+    // point per repaint. Keyed by the wavetable's COW identity.
+    const void *maskPreviewFramesKey_ = nullptr;
+    uint32_t maskPreviewTrackKey_ = 0;
+    int maskPreviewFrameCount_ = 0;
+    // Must match synth::kMaskWaveLut: bakeModWaveLut band-limits to the LUT it is
+    // given, so a smaller preview LUT would draw a different (aliased) waveform
+    // than the fan plays.
+    static constexpr int kMaskPreviewLut = synth::kMaskWaveLut;
+    std::vector<std::array<float, kMaskPreviewLut + 1>> maskPreviewLut_;
     Rect matrixToolbarRect_ {};    // toolbar MATRIX entry button
     Rect matrixViewCloseRect_ {};  // close X of the top-row matrix view
     Rect chaosEnableRect_ {}, chaosRateRect_ {}, chaosAmountRect_ {}, shapeAxisRect_ {}, shapePhaseRect_ {}, shapeRhoRect_ {}, shapeUpRect_ {}, shapeDownRect_ {};

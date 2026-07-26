@@ -73,7 +73,7 @@ callback.
   and a loop flag — `loop=true` behaves as an LFO (continuous phase,
   retriggered at note-on), `loop=false` as a one-shot envelope that holds its
   final value. Output is bipolar −1..+1.
-- **16 routing rules** mapping sources to destinations, optionally scoped to a
+- **32 routing rules** mapping sources to destinations, optionally scoped to a
   stable track ID.
   - Sources: MOD slots 1–8 (legacy LFO1–4 / ENV1–4 aliases), velocity,
     key-track, random, chaos, shape, generator-self, per-voice ADSR 1–4.
@@ -85,6 +85,34 @@ callback.
 
 `Freq` destination interprets rule depth as octaves (`2^depth`), allowing wide
 pitch sweeps. `Amp` destination is clamped to a non-negative gain multiplier.
+
+### Mask Groups (advanced tier)
+
+A rule is one source driving one destination. A **mask group** (`MaskGroup`,
+4 of them) is one base shape fanned into many lanes, each lane driving its own
+target — the way to modulate a whole set of simultaneous things with one
+drawn shape.
+
+- **Lanes are real.** Each lane owns a phase accumulator advanced at its own
+  rate every control block, wrapped mod 1 individually. `freqSpread` scales
+  lane rate (up to 2×) across the fan, `phaseSpread` offsets lane phase (±1
+  cycle), and `spreadCurve` bends the progression (linear at 0). Because the
+  accumulators are real, editing any spread only changes future rates — no
+  lane ever jumps, however long the group has been running.
+- **The lane count follows the targets.** 16 for the discrete target slots;
+  for a per-partial family it is the track's *resolved* partial range
+  (`trackEnd - trackBegin`), so a 64-partial bank really gets 64 independent
+  lanes. Families wider than `kMaskFanLanes` crossfade between neighbours.
+  Resolved on the parameter thread in `SynthCore::rebuildMaskWaveBankNoLock`.
+- **The base shape is a MOD curve or a wavetable.** With a wavetable, lane *k*
+  morphs to the frame sitting at its own bent fan position — one layer of the
+  table per lane — while the base MOD slot still supplies the fan's rate.
+  Frames are decimated to 128-entry bipolar LUTs by `bakeModWaveLut` on the
+  parameter thread and normalized by a single table-wide gain, so the
+  frame-to-frame amplitude contour survives into the fan.
+- The baked LUTs travel in `RenderSnapshot::maskWaves` as a shared pointer
+  rebuilt only when a lane count or a table identity changes; the audio thread
+  handoff is a pointer compare.
 
 ## Source Mods And Per-Voice Chain
 

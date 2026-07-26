@@ -50,8 +50,13 @@ bool KapibaraUI::applyModFxLayoutDragValue(float x, float y)
             case DragTarget::GroupSpreadCurve:
             {
                 auto &g = maskGroups_[(size_t)clampi(selectedMaskGroup_, 0, synth::kMaxMaskGroups - 1)];
-                const float v = clampf(dragStartDepth_ + (dragStartY_ - y) * uiRenderScale_ / 120.0f,
-                                       -1.0f, 1.0f);
+                float v = clampf(dragStartDepth_ + (dragStartY_ - y) * uiRenderScale_ / 120.0f,
+                                 -1.0f, 1.0f);
+                // Deadzone: the drag maps 120px onto ±1, so exact zero is one
+                // pixel wide. FREQ SPRD especially must be reachable — a residual
+                // 0.008 still reads "+0.00" but drifts the fan apart over minutes.
+                if(std::abs(v) < 0.01f)
+                    v = 0.0f;
                 if(dragTarget_ == DragTarget::GroupFreqSpread)       g.freqSpread = v;
                 else if(dragTarget_ == DragTarget::GroupPhaseSpread) g.phaseSpread = v;
                 else                                                 g.spreadCurve = v;

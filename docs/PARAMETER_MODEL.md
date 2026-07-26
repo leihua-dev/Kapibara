@@ -137,9 +137,20 @@ New `.kwt` files are saved as binary `KWT2`: frame/bin counts followed by packed
 The plugin saves the legacy text preset; the UI appends a `modern` section
 (`ui/sections/presets/KapibaraUIPresetState.cpp`) with the multi-track
 structure: track params/names, per-voice filters, inserts, source mods, route
-graph, and merge groups. Osc frame data is not duplicated in the modern
-section; Partial Bank frames persist via the legacy `bankframes` /
-`bankframe` keys.
+graph, merge groups, matrix rules (`mrule`), and mask groups (`mgrp` + `mgt`).
+Osc frame data is not duplicated in the modern section; Partial Bank frames
+persist via the legacy `bankframes` / `bankframe` keys.
+
+Lines grow by appending optional fields at the END, each read with its own
+`if(!(ss >> x)) x = <default>;`. This is not stylistic: since C++11 a failed
+`operator>>` extraction *writes 0* into its target and leaves the stream in
+fail state, so a pre-initialized default is silently destroyed and every later
+field on the line fails too. `mgrp`'s tail is, in order: `enabled`,
+`waveSource`, `waveTrackId`.
+
+A mask group whose base is a wavetable stores only the *track id* of the table
+owner. Since per-track frames are not written to the modern section, such a
+group reconnects to whatever table that track holds after load.
 
 ## Unison
 

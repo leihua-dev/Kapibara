@@ -486,6 +486,160 @@ void SynthCore::rebuildTrackRenderStateNoLock(bool rebakeTables)
     source.wavetable = baked;
 }
 
+// Mask-group fans need two things the audio thread must never compute itself:
+// how many real lanes the fan spans (one per element of a partial family, so a
+// 64-partial track really gets 64 independent lanes), and — when a wavetable
+// drives the fan instead of a MOD curve — one band-limited LUT per frame.
+// Both are resolved here on the parameter thread and handed over by pointer.
+void SynthCore::rebuildMaskWaveBankNoLock()
+{
+    std::array<MaskWaveKey, kMaxMaskGroups> keys {};
+    bool changed = !maskWaveBank_;
+
+    for(int gi = 0; gi < kMaxMaskGroups; ++gi)
+    {
+        const auto &g = maskGroups_[(size_t)gi];
+        auto &key = keys[(size_t)gi];
+
+        // --- lane count -----------------------------------------------------
+        // Always the RESOLVED partial range, never the requested partialCount:
+        // the render pool is water-filled across tracks, so a bank that asked
+        // for 64 may have been given fewer.
+        int lanes = kMaskGroupSlots;
+        if(g.family)
+        {
+            int elements = 0;
+            if(g.familyTrackId == 0)
+            {
+                elements = source.frame.partialCount;
+            }
+            else if(source.wavetable)
+            {
+                int renderTrack = 0;
+                for(const auto &track : source.gen.tracks)
+                {
+                    if(renderTrack >= source.wavetable->trackCount)
+                        break;
+                    if(track.id == g.familyTrackId)
+                    {
+                        elements = source.wavetable->trackEnd[(size_t)renderTrack]
+                                   - source.wavetable->trackBegin[(size_t)renderTrack];
+                        break;
+                    }
+                    ++renderTrack;
+                }
+            }
+            // Families wider than the fan (e.g. @GLOBAL across the whole 500-partial
+            // pool) crossfade between neighbouring lanes instead of getting one each.
+            lanes = std::clamp(elements, 2, kMaskFanLanes);
+        }
+        key.lanes = lanes;
+        maskGroupLanes_[(size_t)gi].store(lanes, std::memory_order_relaxed);
+
+        // --- wave source ----------------------------------------------------
+        const WavetableFrameStorage *frames = nullptr;
+        int frameCount = 0;
+        if(g.waveSource != 0 && g.waveTrackId != 0)
+        {
+            for(const auto &track : source.gen.tracks)
+            {
+                if(track.id != g.waveTrackId)
+                    continue;
+                if(track.type == SourceTrackType::MetaOscillator)
+                {
+                    frames = &track.metaOsc.frames;
+                    frameCount = track.metaOsc.frameCount;
+                }
+                else if(track.type == SourceTrackType::PartialBank)
+                {
+                    frames = &track.partialBank.frames;
+                    frameCount = track.partialBank.frameCount;
+                }
+                break;
+            }
+        }
+        frameCount = std::clamp(frameCount, 0, kMaxWavetableFrames);
+        if(frames != nullptr && !frames->data)
+        {
+            // Track exists but its table was never materialized (a preset load
+            // rebuilds tracks without frame data). Baking that would produce a
+            // silent LUT and kill the group; fall back to the base MOD curve.
+            frames = nullptr;
+            frameCount = 0;
+        }
+        key.waveSource = (frames != nullptr && frameCount > 0) ? 1u : 0u;
+        key.trackId = key.waveSource ? g.waveTrackId : 0u;
+        key.framesData = key.waveSource ? static_cast<const void *>(frames->data.get()) : nullptr;
+        key.frameCount = key.waveSource ? frameCount : 0;
+
+        const auto &old = maskWaveKey_[(size_t)gi];
+        const bool waveChanged = key.waveSource != old.waveSource
+                                 || key.trackId != old.trackId
+                                 || key.framesData != old.framesData
+                                 || key.frameCount != old.frameCount;
+        if(waveChanged)
+        {
+            changed = true;
+            if(key.waveSource == 0)
+            {
+                maskWaveFrames_[(size_t)gi].reset();
+            }
+            else
+            {
+                auto baked = std::make_shared<MaskWaveFrames>();
+                baked->count = std::min(frameCount, kMaskFanLanes);
+                baked->frame.resize((size_t)baked->count);
+                float peak = 0.0f;
+                for(int f = 0; f < baked->count; ++f)
+                {
+                    // Evenly sample the table when it has more frames than the fan
+                    // has lanes; anything denser than one frame per lane is unusable.
+                    const int src = baked->count > 1
+                                        ? (f * (frameCount - 1)) / (baked->count - 1)
+                                        : 0;
+                    // const operator[] — the non-const one deep-copies the frame.
+                    peak = std::max(peak, bakeModWaveLut((*frames)[(size_t)src],
+                                                         baked->frame[(size_t)f].data(),
+                                                         kMaskWaveLut));
+                }
+                if(peak <= 1.0e-6f)
+                {
+                    // Nothing audible in the whole table (empty or all-silent
+                    // frames). Publishing it would pin every lane at 0 forever;
+                    // dropping it lets the fan run off the base MOD curve.
+                    maskWaveFrames_[(size_t)gi].reset();
+                }
+                else
+                {
+                    // One gain for the whole table: normalizing per frame would
+                    // erase the frame-to-frame amplitude contour, which in a fan
+                    // is the difference between "lanes swell across the rack"
+                    // and "they don't".
+                    const float gain = 1.0f / peak;
+                    for(auto &lut : baked->frame)
+                        for(auto &v : lut)
+                            v *= gain;
+                    maskWaveFrames_[(size_t)gi] = baked;
+                }
+            }
+        }
+        if(key.lanes != old.lanes)
+            changed = true;
+    }
+
+    if(!changed)
+        return;
+
+    auto bank = std::make_shared<MaskWaveBank>();
+    for(int gi = 0; gi < kMaxMaskGroups; ++gi)
+    {
+        bank->group[(size_t)gi].lanes = keys[(size_t)gi].lanes;
+        bank->group[(size_t)gi].frames = maskWaveFrames_[(size_t)gi];
+    }
+    maskWaveBank_ = bank;
+    maskWaveKey_ = keys;
+}
+
 void SynthCore::publishSnapshotNoLock()
 {
     auto snap = std::make_shared<RenderSnapshot>();
@@ -538,6 +692,8 @@ void SynthCore::publishSnapshotNoLock()
     snap->modSlotParams = modSlotParams_;
     snap->matrixRules = matrixRules;
     snap->maskGroups = maskGroups_;
+    rebuildMaskWaveBankNoLock();
+    snap->maskWaves = maskWaveBank_;
     snap->chaosParams = chaosParams;
     snap->shapeSourceParams = shapeSourceParams;
     snap->effectsParams = effectsParams;
@@ -1105,6 +1261,14 @@ MaskGroup SynthCore::getMaskGroup(int idx) const
     return (idx >= 0 && idx < kMaxMaskGroups) ? maskGroups_[(size_t)idx] : MaskGroup {};
 }
 
+int SynthCore::getMaskGroupLanes(int idx) const
+{
+    if(idx < 0 || idx >= kMaxMaskGroups)
+        return kMaskGroupSlots;
+    const int lanes = maskGroupLanes_[(size_t)idx].load(std::memory_order_relaxed);
+    return lanes > 0 ? lanes : kMaskGroupSlots;
+}
+
 MatrixRule SynthCore::getMatrixRule(int idx) const
 {
     std::lock_guard<std::mutex> lock(paramMutex);
@@ -1412,6 +1576,9 @@ void SynthCore::renderBlock(float *left, float *right, int numSamples)
         if(controlSamplesLeft <= 0)
         {
             snap = std::atomic_load_explicit(&renderSnapshot, std::memory_order_acquire);
+            // Borrowed for the duration of this control block — `snap` keeps the
+            // bank alive, so the matrix never owns it and never frees it here.
+            matrix.setMaskWaveBank(snap ? snap->maskWaves.get() : nullptr);
             if(snap)
             {
                 matrix.setParams(snap->modSlotParams, snap->matrixRules,

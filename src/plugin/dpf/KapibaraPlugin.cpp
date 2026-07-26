@@ -814,6 +814,11 @@ synth::MaskGroup KapibaraPlugin::maskGroup(int index) const
     return core_.getMaskGroup(index);
 }
 
+int KapibaraPlugin::maskGroupLanes(int index) const
+{
+    return core_.getMaskGroupLanes(index);
+}
+
 void KapibaraPlugin::updateMaskGroup(int index, const synth::MaskGroup &group)
 {
     core_.setMaskGroup(index, group);

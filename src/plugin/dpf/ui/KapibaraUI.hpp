@@ -266,8 +266,14 @@ class KapibaraUI final : public KapibaraUIDrawing
     void enableModSource(synth::ModSource src);
     void drawMatrixRoutes(const Rect &r);
     void drawMaskGroups(const Rect &r);
-    void drawMaskGroupPreview(const Rect &r, const synth::MaskGroup &g);
+    void drawMaskGroupPreview(const Rect &r, const synth::MaskGroup &g, int lanes);
     bool handleMaskGroupsPress(float x, float y);
+    // Resolve a mask group's wavetable base to the track's frame storage.
+    // Returns false when the group runs off a MOD curve or the track is gone.
+    bool maskGroupWaveFrames(const synth::MaskGroup &g,
+                             const synth::WavetableFrameStorage *&frames, int &count) const;
+    void ensureMaskPreviewLut(const synth::MaskGroup &g);
+    int maskGroupLaneCount(int gi) const;
     void clearMatrixRects();
     // The matrix view accepts input only while it is actually the drawn top-row
     // branch (multiband / focused detail take priority and overdraw it).
