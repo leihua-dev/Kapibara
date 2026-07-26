@@ -97,10 +97,17 @@ void KapibaraUI::saveModernState(const std::string &path)
         for(int gi = 0; gi < synth::kMaxMaskGroups; ++gi)
         {
             const auto &g = maskGroups_[(size_t)gi];
-            if(!g.enabled) continue;
+            // Persist by CONTENT, not by enabled — the ON toggle is a bypass, so
+            // gating the write on it would silently discard a configured group's
+            // whole setup once the user bypasses it.
+            bool hasContent = g.enabled || g.family != 0;
+            for(const auto &t : g.targets)
+                if(t.enabled) { hasContent = true; break; }
+            if(!hasContent) continue;
             out << "mgrp " << gi << ' ' << int(g.baseSlot) << ' ' << g.freqSpread << ' '
                 << g.phaseSpread << ' ' << g.spreadCurve << ' ' << int(g.family) << ' '
-                << int(g.familyDest) << ' ' << g.familyTrackId << ' ' << g.familyDepth << "\n";
+                << int(g.familyDest) << ' ' << g.familyTrackId << ' ' << g.familyDepth << ' '
+                << int(g.enabled) << "\n";
             for(int k = 0; k < synth::kMaskGroupSlots; ++k)
             {
                 const auto &t = g.targets[(size_t)k];
@@ -204,9 +211,11 @@ void KapibaraUI::loadModernState(const std::string &path)
                 int gi, base, family, fdest; unsigned ftid; float fs, ps, sc, fdepth;
                 if(!(ss >> gi >> base >> fs >> ps >> sc >> family >> fdest >> ftid >> fdepth))
                     continue;
+                int en = 1;
+                if(!(ss >> en)) en = 1;  // lines written before the field existed
                 if(gi < 0 || gi >= synth::kMaxMaskGroups) continue;
                 auto &g = parsedGroups[(size_t)gi];
-                g.enabled = true;
+                g.enabled = (en != 0);
                 g.baseSlot = int8_t(clampi(base, 0, synth::kMaxModSlots - 1));
                 g.freqSpread = clampf(fs, -1.0f, 1.0f);
                 g.phaseSpread = clampf(ps, -1.0f, 1.0f);
@@ -252,13 +261,13 @@ void KapibaraUI::loadModernState(const std::string &path)
                 ru.source = synth::ModSource(src);
                 ru.dest = synth::ModDestination(dst);
                 ru.depth = depth;
-                ru.weight = synth::WeightMode(weight);
-                ru.bandLo = lo;
-                ru.bandHi = hi;
                 ru.targetTrackId = tid;
                 ru.targetSlot = slot;
-                ru.maskSlot = int8_t(clampi(mask, -1, synth::kMaxModSlots - 1));
-                ru.maskAxis = uint8_t(clampi(axis, 0, 4));
+                // Legacy per-rule filtering (weight/band/mask) is superseded by
+                // MASK GROUPS and has no UI in the basic tier — the fields are
+                // parsed for format compatibility but left at their neutral
+                // defaults so a loaded preset never applies invisible shaping.
+                (void)weight; (void)lo; (void)hi; (void)mask; (void)axis;
                 ru.transferCurve = clampf(xfer, -1.0f, 1.0f);
                 ru.muted = uint8_t(mutedIn != 0);
                 hasRules = true;

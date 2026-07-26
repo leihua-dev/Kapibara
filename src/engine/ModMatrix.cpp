@@ -90,18 +90,26 @@ MatrixRule ModMatrix::getRule(int idx) const
 
 void ModMatrix::advanceControl(int samples)
 {
-    // Mask-group fan time: driven by the base slot's rate. Wrapped only at a
-    // huge bound (~hours) so freq-spread lane phases stay continuous.
+    // Mask-group fan: every lane accumulates its own phase at the CURRENT
+    // spread rate and wraps mod 1 — spread/curve edits change only future
+    // rates, so no lane ever jumps.
     for(int gi = 0; gi < kMaxMaskGroups; ++gi)
     {
         const auto &g = groups_[(size_t)gi];
         if(!g.enabled)
             continue;
         const int bs = std::clamp(int(g.baseSlot), 0, kMaxModSlots - 1);
-        groupTime_[(size_t)gi] += double(std::max(0.0f, slotParams_[(size_t)bs].rateHz))
-                                  * double(samples) / sampleRate_;
-        if(groupTime_[(size_t)gi] > 1048576.0)
-            groupTime_[(size_t)gi] -= 1048576.0;
+        const double dt = double(std::max(0.0f, slotParams_[(size_t)bs].rateHz))
+                          * double(samples) / sampleRate_;
+        auto &lp = lanePhase_[(size_t)gi];
+        auto &lx = laneXb_[(size_t)gi];
+        for(int k = 0; k < kFanLanes; ++k)
+        {
+            const float xb = bend01(float(k) / float(kFanLanes - 1), g.spreadCurve);
+            lx[(size_t)k] = xb;
+            const double p = lp[(size_t)k] + dt * (1.0 + double(xb) * double(g.freqSpread));
+            lp[(size_t)k] = p - std::floor(p);
+        }
     }
 
     for(int i = 0; i < kMaxModSlots; ++i)

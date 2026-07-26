@@ -239,13 +239,24 @@ class ModMatrix
     bool maskLutReady_ = false;
 
     // Lane value of a mask group at normalized fan position x (0 = first lane).
+    // The fan is kFanLanes real phase accumulators (each advancing at its own
+    // spread rate, wrapped mod 1 individually); positions between them crossfade
+    // the two neighbouring lanes' OUTPUT values. Parameter edits therefore only
+    // change future lane rates — no elapsed-time-scaled phase jumps.
     float maskGroupLane(int gi, const MaskGroup &g, float x) const
     {
-        const float xb = bend01(x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x), g.spreadCurve);
         const int bs = std::min(std::max(int(g.baseSlot), 0), kMaxModSlots - 1);
-        const double ph = groupTime_[(size_t)gi] * (1.0 + double(xb) * double(g.freqSpread))
-                          + double(xb) * double(g.phaseSpread);
-        return maskLookup(bs, float(ph - std::floor(ph))) * 2.0f - 1.0f;
+        x = x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x);
+        const float fx = x * float(kFanLanes - 1);
+        const int k = std::min(int(fx), kFanLanes - 2);
+        const float t = fx - float(k);
+        const auto lane = [&](int kk) {
+            const double ph = lanePhase_[(size_t)gi][(size_t)kk]
+                              + double(laneXb_[(size_t)gi][(size_t)kk]) * double(g.phaseSpread);
+            return maskLookup(bs, float(ph - std::floor(ph))) * 2.0f - 1.0f;
+        };
+        const float v0 = lane(k);
+        return v0 + (lane(k + 1) - v0) * t;
     }
 
     std::array<ModSlotParams, kMaxModSlots> slotParams_ {};
@@ -253,9 +264,11 @@ class ModMatrix
     std::array<float, kMaxModSlots> slotValue_ {};
     std::array<MatrixRule, kMaxMatrixRules> rules_ {};
     std::array<MaskGroup, kMaxMaskGroups> groups_ {};
-    // Unbounded fan time per group (double for precision; wrapped very rarely so
-    // freq-spread lane phases stay continuous).
-    std::array<double, kMaxMaskGroups> groupTime_ {};
+    // Fan lane state per group: accumulated phase (mod 1) and the cached bent
+    // fan position of each lane (refreshed every control block).
+    static constexpr int kFanLanes = 33;
+    std::array<std::array<double, kFanLanes>, kMaxMaskGroups> lanePhase_ {};
+    std::array<std::array<float, kFanLanes>, kMaxMaskGroups> laneXb_ {};
     ChaosParams chaosParams_ {};
     ShapeSourceParams shapeParams_ {};
     float chaosValue_ = 0.0f;
