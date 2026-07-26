@@ -139,6 +139,18 @@ bool KapibaraUI::onMouse(const MouseEvent &ev)
                 repaint();
                 return true;
             }
+            // Right-click a mask-group slot → clear it.
+            if(matrixViewOpen_)
+                for(const auto &h : groupSlotHits_)
+                    if(h.kind == MatrixCardHit::Row && h.rect.contains(x, y)
+                       && h.rule >= 0 && h.rule < synth::kMaskGroupSlots)
+                    {
+                        maskGroups_[(size_t)clampi(selectedMaskGroup_, 0, synth::kMaxMaskGroups - 1)]
+                            .targets[(size_t)h.rule] = synth::MaskGroupTarget {};
+                        pushGroup(selectedMaskGroup_);
+                        repaint();
+                        return true;
+                    }
             // Right-click a MATRIX card → clear that rule. Card hits are empty
             // whenever the view isn't the drawn top-row branch.
             if(matrixViewOpen_)

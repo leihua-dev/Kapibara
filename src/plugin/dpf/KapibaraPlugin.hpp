@@ -60,6 +60,7 @@ class KapibaraPlugin final : public Plugin
     synth::AdsrParams ampEnvParams(int index) const;
     synth::ModSlotParams modSlotParams(int index) const;
     synth::MatrixRule matrixRule(int index) const;
+    synth::MaskGroup maskGroup(int index) const;
     synth::ChaosParams chaosParams() const;
     synth::ShapeSourceParams shapeSourceParams() const;
     synth::MasterEffectsParams effectsParams() const;
@@ -71,6 +72,7 @@ class KapibaraPlugin final : public Plugin
     void updateModSlot(int index, const synth::ModSlotParams &params);
     void updateAmpEnv(int index, const synth::AdsrParams &params);
     void updateMatrixRule(int index, const synth::MatrixRule &rule);
+    void updateMaskGroup(int index, const synth::MaskGroup &group);
     void updateChaos(const synth::ChaosParams &params);
     void updateShapeSource(const synth::ShapeSourceParams &params);
     void updateEffects(const synth::MasterEffectsParams &params);

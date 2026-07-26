@@ -2,8 +2,10 @@
 
 START_NAMESPACE_DISTRHO
 
-// Top-row MATRIX view (opened from the toolbar): the route cards ARE the
-// matrix. Modulator / amp-env editors stay in the bottom dashboard.
+// Top-row MATRIX view (opened from the toolbar). ROUTES = the basic tier
+// (source > dest cards, depth + transfer bend only); GROUPS = the advanced tier
+// (mask groups: one base LFO fanned across many targets). Modulator / amp-env
+// editors stay in the bottom dashboard.
 void KapibaraUI::drawMatrixView(const Rect &r)
 {
         drawPanel(r, rgba(0x0b1217ff), rgba(0x344852ff));
@@ -17,10 +19,37 @@ void KapibaraUI::drawMatrixView(const Rect &r)
         fxRackPanelRects_.clear();
 
         drawSectionTitle(r.x + 12.0f, r.y + 10.0f, "MATRIX");
+        matrixViewTabRects_[0] = { r.x + 96.0f, r.y + 8.0f, 66.0f, 16.0f };
+        matrixViewTabRects_[1] = { r.x + 166.0f, r.y + 8.0f, 96.0f, 16.0f };
+        drawButton(matrixViewTabRects_[0], "ROUTES", matrixViewTab_ == 0);
+        drawButton(matrixViewTabRects_[1], "MASK GROUPS", matrixViewTab_ == 1);
         matrixViewCloseRect_ = { r.x + r.w - 26.0f, r.y + 8.0f, 18.0f, 16.0f };
         drawButton(matrixViewCloseRect_, "x", false);
 
-        drawMatrixRoutes({ r.x + 16.0f, r.y + 32.0f, r.w - 32.0f, r.h - 42.0f });
+        const Rect body { r.x + 16.0f, r.y + 32.0f, r.w - 32.0f, r.h - 42.0f };
+        if(matrixViewTab_ == 0)
+        {
+            // GROUPS rects must not eat clicks while ROUTES is up.
+            groupSlotHits_.clear();
+            groupSelRects_.fill({});
+            groupEnableRect_ = {}; groupBaseRect_ = {};
+            groupFreqRect_ = {}; groupPhaseRect_ = {}; groupCurveRect_ = {};
+            groupFamilyRect_ = {}; groupFamilyDestRect_ = {};
+            groupFamilyTrackRect_ = {}; groupFamilyDepthRect_ = {};
+            groupPreviewRect_ = {};
+            if(gridPickerMode_ == 5) gridPickerMode_ = 0;
+            drawMatrixRoutes(body);
+        }
+        else
+        {
+            // ROUTES rects must not eat clicks while GROUPS is up.
+            matrixCardHits_.clear();
+            matrixRoutesScrollbarRect_ = {};
+            matrixRoutesAddRect_ = {};
+            matrixRoutesListRect_ = {};
+            if(gridPickerMode_ == 3 || gridPickerMode_ == 4) gridPickerMode_ = 0;
+            drawMaskGroups(body);
+        }
     }
 
 // Zero every MATRIX-view hit rect. Called by whichever top-row branch draws
@@ -29,10 +58,18 @@ void KapibaraUI::drawMatrixView(const Rect &r)
 void KapibaraUI::clearMatrixRects()
 {
         matrixViewCloseRect_ = {};
+        matrixViewTabRects_.fill({});
         matrixCardHits_.clear();
         matrixRoutesScrollbarRect_ = {};
         matrixRoutesAddRect_ = {};
         matrixRoutesListRect_ = {};
+        groupSlotHits_.clear();
+        groupSelRects_.fill({});
+        groupEnableRect_ = {}; groupBaseRect_ = {};
+        groupFreqRect_ = {}; groupPhaseRect_ = {}; groupCurveRect_ = {};
+        groupFamilyRect_ = {}; groupFamilyDestRect_ = {};
+        groupFamilyTrackRect_ = {}; groupFamilyDepthRect_ = {};
+        groupPreviewRect_ = {};
         if(gridPickerMode_ != 0)
         {
             gridPickerMode_ = 0;
@@ -209,9 +246,6 @@ void KapibaraUI::drawMatrixRoutes(const Rect &r)
             if(x1 <= x0 || y1 <= y0) return;
             matrixCardHits_.push_back(MatrixCardHit { { x0, y0, x1 - x0, y1 - y0 }, rule, kind });
         };
-        static const char *kWeightNames[7] = { "ALL", "LOW", "HIGH", "GRP LO", "GRP MID", "GRP HI", "BAND" };
-        static const char *kAxisNames[5] = { "IDX", "SPEC X", "FREQ", "IDX+PH", "TRACK" };
-
         scissor(list.x, list.y, list.w, list.h);
         float cy = list.y - matrixRoutesScroll_;
         for(int i = 0; i < synth::kMaxMatrixRules; ++i)
@@ -313,47 +347,6 @@ void KapibaraUI::drawMatrixRoutes(const Rect &r)
             drawXferCurve(xf, ru.transferCurve);
             pushHit(xf, i, MatrixCardHit::Xfer);
 
-            if(!fxDest)  // weight/mask don't apply on the insert-param path
-            {
-                const Rect wt { xf.x + xf.w + 8.0f, l2, 58.0f, 15.0f };
-                drawButton(wt, kWeightNames[std::min<int>(int(ru.weight), 6)],
-                           ru.weight != synth::WeightMode::All);
-                pushHit(wt, i, MatrixCardHit::Weight);
-                float mx = wt.x + wt.w + 6.0f;
-                if(ru.weight == synth::WeightMode::BandIndex)
-                {
-                    const Rect lo { mx, l2, 34.0f, 15.0f };
-                    const Rect hi { mx + 38.0f, l2, 34.0f, 15.0f };
-                    char bb[12];
-                    drawPanel(lo, DesignTokens::groove(), DesignTokens::border());
-                    std::snprintf(bb, sizeof(bb), "%d", ru.bandLo);
-                    useMonoFont(); uiFontSize(8.5f);
-                    textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
-                    fillColor(DesignTokens::textPrimary());
-                    text(lo.x + lo.w * 0.5f, lo.y + lo.h * 0.5f, bb, nullptr);
-                    drawPanel(hi, DesignTokens::groove(), DesignTokens::border());
-                    std::snprintf(bb, sizeof(bb), "%d", ru.bandHi);
-                    text(hi.x + hi.w * 0.5f, hi.y + hi.h * 0.5f, bb, nullptr);
-                    pushHit(lo, i, MatrixCardHit::BandLo);
-                    pushHit(hi, i, MatrixCardHit::BandHi);
-                    mx += 78.0f;
-                }
-                char mlbl[20];
-                if(ru.maskSlot >= 0)
-                    std::snprintf(mlbl, sizeof(mlbl), "MASK MOD%d", int(ru.maskSlot) + 1);
-                else
-                    std::snprintf(mlbl, sizeof(mlbl), "MASK OFF");
-                const Rect mk { mx, l2, 78.0f, 15.0f };
-                drawButton(mk, mlbl, ru.maskSlot >= 0);
-                pushHit(mk, i, MatrixCardHit::Mask);
-                if(ru.maskSlot >= 0)
-                {
-                    const Rect ax { mx + 82.0f, l2, 52.0f, 15.0f };
-                    drawButton(ax, kAxisNames[std::min<int>(int(ru.maskAxis), 4)], false);
-                    pushHit(ax, i, MatrixCardHit::MaskAxis);
-                }
-            }
-
             // Whole-row select LAST so specific controls win the hit scan.
             pushHit(card, i, MatrixCardHit::Row);
         }
@@ -429,29 +422,6 @@ bool KapibaraUI::handleMatrixRoutesPress(float x, float y)
                     dragStartY_ = y;
                     dragStartDepth_ = ru.transferCurve;
                     break;
-                case MatrixCardHit::Weight:
-                    ru.weight = synth::WeightMode((int(ru.weight) + 1) % 7);
-                    pushRule(h.rule);
-                    break;
-                case MatrixCardHit::BandLo:
-                    dragTarget_ = DragTarget::RuleBandLo;
-                    dragStartY_ = y;
-                    dragStartNorm_ = float(ru.bandLo) / float(synth::kMaxPartials);
-                    break;
-                case MatrixCardHit::BandHi:
-                    dragTarget_ = DragTarget::RuleBandHi;
-                    dragStartY_ = y;
-                    dragStartNorm_ = float(ru.bandHi) / float(synth::kMaxPartials);
-                    break;
-                case MatrixCardHit::Mask:
-                    ru.maskSlot = ru.maskSlot >= synth::kMaxModSlots - 1 ? int8_t(-1)
-                                                                         : int8_t(ru.maskSlot + 1);
-                    pushRule(h.rule);
-                    break;
-                case MatrixCardHit::MaskAxis:
-                    ru.maskAxis = uint8_t((ru.maskAxis + 1) % 5);
-                    pushRule(h.rule);
-                    break;
                 case MatrixCardHit::Target:
                 {
                     // @GLOBAL -> track 1 -> ... -> track n -> @GLOBAL
@@ -465,6 +435,354 @@ bool KapibaraUI::handleMatrixRoutesPress(float x, float y)
                 case MatrixCardHit::Row:
                 default:
                     break;  // selection already updated
+            }
+            repaint();
+            return true;
+        }
+        return false;
+    }
+
+// 3D fan preview: the base MOD-slot curve stacked lane-behind-lane with the
+// group's successive rate/phase offsets applied — the wavetable-view feel.
+void KapibaraUI::drawMaskGroupPreview(const Rect &r, const synth::MaskGroup &g)
+{
+        beginPath();
+        roundedRect(r.x, r.y, r.w, r.h, 2.0f);
+        fillColor(DesignTokens::appBackground().withAlpha(0.35f));
+        fill();
+
+        const auto &mp = modSlots_[(size_t)clampi(int(g.baseSlot), 0, synth::kMaxModSlots - 1)];
+        constexpr int kLanes = 12;
+        constexpr int kSteps = 48;
+        const float perspH = std::min(r.h * 0.45f, float(kLanes) * 6.0f);
+        const float waveH = (r.h - perspH - 14.0f) * 0.5f;
+        scissor(r.x + 2.0f, r.y + 2.0f, r.w - 4.0f, r.h - 4.0f);
+        for(int L = kLanes - 1; L >= 0; --L)  // back to front; lane 0 = fan start
+        {
+            const float x = float(L) / float(kLanes - 1);
+            const float xb = synth::ModMatrix::bend01(x, g.spreadCurve);
+            const float base = r.y + r.h - 8.0f - waveH - perspH * x;
+            const float amp = waveH * (1.0f - 0.40f * x);
+            const float xL = r.x + 8.0f + x * 16.0f;
+            const float xR = r.x + r.w - 8.0f - (1.0f - x) * 4.0f;
+            const float alpha = 0.30f + 0.70f * (1.0f - x);
+            // Faint per-lane baseline carries the perspective.
+            strokeLine(xL, base, xR, base, DesignTokens::divider().withAlpha(0.5f * alpha), 0.8f);
+            beginPath();
+            for(int sIdx = 0; sIdx <= kSteps; ++sIdx)
+            {
+                const float s01 = float(sIdx) / float(kSteps);
+                const double ph = double(s01) * (1.0 + double(xb) * double(g.freqSpread))
+                                  + double(xb) * double(g.phaseSpread);
+                const float v = synth::pointCurveEval(mp.points.data(), mp.pointCount,
+                                                      float(ph - std::floor(ph)));
+                const float px = xL + s01 * (xR - xL);
+                const float py = base - (v - 0.5f) * 2.0f * amp;
+                if(sIdx == 0) moveTo(px, py); else lineTo(px, py);
+            }
+            strokeColor((L == 0 ? DesignTokens::accentCyan() : DesignTokens::accentCyan().withAlpha(alpha)));
+            strokeWidth(L == 0 ? 1.6f : 1.1f);
+            stroke();
+        }
+        resetScissor();
+    }
+
+// MASK GROUPS page: left = fan display + spread params; right = the 16 target
+// slots (blacked out while a >16-element family owns the fan).
+void KapibaraUI::drawMaskGroups(const Rect &r)
+{
+        groupSlotHits_.clear();
+        selectedMaskGroup_ = clampi(selectedMaskGroup_, 0, synth::kMaxMaskGroups - 1);
+        auto &g = maskGroups_[(size_t)selectedMaskGroup_];
+
+        // Header: group chips, ON, base slot.
+        for(int i = 0; i < synth::kMaxMaskGroups; ++i)
+        {
+            groupSelRects_[(size_t)i] = { r.x + float(i) * 34.0f, r.y, 30.0f, 16.0f };
+            char gl[8];
+            std::snprintf(gl, sizeof(gl), "G%d", i + 1);
+            drawButton(groupSelRects_[(size_t)i], gl, selectedMaskGroup_ == i);
+            if(maskGroups_[(size_t)i].enabled)
+            {
+                beginPath();
+                circle(groupSelRects_[(size_t)i].x + 25.0f, groupSelRects_[(size_t)i].y + 4.0f, 2.0f);
+                fillColor(DesignTokens::accentGreen());
+                fill();
+            }
+        }
+        groupEnableRect_ = { r.x + 4.0f * 34.0f + 8.0f, r.y, 36.0f, 16.0f };
+        drawButton(groupEnableRect_, "ON", g.enabled);
+        char bl[16];
+        std::snprintf(bl, sizeof(bl), "BASE MOD%d", clampi(int(g.baseSlot), 0, synth::kMaxModSlots - 1) + 1);
+        groupBaseRect_ = { groupEnableRect_.x + 42.0f, r.y, 86.0f, 16.0f };
+        drawButton(groupBaseRect_, bl, false);
+        useUiFont();
+        uiFontSize(7.5f);
+        textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+        fillColor(DesignTokens::textSecondary().withAlpha(0.6f));
+        text(groupBaseRect_.x + groupBaseRect_.w + 10.0f, r.y + 8.0f,
+             "edit the base curve in MODULATORS below - drag FREQ/PHASE/CURVE to fan the lanes",
+             nullptr);
+
+        const Rect body { r.x, r.y + 22.0f, r.w, r.h - 22.0f };
+        const float leftW = body.w * 0.54f;
+
+        // --- Left: 3D fan preview + spread params ---------------------------
+        constexpr float paramH = 18.0f;
+        groupPreviewRect_ = { body.x, body.y, leftW - 12.0f, body.h - paramH - 6.0f };
+        drawMaskGroupPreview(groupPreviewRect_, g);
+        const float py = body.y + body.h - paramH;
+        const float pw = (leftW - 12.0f - 12.0f) / 3.0f;
+        const auto paramChip = [&](Rect &rc, float px, const char *label, float value) {
+            rc = { px, py, pw, paramH };
+            drawPanel(rc, DesignTokens::groove(), DesignTokens::border());
+            useUiFont();
+            uiFontSize(8.0f);
+            textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+            fillColor(DesignTokens::textSecondary());
+            text(rc.x + 5.0f, rc.y + rc.h * 0.5f, label, nullptr);
+            char vb[16];
+            std::snprintf(vb, sizeof(vb), "%+.2f", value);
+            useMonoFont();
+            uiFontSize(9.0f);
+            textAlign(ALIGN_RIGHT | ALIGN_MIDDLE);
+            fillColor(DesignTokens::textPrimary());
+            text(rc.x + rc.w - 5.0f, rc.y + rc.h * 0.5f, vb, nullptr);
+        };
+        paramChip(groupFreqRect_, body.x, "FREQ SPRD", g.freqSpread);
+        paramChip(groupPhaseRect_, body.x + pw + 6.0f, "PHASE SPRD", g.phaseSpread);
+        paramChip(groupCurveRect_, body.x + (pw + 6.0f) * 2.0f, "CURVE", g.spreadCurve);
+
+        // --- Right: family selector + 16 target slots -----------------------
+        const float rx = body.x + leftW;
+        const float rw = body.x + body.w - rx;
+        groupFamilyRect_ = { rx, body.y, 118.0f, 15.0f };
+        drawButton(groupFamilyRect_, g.family ? "FAMILY: PARTIALS" : "FAMILY: OFF", g.family != 0);
+        groupFamilyDestRect_ = {}; groupFamilyTrackRect_ = {}; groupFamilyDepthRect_ = {};
+        if(g.family)
+        {
+            groupFamilyDestRect_ = { rx + 124.0f, body.y, 74.0f, 15.0f };
+            drawButton(groupFamilyDestRect_, destName(g.familyDest), false);
+            char tl[40];
+            if(g.familyTrackId == 0)
+                std::snprintf(tl, sizeof(tl), "@GLOBAL");
+            else
+            {
+                const int ti = trackIndexOfId(g.familyTrackId);
+                std::snprintf(tl, sizeof(tl), "@%s",
+                              ti >= 0 ? generator_.tracks[(size_t)ti].name.c_str() : "?");
+            }
+            groupFamilyTrackRect_ = { rx + 202.0f, body.y, 96.0f, 15.0f };
+            drawButton(groupFamilyTrackRect_, tl, false);
+            groupFamilyDepthRect_ = { rx + 302.0f, body.y, std::max(50.0f, rw - 306.0f), 15.0f };
+            drawPanel(groupFamilyDepthRect_, DesignTokens::groove(), DesignTokens::border());
+            const float lim = modulationDepthLimit(g.familyDest);
+            const float norm = clampf(g.familyDepth / std::max(1.0e-6f, lim), -1.0f, 1.0f);
+            const float cx0 = groupFamilyDepthRect_.x + groupFamilyDepthRect_.w * 0.5f;
+            beginPath();
+            rect(std::min(cx0, cx0 + norm * groupFamilyDepthRect_.w * 0.5f),
+                 groupFamilyDepthRect_.y + 2.0f,
+                 std::abs(norm) * groupFamilyDepthRect_.w * 0.5f, groupFamilyDepthRect_.h - 4.0f);
+            fillColor(DesignTokens::accentCyan().withAlpha(0.7f));
+            fill();
+            char dv[16];
+            std::snprintf(dv, sizeof(dv), "%+.2f", g.familyDepth);
+            useMonoFont();
+            uiFontSize(8.5f);
+            textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
+            fillColor(DesignTokens::textPrimary());
+            text(cx0, groupFamilyDepthRect_.y + groupFamilyDepthRect_.h * 0.5f, dv, nullptr);
+        }
+
+        // 16 slots in two 8-row columns. Blacked out while a family owns the fan
+        // ("已经选了映射组": lanes are spent on >16 family elements).
+        const float slotsY = body.y + 20.0f;
+        const float slotH = std::max(13.0f, std::min(16.0f, (body.h - 24.0f) / 8.0f - 2.0f));
+        const float colW = (rw - 8.0f) / 2.0f;
+        for(int k = 0; k < synth::kMaskGroupSlots; ++k)
+        {
+            const int col = k / 8, row = k % 8;
+            const Rect sr { rx + float(col) * (colW + 8.0f), slotsY + float(row) * (slotH + 2.0f),
+                            colW, slotH };
+            const auto &t = g.targets[(size_t)k];
+            if(g.family)
+            {
+                // Disabled: the family owns the fan.
+                drawPanel(sr, rgba(0x07090bff), rgba(0x1a2228ff));
+                useMonoFont();
+                uiFontSize(7.5f);
+                textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+                fillColor(DesignTokens::textSecondary().withAlpha(0.25f));
+                char sl[8];
+                std::snprintf(sl, sizeof(sl), "%02d", k + 1);
+                text(sr.x + 4.0f, sr.y + sr.h * 0.5f, sl, nullptr);
+                continue;
+            }
+            if(!t.enabled)
+            {
+                drawPanel(sr, rgba(0x0c1318ff), rgba(0x24313aff));
+                useUiFont();
+                uiFontSize(8.0f);
+                textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+                fillColor(DesignTokens::textSecondary().withAlpha(0.55f));
+                char sl[16];
+                std::snprintf(sl, sizeof(sl), "%02d  +", k + 1);
+                text(sr.x + 4.0f, sr.y + sr.h * 0.5f, sl, nullptr);
+                groupSlotHits_.push_back(MatrixCardHit { sr, k, MatrixCardHit::Dest });
+                continue;
+            }
+            drawPanel(sr, rgba(0x101820ff), rgba(0x33495aff));
+            // [dest] [@trk] [depth]
+            const Rect destR { sr.x, sr.y, sr.w * 0.40f, sr.h };
+            const Rect trkR { sr.x + sr.w * 0.40f, sr.y, sr.w * 0.28f, sr.h };
+            const Rect depR { sr.x + sr.w * 0.68f, sr.y, sr.w * 0.32f, sr.h };
+            useUiFont();
+            uiFontSize(7.5f);
+            textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+            fillColor(DesignTokens::textPrimary());
+            scissor(destR.x, destR.y, destR.w - 2.0f, destR.h);
+            char dl[24];
+            std::snprintf(dl, sizeof(dl), "%02d %s", k + 1, destName(t.dest));
+            text(destR.x + 3.0f, destR.y + destR.h * 0.5f, dl, nullptr);
+            resetScissor();
+            fillColor(DesignTokens::textSecondary());
+            scissor(trkR.x, trkR.y, trkR.w - 2.0f, trkR.h);
+            char tl[32];
+            if(t.targetTrackId == 0)
+                std::snprintf(tl, sizeof(tl), "@GLB");
+            else
+            {
+                const int ti = trackIndexOfId(t.targetTrackId);
+                std::snprintf(tl, sizeof(tl), "@%s",
+                              ti >= 0 ? generator_.tracks[(size_t)ti].name.c_str() : "?");
+            }
+            text(trkR.x + 2.0f, trkR.y + trkR.h * 0.5f, tl, nullptr);
+            resetScissor();
+            const float lim = modulationDepthLimit(t.dest);
+            const float norm = clampf(t.depth / std::max(1.0e-6f, lim), -1.0f, 1.0f);
+            beginPath();
+            rect(depR.x + 1.0f, depR.y + sr.h * 0.5f - 2.0f, (depR.w - 2.0f), 4.0f);
+            fillColor(DesignTokens::groove());
+            fill();
+            const float cx0 = depR.x + depR.w * 0.5f;
+            beginPath();
+            rect(std::min(cx0, cx0 + norm * depR.w * 0.5f), depR.y + sr.h * 0.5f - 2.0f,
+                 std::abs(norm) * depR.w * 0.5f, 4.0f);
+            fillColor(t.depth >= 0.0f ? DesignTokens::accentCyan() : DesignTokens::accentGreen());
+            fill();
+            groupSlotHits_.push_back(MatrixCardHit { destR, k, MatrixCardHit::Dest });
+            groupSlotHits_.push_back(MatrixCardHit { trkR, k, MatrixCardHit::Target });
+            groupSlotHits_.push_back(MatrixCardHit { depR, k, MatrixCardHit::Depth });
+            groupSlotHits_.push_back(MatrixCardHit { sr, k, MatrixCardHit::Row });
+        }
+    }
+
+bool KapibaraUI::handleMaskGroupsPress(float x, float y)
+{
+        selectedMaskGroup_ = clampi(selectedMaskGroup_, 0, synth::kMaxMaskGroups - 1);
+        auto &g = maskGroups_[(size_t)selectedMaskGroup_];
+        for(int i = 0; i < synth::kMaxMaskGroups; ++i)
+            if(groupSelRects_[(size_t)i].w > 0.0f && groupSelRects_[(size_t)i].contains(x, y))
+            {
+                selectedMaskGroup_ = i;
+                repaint();
+                return true;
+            }
+        if(groupEnableRect_.w > 0.0f && groupEnableRect_.contains(x, y))
+        {
+            g.enabled = !g.enabled;
+            pushGroup(selectedMaskGroup_);
+            repaint();
+            return true;
+        }
+        if(groupBaseRect_.w > 0.0f && groupBaseRect_.contains(x, y))
+        {
+            g.baseSlot = int8_t((clampi(int(g.baseSlot), 0, synth::kMaxModSlots - 1) + 1)
+                                % synth::kMaxModSlots);
+            selectedMatrixModSlot_ = int(g.baseSlot);  // show it in MODULATORS below
+            pushGroup(selectedMaskGroup_);
+            repaint();
+            return true;
+        }
+        const auto startDrag = [&](DragTarget tgt, float startVal) {
+            dragTarget_ = tgt;
+            dragStartY_ = y;
+            dragStartDepth_ = startVal;
+            return true;
+        };
+        if(groupFreqRect_.w > 0.0f && groupFreqRect_.contains(x, y))
+            return startDrag(DragTarget::GroupFreqSpread, g.freqSpread);
+        if(groupPhaseRect_.w > 0.0f && groupPhaseRect_.contains(x, y))
+            return startDrag(DragTarget::GroupPhaseSpread, g.phaseSpread);
+        if(groupCurveRect_.w > 0.0f && groupCurveRect_.contains(x, y))
+            return startDrag(DragTarget::GroupSpreadCurve, g.spreadCurve);
+        if(groupFamilyRect_.w > 0.0f && groupFamilyRect_.contains(x, y))
+        {
+            g.family = g.family ? 0 : 1;
+            if(g.family && g.familyTrackId == 0)
+                if(const auto *t = currentTrack()) g.familyTrackId = t->id;
+            pushGroup(selectedMaskGroup_);
+            repaint();
+            return true;
+        }
+        if(groupFamilyDestRect_.w > 0.0f && groupFamilyDestRect_.contains(x, y))
+        {
+            // Cycle through the card dest pool.
+            constexpr int poolN = int(sizeof(kCardDestPool) / sizeof(kCardDestPool[0]));
+            int cur = 0;
+            for(int i = 0; i < poolN; ++i)
+                if(kCardDestPool[i] == g.familyDest) { cur = i; break; }
+            g.familyDest = kCardDestPool[(cur + 1) % poolN];
+            pushGroup(selectedMaskGroup_);
+            repaint();
+            return true;
+        }
+        if(groupFamilyTrackRect_.w > 0.0f && groupFamilyTrackRect_.contains(x, y))
+        {
+            const int n = int(generator_.tracks.size());
+            int ti = g.familyTrackId == 0 ? -1 : trackIndexOfId(g.familyTrackId);
+            ++ti;
+            g.familyTrackId = (ti < 0 || ti >= n) ? 0u : generator_.tracks[(size_t)ti].id;
+            pushGroup(selectedMaskGroup_);
+            repaint();
+            return true;
+        }
+        if(groupFamilyDepthRect_.w > 0.0f && groupFamilyDepthRect_.contains(x, y))
+        {
+            dragDepthLimit_ = modulationDepthLimit(g.familyDest);
+            return startDrag(DragTarget::GroupFamilyDepth, g.familyDepth);
+        }
+        for(const auto &h : groupSlotHits_)
+        {
+            if(!h.rect.contains(x, y))
+                continue;
+            if(h.rule < 0 || h.rule >= synth::kMaskGroupSlots)
+                return true;
+            auto &t = g.targets[(size_t)h.rule];
+            switch(h.kind)
+            {
+                case MatrixCardHit::Dest:
+                    gridPickerMode_ = 5;
+                    gridPickerRuleIdx_ = h.rule;
+                    gridPickerX_ = x;
+                    gridPickerY_ = y + 12.0f;
+                    break;
+                case MatrixCardHit::Target:
+                {
+                    const int n = int(generator_.tracks.size());
+                    int ti = t.targetTrackId == 0 ? -1 : trackIndexOfId(t.targetTrackId);
+                    ++ti;
+                    t.targetTrackId = (ti < 0 || ti >= n) ? 0u : generator_.tracks[(size_t)ti].id;
+                    pushGroup(selectedMaskGroup_);
+                    break;
+                }
+                case MatrixCardHit::Depth:
+                    groupDragSlot_ = h.rule;
+                    dragDepthLimit_ = modulationDepthLimit(t.dest);
+                    return startDrag(DragTarget::GroupSlotDepth, t.depth);
+                case MatrixCardHit::Row:
+                default:
+                    break;
             }
             repaint();
             return true;

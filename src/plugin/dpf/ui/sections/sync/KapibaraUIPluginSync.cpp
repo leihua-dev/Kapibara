@@ -46,6 +46,8 @@ void KapibaraUI::pullFromPlugin()
             ampEnvs_[(size_t)i] = p->ampEnvParams(i);
         for(int i = 0; i < synth::kMaxMatrixRules; ++i)
             rules_[(size_t)i] = p->matrixRule(i);
+        for(int i = 0; i < synth::kMaxMaskGroups; ++i)
+            maskGroups_[(size_t)i] = p->maskGroup(i);
         chaos_ = p->chaosParams();
         shape_ = p->shapeSourceParams();
         effects_ = p->effectsParams();
@@ -306,6 +308,12 @@ void KapibaraUI::pushRule(int idx)
 {
         if(auto *p = plugin(); p != nullptr && idx >= 0 && idx < synth::kMaxMatrixRules)
             p->updateMatrixRule(idx, rules_[(size_t)idx]);
+    }
+
+void KapibaraUI::pushGroup(int idx)
+{
+        if(auto *p = plugin(); p != nullptr && idx >= 0 && idx < synth::kMaxMaskGroups)
+            p->updateMaskGroup(idx, maskGroups_[(size_t)idx]);
     }
 
 void KapibaraUI::pushChaosOnly()

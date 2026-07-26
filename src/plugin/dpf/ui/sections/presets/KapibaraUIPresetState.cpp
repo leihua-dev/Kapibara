@@ -93,6 +93,22 @@ void KapibaraUI::saveModernState(const std::string &path)
                 << ru.targetSlot << ' ' << int(ru.maskSlot) << ' ' << int(ru.maskAxis) << ' '
                 << ru.transferCurve << ' ' << int(ru.muted) << "\n";
         }
+        // Mask groups (advanced tier) ride the same mrules marker semantics.
+        for(int gi = 0; gi < synth::kMaxMaskGroups; ++gi)
+        {
+            const auto &g = maskGroups_[(size_t)gi];
+            if(!g.enabled) continue;
+            out << "mgrp " << gi << ' ' << int(g.baseSlot) << ' ' << g.freqSpread << ' '
+                << g.phaseSpread << ' ' << g.spreadCurve << ' ' << int(g.family) << ' '
+                << int(g.familyDest) << ' ' << g.familyTrackId << ' ' << g.familyDepth << "\n";
+            for(int k = 0; k < synth::kMaskGroupSlots; ++k)
+            {
+                const auto &t = g.targets[(size_t)k];
+                if(!t.enabled) continue;
+                out << "mgt " << gi << ' ' << k << ' ' << int(t.dest) << ' '
+                    << t.targetTrackId << ' ' << t.depth << "\n";
+            }
+        }
         for(const auto &kv : nodeOutPortCount_)
             out << "moutp " << kv.first << ' ' << kv.second << "\n";
         for(const auto &kv : structUtilCount_)
@@ -121,6 +137,7 @@ void KapibaraUI::loadModernState(const std::string &path)
         std::unordered_map<uint32_t, std::unordered_map<int, synth::GridPoint>> nodePos;
         std::unordered_map<uint32_t, std::vector<synth::GridWire>> sWires;
         std::array<synth::MatrixRule, synth::kMaxMatrixRules> parsedRules {};
+        std::array<synth::MaskGroup, synth::kMaxMaskGroups> parsedGroups {};
         bool hasRules = false;
         const auto ensureTrack = [&](int ti) { if(ti >= 0 && ti >= int(tracks.size())) tracks.resize((size_t)ti + 1); };
         std::string line;
@@ -177,8 +194,41 @@ void KapibaraUI::loadModernState(const std::string &path)
             }
             else if(tok == "mrules")
             {
-                // Rules-section marker: even with zero mrule lines, restore (i.e.
-                // clear) the rule table instead of preserving the previous preset's.
+                // Rules-section marker: even with zero mrule/mgrp lines, restore
+                // (i.e. clear) the tables instead of preserving the previous
+                // preset's.
+                hasRules = true;
+            }
+            else if(tok == "mgrp")
+            {
+                int gi, base, family, fdest; unsigned ftid; float fs, ps, sc, fdepth;
+                if(!(ss >> gi >> base >> fs >> ps >> sc >> family >> fdest >> ftid >> fdepth))
+                    continue;
+                if(gi < 0 || gi >= synth::kMaxMaskGroups) continue;
+                auto &g = parsedGroups[(size_t)gi];
+                g.enabled = true;
+                g.baseSlot = int8_t(clampi(base, 0, synth::kMaxModSlots - 1));
+                g.freqSpread = clampf(fs, -1.0f, 1.0f);
+                g.phaseSpread = clampf(ps, -1.0f, 1.0f);
+                g.spreadCurve = clampf(sc, -1.0f, 1.0f);
+                g.family = uint8_t(family != 0);
+                g.familyDest = synth::ModDestination(fdest);
+                g.familyTrackId = ftid;
+                g.familyDepth = fdepth;
+                hasRules = true;
+            }
+            else if(tok == "mgt")
+            {
+                int gi, k, dest; unsigned tid; float depth;
+                if(!(ss >> gi >> k >> dest >> tid >> depth))
+                    continue;
+                if(gi < 0 || gi >= synth::kMaxMaskGroups
+                   || k < 0 || k >= synth::kMaskGroupSlots) continue;
+                auto &t = parsedGroups[(size_t)gi].targets[(size_t)k];
+                t.enabled = true;
+                t.dest = synth::ModDestination(dest);
+                t.targetTrackId = tid;
+                t.depth = depth;
                 hasRules = true;
             }
             else if(tok == "mrule")
@@ -266,14 +316,21 @@ void KapibaraUI::loadModernState(const std::string &path)
         // Rules restored before the rebuild so any strip-insert adoption during the
         // rebuild remaps them consistently with the wires.
         if(hasRules)
+        {
             rules_ = parsedRules;
+            maskGroups_ = parsedGroups;
+        }
         // Recomputes each track's routing fields (filter/insert order, connectedToMaster)
         // from the restored wires, then pushes all tracks + the compiled route to the engine.
         rebuildSelectedPerVoiceRouteFromWires();
         if(hasRules)
             if(auto *p = plugin())
+            {
                 for(int i = 0; i < synth::kMaxMatrixRules; ++i)
                     p->updateMatrixRule(i, rules_[(size_t)i]);
+                for(int i = 0; i < synth::kMaxMaskGroups; ++i)
+                    p->updateMaskGroup(i, maskGroups_[(size_t)i]);
+            }
     }
 
 void KapibaraUI::appendPresetNameChar(char ch)

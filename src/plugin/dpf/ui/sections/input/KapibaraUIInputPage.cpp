@@ -51,6 +51,20 @@ bool KapibaraUI::handlePageClick(float x, float y)
                         selectedRule_ = gridPickerRuleIdx_;
                         pushRule(gridPickerRuleIdx_);
                     }
+                    else if(gridPickerMode_ == 5 && gridPickerRuleIdx_ >= 0
+                            && gridPickerRuleIdx_ < synth::kMaskGroupSlots)
+                    {
+                        // Mask-group slot destination pick: enables the slot.
+                        auto &t = maskGroups_[(size_t)clampi(selectedMaskGroup_, 0, synth::kMaxMaskGroups - 1)]
+                                      .targets[(size_t)gridPickerRuleIdx_];
+                        t.dest = kCardDestPool[idx];
+                        t.enabled = true;
+                        if(t.targetTrackId == 0)
+                            if(const auto *ct = currentTrack()) t.targetTrackId = ct->id;
+                        if(std::abs(t.depth) < 1.0e-6f)
+                            t.depth = defaultModulationDepth(t.dest);
+                        pushGroup(selectedMaskGroup_);
+                    }
                     gridPickerMode_ = 0;
                     gridPickerRuleIdx_ = -1;
                     repaint();
@@ -91,8 +105,19 @@ bool KapibaraUI::handlePageClick(float x, float y)
             repaint();
             return true;
         }
-        if(matrixViewInteractive() && handleMatrixRoutesPress(x, y))
+        if(matrixViewInteractive() && matrixViewTab_ == 0 && handleMatrixRoutesPress(x, y))
             return true;
+        if(matrixViewInteractive() && matrixViewTab_ == 1 && handleMaskGroupsPress(x, y))
+            return true;
+        if(matrixViewOpen_)
+            for(int i = 0; i < 2; ++i)
+                if(matrixViewTabRects_[(size_t)i].w > 0.0f
+                   && matrixViewTabRects_[(size_t)i].contains(x, y))
+                {
+                    matrixViewTab_ = i;
+                    repaint();
+                    return true;
+                }
         if(multibandEditorTrackId_ >= 0 && routeBoardRect_.contains(x, y))
         {
             multibandEditorTrackId_ = -1;

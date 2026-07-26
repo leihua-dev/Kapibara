@@ -113,6 +113,38 @@ struct MatrixRule
 };
 
 // -----------------------------------------------------------------------------
+// Mask groups (advanced tier): one base MOD-slot curve fanned into N lanes.
+// Lane k is the base LFO with its rate and phase successively offset
+// (progression optionally bent), driving lane k's own target — either one of
+// 16 discrete parameter slots, or the whole partial family of a track
+// (one lane per partial).
+// -----------------------------------------------------------------------------
+constexpr int kMaxMaskGroups = 4;
+constexpr int kMaskGroupSlots = 16;
+
+struct MaskGroupTarget
+{
+    bool enabled = false;
+    ModDestination dest = ModDestination::Amp;
+    uint32_t targetTrackId = 0;  // 0 = all partials
+    float depth = 0.0f;
+};
+
+struct MaskGroup
+{
+    bool enabled = false;
+    int8_t baseSlot = 0;         // MOD slot whose curve + rate is the base LFO
+    float freqSpread = 0.0f;     // -1..+1: lane rate multiplier offset at fan end (0..2x)
+    float phaseSpread = 0.0f;    // -1..+1: lane phase offset at fan end, in cycles
+    float spreadCurve = 0.0f;    // progression bend across the fan (0 = linear)
+    uint8_t family = 0;          // 0 = discrete slots, 1 = per-partial fan
+    ModDestination familyDest = ModDestination::Freq;
+    uint32_t familyTrackId = 0;  // 0 = all partials
+    float familyDepth = 0.0f;
+    std::array<MaskGroupTarget, kMaskGroupSlots> targets {};
+};
+
+// -----------------------------------------------------------------------------
 // Per-voice output buffers consumed by Voice during audio rendering
 // -----------------------------------------------------------------------------
 struct MatrixVoiceOutput
@@ -159,6 +191,8 @@ class ModMatrix
     void setRule(int idx, const MatrixRule &r);
     MatrixRule getRule(int idx) const;
 
+    void setMaskGroups(const std::array<MaskGroup, kMaxMaskGroups> &groups);
+
     void advanceControl(int samples);
 
     void evaluateForVoice(MatrixVoiceOutput &out,
@@ -180,6 +214,8 @@ class ModMatrix
     // Serum-style response bend on a source value (see MatrixRule::transferCurve).
     // Public/static so the insert-param path in SynthCore shares the exact math.
     static float applyTransfer(const MatrixRule &r, float m);
+    // Unit-domain bend used by transfer curves and the mask-group fan progression.
+    static float bend01(float x, float c);
 
   private:
     static float weightFn(const MatrixRule &r, int i, const StaticSpectralFrame &frame);
@@ -202,10 +238,24 @@ class ModMatrix
     std::array<std::array<float, kMaskLutSize + 1>, kMaxModSlots> maskLut_ {};
     bool maskLutReady_ = false;
 
+    // Lane value of a mask group at normalized fan position x (0 = first lane).
+    float maskGroupLane(int gi, const MaskGroup &g, float x) const
+    {
+        const float xb = bend01(x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x), g.spreadCurve);
+        const int bs = std::min(std::max(int(g.baseSlot), 0), kMaxModSlots - 1);
+        const double ph = groupTime_[(size_t)gi] * (1.0 + double(xb) * double(g.freqSpread))
+                          + double(xb) * double(g.phaseSpread);
+        return maskLookup(bs, float(ph - std::floor(ph))) * 2.0f - 1.0f;
+    }
+
     std::array<ModSlotParams, kMaxModSlots> slotParams_ {};
     std::array<float, kMaxModSlots> slotPhase_ {};
     std::array<float, kMaxModSlots> slotValue_ {};
     std::array<MatrixRule, kMaxMatrixRules> rules_ {};
+    std::array<MaskGroup, kMaxMaskGroups> groups_ {};
+    // Unbounded fan time per group (double for precision; wrapped very rarely so
+    // freq-spread lane phases stay continuous).
+    std::array<double, kMaxMaskGroups> groupTime_ {};
     ChaosParams chaosParams_ {};
     ShapeSourceParams shapeParams_ {};
     float chaosValue_ = 0.0f;

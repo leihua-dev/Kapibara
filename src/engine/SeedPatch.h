@@ -23,6 +23,7 @@ struct SeedPatch
     }();
     std::array<ModSlotParams, kMaxModSlots> modSlotParams {};
     std::array<MatrixRule, kMaxMatrixRules> matrixRules {};
+    std::array<MaskGroup, kMaxMaskGroups> maskGroups {};
     ChaosParams chaosParams {};
     ShapeSourceParams shapeSourceParams {};
     MasterEffectsParams toneFx;

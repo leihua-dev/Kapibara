@@ -78,6 +78,7 @@ class KapibaraUI final : public KapibaraUIDrawing
     void pushCurModSlot();
     void pushRuleOnly();
     void pushRule(int idx);
+    void pushGroup(int idx);
     void pushChaosOnly();
     void pushShapeOnly();
     void pushAmpEnv();
@@ -264,6 +265,9 @@ class KapibaraUI final : public KapibaraUIDrawing
     void drawGridAxisPicker();
     void enableModSource(synth::ModSource src);
     void drawMatrixRoutes(const Rect &r);
+    void drawMaskGroups(const Rect &r);
+    void drawMaskGroupPreview(const Rect &r, const synth::MaskGroup &g);
+    bool handleMaskGroupsPress(float x, float y);
     void clearMatrixRects();
     // The matrix view accepts input only while it is actually the drawn top-row
     // branch (multiband / focused detail take priority and overdraw it).

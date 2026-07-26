@@ -45,6 +45,39 @@ bool KapibaraUI::applyModFxLayoutDragValue(float x, float y)
                                             -1.0f, 1.0f);
                 pushRuleOnly();
                 break;
+            case DragTarget::GroupFreqSpread:
+            case DragTarget::GroupPhaseSpread:
+            case DragTarget::GroupSpreadCurve:
+            {
+                auto &g = maskGroups_[(size_t)clampi(selectedMaskGroup_, 0, synth::kMaxMaskGroups - 1)];
+                const float v = clampf(dragStartDepth_ + (dragStartY_ - y) * uiRenderScale_ / 120.0f,
+                                       -1.0f, 1.0f);
+                if(dragTarget_ == DragTarget::GroupFreqSpread)       g.freqSpread = v;
+                else if(dragTarget_ == DragTarget::GroupPhaseSpread) g.phaseSpread = v;
+                else                                                 g.spreadCurve = v;
+                pushGroup(selectedMaskGroup_);
+                break;
+            }
+            case DragTarget::GroupFamilyDepth:
+            {
+                auto &g = maskGroups_[(size_t)clampi(selectedMaskGroup_, 0, synth::kMaxMaskGroups - 1)];
+                g.familyDepth = clampf(dragStartDepth_ + (dragStartY_ - y) * dragDepthLimit_ / 80.0f,
+                                       -dragDepthLimit_, dragDepthLimit_);
+                pushGroup(selectedMaskGroup_);
+                break;
+            }
+            case DragTarget::GroupSlotDepth:
+            {
+                auto &g = maskGroups_[(size_t)clampi(selectedMaskGroup_, 0, synth::kMaxMaskGroups - 1)];
+                if(groupDragSlot_ >= 0 && groupDragSlot_ < synth::kMaskGroupSlots)
+                {
+                    g.targets[(size_t)groupDragSlot_].depth =
+                        clampf(dragStartDepth_ + (dragStartY_ - y) * dragDepthLimit_ / 80.0f,
+                               -dragDepthLimit_, dragDepthLimit_);
+                    pushGroup(selectedMaskGroup_);
+                }
+                break;
+            }
             case DragTarget::MatrixRoutesScroll:
                 // Absolute thumb position within the scrollbar groove.
                 if(matrixRoutesScrollbarRect_.h > 1.0f)

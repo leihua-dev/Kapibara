@@ -8,6 +8,16 @@
     Rect ruleEnableRect_ {}, ruleSourceRect_ {}, ruleDestRect_ {}, ruleWeightRect_ {}, ruleDepthRect_ {}, ruleBandLoRect_ {}, ruleBandHiRect_ {};
     std::vector<MatrixCardHit> matrixCardHits_;   // ROUTES card controls
     int gridPickerRuleIdx_ = -1;                  // rule a card picker (mode 3/4) edits; -2 = staged + ROUTE
+    // MASK GROUPS page (advanced tier).
+    std::array<synth::MaskGroup, synth::kMaxMaskGroups> maskGroups_ {};
+    int selectedMaskGroup_ = 0;
+    std::vector<MatrixCardHit> groupSlotHits_;    // slot column (rule field = slot index)
+    std::array<Rect, synth::kMaxMaskGroups> groupSelRects_ {};
+    Rect groupEnableRect_ {}, groupBaseRect_ {};
+    Rect groupFreqRect_ {}, groupPhaseRect_ {}, groupCurveRect_ {};
+    Rect groupFamilyRect_ {}, groupFamilyDestRect_ {}, groupFamilyTrackRect_ {}, groupFamilyDepthRect_ {};
+    Rect groupPreviewRect_ {};
+    int groupDragSlot_ = -1;
     Rect matrixToolbarRect_ {};    // toolbar MATRIX entry button
     Rect matrixViewCloseRect_ {};  // close X of the top-row matrix view
     Rect chaosEnableRect_ {}, chaosRateRect_ {}, chaosAmountRect_ {}, shapeAxisRect_ {}, shapePhaseRect_ {}, shapeRhoRect_ {}, shapeUpRect_ {}, shapeDownRect_ {};

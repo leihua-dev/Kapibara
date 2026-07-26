@@ -11,8 +11,10 @@
     int bottomPanelMode_ = 0;
     Rect bottomExpandArrowRect_ {};
     Rect bottomCollapseArrowRect_ {};
-    // MATRIX view (the grid): replaces the top editor row while open.
+    // MATRIX view: replaces the top editor row while open.
     bool matrixViewOpen_ = false;
+    int matrixViewTab_ = 0;  // 0 = ROUTES (basic cards), 1 = GROUPS (mask groups)
+    std::array<Rect, 2> matrixViewTabRects_ {};
     float matrixRoutesScroll_ = 0.0f; // ROUTES card list scroll offset (px)
     float matrixRoutesMaxScroll_ = 0.0f; // computed at draw (drag/wheel clamp range)
     int matrixRoutesScrollTo_ = -1;   // rule index to scroll into view next draw

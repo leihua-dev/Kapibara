@@ -44,6 +44,7 @@ struct RenderSnapshot
     float globalGain = 0.30f;
     std::array<ModSlotParams, kMaxModSlots> modSlotParams {};
     std::array<MatrixRule, kMaxMatrixRules> matrixRules {};
+    std::array<MaskGroup, kMaxMaskGroups> maskGroups {};
     ChaosParams chaosParams {};
     ShapeSourceParams shapeSourceParams {};
     MasterEffectsParams effectsParams {};
@@ -111,6 +112,8 @@ class SynthCore
     ModSlotParams getSeedModSlotParams(uint64_t seedPresetId, int idx) const;
 
     void setMatrixRule(int idx, const MatrixRule &r);
+    void setMaskGroup(int idx, const MaskGroup &g);
+    MaskGroup getMaskGroup(int idx) const;
     void setMatrixRuleWithUndo(int idx, const MatrixRule &r);
     MatrixRule getMatrixRule(int idx) const;
     void setSeedMatrixRule(uint64_t seedPresetId, int idx, const MatrixRule &r);
@@ -184,6 +187,7 @@ class SynthCore
     float globalGain = 0.30f;
     std::array<ModSlotParams, kMaxModSlots> modSlotParams_ {};
     std::array<MatrixRule, kMaxMatrixRules> matrixRules {};
+    std::array<MaskGroup, kMaxMaskGroups> maskGroups_ {};
     ChaosParams chaosParams {};
     ShapeSourceParams shapeSourceParams {};
     MasterEffectsParams effectsParams {};

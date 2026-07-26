@@ -537,6 +537,7 @@ void SynthCore::publishSnapshotNoLock()
     snap->globalGain = globalGain;
     snap->modSlotParams = modSlotParams_;
     snap->matrixRules = matrixRules;
+    snap->maskGroups = maskGroups_;
     snap->chaosParams = chaosParams;
     snap->shapeSourceParams = shapeSourceParams;
     snap->effectsParams = effectsParams;
@@ -1088,6 +1089,22 @@ void SynthCore::setMatrixRuleWithUndo(int idx, const MatrixRule &r)
     publishSnapshotNoLock();
 }
 
+void SynthCore::setMaskGroup(int idx, const MaskGroup &g)
+{
+    if(idx < 0 || idx >= kMaxMaskGroups) return;
+    std::lock_guard<std::mutex> lock(paramMutex);
+    if(sameBytes(maskGroups_[(size_t)idx], g))
+        return;
+    maskGroups_[(size_t)idx] = g;
+    publishSnapshotNoLock();
+}
+
+MaskGroup SynthCore::getMaskGroup(int idx) const
+{
+    std::lock_guard<std::mutex> lock(paramMutex);
+    return (idx >= 0 && idx < kMaxMaskGroups) ? maskGroups_[(size_t)idx] : MaskGroup {};
+}
+
 MatrixRule SynthCore::getMatrixRule(int idx) const
 {
     std::lock_guard<std::mutex> lock(paramMutex);
@@ -1259,6 +1276,7 @@ void SynthCore::setSeedPatch(const SeedPatch &patch)
     ampEnvParams = patch.ampEnvParams;
     modSlotParams_ = patch.modSlotParams;
     matrixRules = patch.matrixRules;
+    maskGroups_ = patch.maskGroups;
     chaosParams = patch.chaosParams;
     shapeSourceParams = patch.shapeSourceParams;
     effectsParams = patch.toneFx;
@@ -1276,6 +1294,7 @@ SeedPatch SynthCore::getSeedPatch() const
     patch.ampEnvParams = ampEnvParams;
     patch.modSlotParams = modSlotParams_;
     patch.matrixRules = matrixRules;
+    patch.maskGroups = maskGroups_;
     patch.chaosParams = chaosParams;
     patch.shapeSourceParams = shapeSourceParams;
     patch.toneFx = effectsParams;
@@ -1397,6 +1416,7 @@ void SynthCore::renderBlock(float *left, float *right, int numSamples)
             {
                 matrix.setParams(snap->modSlotParams, snap->matrixRules,
                                  snap->chaosParams, snap->shapeSourceParams);
+                matrix.setMaskGroups(snap->maskGroups);
                 effects.setParams(snap->effectsParams);
                 matrix.advanceControl(kSeedControlBlockSize);
             }

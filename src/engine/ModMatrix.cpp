@@ -90,6 +90,20 @@ MatrixRule ModMatrix::getRule(int idx) const
 
 void ModMatrix::advanceControl(int samples)
 {
+    // Mask-group fan time: driven by the base slot's rate. Wrapped only at a
+    // huge bound (~hours) so freq-spread lane phases stay continuous.
+    for(int gi = 0; gi < kMaxMaskGroups; ++gi)
+    {
+        const auto &g = groups_[(size_t)gi];
+        if(!g.enabled)
+            continue;
+        const int bs = std::clamp(int(g.baseSlot), 0, kMaxModSlots - 1);
+        groupTime_[(size_t)gi] += double(std::max(0.0f, slotParams_[(size_t)bs].rateHz))
+                                  * double(samples) / sampleRate_;
+        if(groupTime_[(size_t)gi] > 1048576.0)
+            groupTime_[(size_t)gi] -= 1048576.0;
+    }
+
     for(int i = 0; i < kMaxModSlots; ++i)
     {
         const auto &p = slotParams_[(size_t)i];
@@ -129,17 +143,28 @@ void ModMatrix::advanceControl(int samples)
     chaosValue_ = clampf(chaosValue_ * chaosParams_.amount, -1.0f, 1.0f);
 }
 
+float ModMatrix::bend01(float x, float c)
+{
+    c = clampf(c, -1.0f, 1.0f);
+    if(std::abs(c) < 1.0e-4f)
+        return x;
+    return c >= 0.0f ? std::pow(x, 1.0f + c * 4.0f)
+                     : 1.0f - std::pow(1.0f - x, 1.0f - c * 4.0f);
+}
+
 float ModMatrix::applyTransfer(const MatrixRule &r, float m)
 {
-    const float c = clampf(r.transferCurve, -1.0f, 1.0f);
-    if(std::abs(c) < 1.0e-4f)
+    if(std::abs(r.transferCurve) < 1.0e-4f)
         return m;
     // Same bend family as the MOD-curve segments (ModCurve.h): drag up = convex
     // (fast onset), down = concave. Sign-magnitude keeps f(0) = 0.
-    const float a = std::min(std::abs(m), 1.0f);
-    const float shaped = c >= 0.0f ? std::pow(a, 1.0f + c * 4.0f)
-                                   : 1.0f - std::pow(1.0f - a, 1.0f - c * 4.0f);
+    const float shaped = bend01(std::min(std::abs(m), 1.0f), r.transferCurve);
     return m < 0.0f ? -shaped : shaped;
+}
+
+void ModMatrix::setMaskGroups(const std::array<MaskGroup, kMaxMaskGroups> &groups)
+{
+    groups_ = groups;
 }
 
 float ModMatrix::weightFn(const MatrixRule &r, int i, const StaticSpectralFrame &frame)
@@ -259,6 +284,52 @@ void ModMatrix::evaluateForVoice(MatrixVoiceOutput &out,
 
     const int N = frame.partialCount;
 
+    // Destination application shared by rules and mask groups.
+    const auto applyDest = [&out](ModDestination dest, int i, float contrib) {
+        switch(dest)
+        {
+            case ModDestination::Amp:
+                out.mAmp[i] *= clampf(1.0f + contrib, 0.0f, 32.0f); break;
+            case ModDestination::Freq:
+                out.mFreq[i] *= std::pow(2.0f, clampf(contrib, -12.0f, 12.0f)); break;
+            case ModDestination::Phase:
+                out.dPhase[i] += contrib * kPi; break;
+            case ModDestination::TrackGain:
+                out.mAmp[i] *= clampf(1.0f + contrib, 0.0f, 4.0f); break;
+            case ModDestination::TrackPan:
+            case ModDestination::MetaPan:
+                out.dPan[i] += contrib; break;
+            case ModDestination::PitchOct:
+                out.mFreq[i] *= std::pow(2.0f, clampf(contrib, -4.0f, 4.0f)); break;
+            case ModDestination::PitchSem:
+                out.mFreq[i] *= std::pow(2.0f, clampf(contrib, -48.0f, 48.0f) / 12.0f); break;
+            case ModDestination::PitchFine:
+            case ModDestination::PitchCrs:
+                out.mFreq[i] *= std::pow(2.0f, clampf(contrib, -400.0f, 400.0f) / 1200.0f); break;
+            case ModDestination::MetaMorph:
+                out.dMorph[i] += contrib; break;
+            case ModDestination::MetaWarp:
+                out.dWarp[i] += contrib; break;
+            default: break;
+        }
+    };
+    // Resolve a target track id to its flattened partial range (0 = all).
+    const auto resolveRange = [&](uint32_t targetTrackId, int &begin, int &end) -> bool {
+        begin = 0;
+        end = N;
+        if(targetTrackId == 0)
+            return begin < end;
+        begin = end = 0;
+        for(int t = 0; t < trackCount; ++t)
+            if(trackIds != nullptr && trackIds[t] == targetTrackId)
+            {
+                begin = std::clamp(trackBegin != nullptr ? trackBegin[t] : 0, 0, N);
+                end = std::clamp(trackEnd != nullptr ? trackEnd[t] : N, begin, N);
+                break;
+            }
+        return begin < end;
+    };
+
     // Per-partial "which source track" axis, normalized 0..1 over the track list.
     // Built lazily — only rules with a TRACK-axis mask pay for it (one fill per
     // voice per control block).
@@ -286,22 +357,9 @@ void ModMatrix::evaluateForVoice(MatrixVoiceOutput &out,
             continue;
         if(insertModParamForDest(rule.dest) >= 0)
             continue;
-        int begin = 0, end = N;
-        if(rule.targetTrackId != 0)
-        {
-            begin = end = 0;
-            for(int t = 0; t < trackCount; ++t)
-            {
-                if(trackIds != nullptr && trackIds[t] == rule.targetTrackId)
-                {
-                    begin = std::clamp(trackBegin != nullptr ? trackBegin[t] : 0, 0, N);
-                    end = std::clamp(trackEnd != nullptr ? trackEnd[t] : N, begin, N);
-                    break;
-                }
-            }
-            if(begin >= end)
-                continue;
-        }
+        int begin, end;
+        if(!resolveRange(rule.targetTrackId, begin, end))
+            continue;
         // Response bend: most sources are partial-invariant, so shape once and
         // hoist; only GeneratorSelf/Shape vary with the partial index.
         const bool perPartialSrc = rule.source == ModSource::GeneratorSelf
@@ -347,32 +405,47 @@ void ModMatrix::evaluateForVoice(MatrixVoiceOutput &out,
                 }
                 w *= maskLookup(rule.maskSlot, ax);
             }
-            const float contrib = rule.depth * m * w;
-            switch(rule.dest)
+            applyDest(rule.dest, i, rule.depth * m * w);
+        }
+    }
+
+    // ---- Mask groups: one lane of the fanned base LFO per target -------------
+    for(int gi = 0; gi < kMaxMaskGroups; ++gi)
+    {
+        const auto &g = groups_[(size_t)gi];
+        if(!g.enabled)
+            continue;
+        if(g.family)
+        {
+            // Per-partial fan: every partial in the family range gets its own
+            // successively offset lane.
+            if(std::abs(g.familyDepth) < 1e-6f)
+                continue;
+            int begin, end;
+            if(!resolveRange(g.familyTrackId, begin, end))
+                continue;
+            for(int i = begin; i < end; ++i)
             {
-                case ModDestination::Amp:
-                    out.mAmp[i] *= clampf(1.0f + contrib, 0.0f, 32.0f); break;
-                case ModDestination::Freq:
-                    out.mFreq[i] *= std::pow(2.0f, clampf(contrib, -12.0f, 12.0f)); break;
-                case ModDestination::Phase:
-                    out.dPhase[i] += contrib * kPi; break;
-                case ModDestination::TrackGain:
-                    out.mAmp[i] *= clampf(1.0f + contrib, 0.0f, 4.0f); break;
-                case ModDestination::TrackPan:
-                case ModDestination::MetaPan:
-                    out.dPan[i] += contrib; break;
-                case ModDestination::PitchOct:
-                    out.mFreq[i] *= std::pow(2.0f, clampf(contrib, -4.0f, 4.0f)); break;
-                case ModDestination::PitchSem:
-                    out.mFreq[i] *= std::pow(2.0f, clampf(contrib, -48.0f, 48.0f) / 12.0f); break;
-                case ModDestination::PitchFine:
-                case ModDestination::PitchCrs:
-                    out.mFreq[i] *= std::pow(2.0f, clampf(contrib, -400.0f, 400.0f) / 1200.0f); break;
-                case ModDestination::MetaMorph:
-                    out.dMorph[i] += contrib; break;
-                case ModDestination::MetaWarp:
-                    out.dWarp[i] += contrib; break;
-                default: break;
+                const float x = end - begin > 1 ? float(i - begin) / float(end - begin - 1) : 0.0f;
+                applyDest(g.familyDest, i, g.familyDepth * maskGroupLane(gi, g, x));
+            }
+        }
+        else
+        {
+            // 16 discrete lanes, one per configured slot.
+            for(int k = 0; k < kMaskGroupSlots; ++k)
+            {
+                const auto &t = g.targets[(size_t)k];
+                if(!t.enabled || std::abs(t.depth) < 1e-6f)
+                    continue;
+                if(insertModParamForDest(t.dest) >= 0)
+                    continue;  // per-partial path only
+                int begin, end;
+                if(!resolveRange(t.targetTrackId, begin, end))
+                    continue;
+                const float v = t.depth * maskGroupLane(gi, g, float(k) / float(kMaskGroupSlots - 1));
+                for(int i = begin; i < end; ++i)
+                    applyDest(t.dest, i, v);
             }
         }
     }

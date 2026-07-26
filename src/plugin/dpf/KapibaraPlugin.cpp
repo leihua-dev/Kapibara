@@ -809,6 +809,16 @@ void KapibaraPlugin::updateAmpEnv(int index, const synth::AdsrParams &params)
     core_.setAmpEnvParams(index, clean);
 }
 
+synth::MaskGroup KapibaraPlugin::maskGroup(int index) const
+{
+    return core_.getMaskGroup(index);
+}
+
+void KapibaraPlugin::updateMaskGroup(int index, const synth::MaskGroup &group)
+{
+    core_.setMaskGroup(index, group);
+}
+
 void KapibaraPlugin::updateMatrixRule(int index, const synth::MatrixRule &rule)
 {
     core_.setMatrixRule(index, rule);
