@@ -225,8 +225,9 @@ bool KapibaraUI::handleButtonClick(float x, float y)
                 auto &mod = track->basicMod;
                 if(basicModModeRect_.w > 0.0f && basicModModeRect_.contains(x, y))
                 {
-                    mod.mode = static_cast<synth::BasicOscModMode>((int(mod.mode) + 1) % 4);
-                    pushCurrentTrack();
+                    // Menu, not a cycle: stepping through six modes to reach one
+                    // means hearing every mode in between.
+                    openBasicOscModMenu(track->id, x, y);
                     return true;
                 }
                 if(basicModSrcRect_.w > 0.0f && basicModSrcRect_.contains(x, y))

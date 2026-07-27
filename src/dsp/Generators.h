@@ -182,8 +182,11 @@ enum class BasicOscModMode : uint8_t
     Off = 0,
     Ring = 1,   // carrier * modulator
     AM = 2,     // carrier * (1 + modulator)
-    Sync = 3    // modulator's upward zero crossings reset the carrier's phases
+    Sync = 3,   // modulator's upward zero crossings reset the carrier's phases
+    FM = 4,     // modulator integrated into the carrier's phase
+    PM = 5      // modulator added to the carrier's phase
 };
+constexpr int kBasicOscModModes = 6;
 
 struct BasicOscModParams
 {
@@ -418,6 +421,9 @@ struct RenderTrackRuntime
     SourceTrackOutputMode outputMode = SourceTrackOutputMode::Audio;
     std::array<SourceModEntry, kMaxTrackMods> mods {};
     BasicOscModParams basicMod {};        // the rack's own cross-unit modulation
+    // Whether the modulating unit is itself audible. A unit switched off is still
+    // rendered when it is the modulation source — it just doesn't reach the sum.
+    bool basicModSourceAudible = true;
     int perVoiceFilterCount = 0;
     std::array<SourceFilterParams, kMaxPerVoiceFilters> perVoiceFilters {};
     int perVoiceFilterOrderCount = 0;

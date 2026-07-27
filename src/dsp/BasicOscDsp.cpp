@@ -79,9 +79,21 @@ void buildBasicSeed(const SourceTrackParams &track, WavetableSeedParams &seed, i
         p.phase = 0.0f;
     }
 
+    // A unit that is switched off still gets its partials when it is the
+    // modulation source: the switch controls whether it is HEARD, not whether it
+    // exists. Voice renders it into the modulator buffer either way and only adds
+    // it to the output when it is enabled.
+    const auto isRendered = [&track](int ui) {
+        if(track.basicUnits[(size_t)ui].enabled)
+            return true;
+        return track.basicMod.mode != BasicOscModMode::Off
+               && int(track.basicMod.source) == ui
+               && int(track.basicMod.target) != ui;
+    };
+
     int active = 0;
-    for(const auto &u : track.basicUnits)
-        if(u.enabled)
+    for(int ui = 0; ui < kBasicOscUnits; ++ui)
+        if(isRendered(ui))
             ++active;
     const bool fallbackToFirst = active == 0;  // never render silence
     if(fallbackToFirst)
@@ -94,7 +106,7 @@ void buildBasicSeed(const SourceTrackParams &track, WavetableSeedParams &seed, i
     for(int ui = 0; ui < kBasicOscUnits; ++ui)
     {
         const auto &u = track.basicUnits[(size_t)ui];
-        if(!u.enabled && !(fallbackToFirst && ui == 0))
+        if(!isRendered(ui) && !(fallbackToFirst && ui == 0))
             continue;
         const int room = std::min(budget, kMaxWavetablePartials - write);
         if(room <= 0)

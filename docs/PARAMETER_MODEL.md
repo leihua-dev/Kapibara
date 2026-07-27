@@ -35,7 +35,7 @@ Track types and their generators:
 |------|-----------|--------|
 | Partial Bank | independent additive bank up to 64 partials with frame morph | `dsp/GeneratorBank` |
 | Meta Oscillator | multi-frame wavetable, up to 512 × 2048-sample frames | `dsp/WavetableCore` |
-| Basic Oscillator | rack of 3 units (sine/triangle/saw/pulse/sub each), summed, with Ring/AM/Sync between units | `dsp/BasicOscDsp` |
+| Basic Oscillator | rack of 3 units (sine/triangle/saw/pulse/sub each), summed, with Ring/AM/Sync/FM/PM between units | `dsp/BasicOscDsp` |
 | Sample / Noise | Noise active; File/Capture are UI placeholders | `dsp/SampleNoiseDsp` |
 
 Each track owns: generator params, gain, pan, send, mute/solo, output mode

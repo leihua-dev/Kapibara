@@ -220,7 +220,7 @@ void KapibaraUI::loadModernState(const std::string &path)
                 ensureTrack(ti);
                 if(ti < 0) continue;
                 auto &bm = tracks[(size_t)ti].basicMod;
-                bm.mode = synth::BasicOscModMode(clampi(mode, 0, 3));
+                bm.mode = synth::BasicOscModMode(clampi(mode, 0, synth::kBasicOscModModes - 1));
                 bm.source = uint8_t(clampi(src, 0, synth::kBasicOscUnits - 1));
                 bm.target = uint8_t(clampi(dst, 0, synth::kBasicOscUnits - 1));
                 bm.depth = clampf(depth, 0.0f, 1.0f);

@@ -17,6 +17,11 @@
     float oscModTypeMenuX_ = 0.0f, oscModTypeMenuY_ = 0.0f;
     int oscModTypeMenuTrackId_ = -1, oscModTypeMenuSlot_ = -1;
     std::array<Rect, 6> oscModTypeMenuRects_ {};  // 5 modes + remove
+    // Basic Oscillator rack cross-unit modulation mode picker.
+    bool basicModMenuOpen_ = false;
+    float basicModMenuX_ = 0.0f, basicModMenuY_ = 0.0f;
+    uint32_t basicModMenuTrackId_ = 0;
+    std::array<Rect, synth::kBasicOscModModes> basicModMenuRects_ {};
     bool routeContextMenuOpen_ = false;
     float routeContextX_ = 0.0f, routeContextY_ = 0.0f;
     int  routeContextRuleIndex_ = -1;

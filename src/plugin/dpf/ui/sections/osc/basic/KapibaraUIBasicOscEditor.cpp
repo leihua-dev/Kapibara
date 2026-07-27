@@ -54,14 +54,7 @@ void KapibaraUI::drawBasicOscModModule(const Rect &r, synth::SourceTrackParams &
 {
         drawPanel(r, DesignTokens::groove(), DesignTokens::border());
         auto &mod = track.basicMod;
-        const char *modeName = "OFF";
-        switch(mod.mode)
-        {
-            case synth::BasicOscModMode::Ring: modeName = "RING"; break;
-            case synth::BasicOscModMode::AM:   modeName = "AM";   break;
-            case synth::BasicOscModMode::Sync: modeName = "SYNC"; break;
-            default: break;
-        }
+        const char *modeName = basicOscModModeName(mod.mode);
         const float pad = 8.0f;
         const float w = r.w - pad * 2.0f;
         const float gap = 4.0f;

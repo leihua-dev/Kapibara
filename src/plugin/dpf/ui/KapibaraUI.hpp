@@ -254,6 +254,10 @@ class KapibaraUI final : public KapibaraUIDrawing
     void drawMetaTrackEditor(const Rect &r, synth::SourceTrackParams &track);
     void drawBasicTrackEditor(const Rect &r, synth::SourceTrackParams &track);
     void drawBasicOscModModule(const Rect &r, synth::SourceTrackParams &track);
+    static const char *basicOscModModeName(synth::BasicOscModMode m);
+    void openBasicOscModMenu(uint32_t trackId, float x, float y);
+    void drawBasicOscModMenu();
+    bool handleBasicOscModMenuClick(float x, float y);
     void drawNoiseTrackEditor(const Rect &r, synth::SourceTrackParams &track);
 
     // source/KapibaraUISourceEnv

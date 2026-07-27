@@ -139,6 +139,15 @@ bool KapibaraUI::onMouse(const MouseEvent &ev)
                 repaint();
                 return true;
             }
+            // Right-click the rack's OSC MOD mode chip → mode menu.
+            if(basicModModeRect_.w > 0.0f && basicModModeRect_.contains(x, y))
+                if(auto *t = currentTrack();
+                   t != nullptr && t->type == synth::SourceTrackType::BasicOscillator)
+                {
+                    openBasicOscModMenu(t->id, x, y);
+                    repaint();
+                    return true;
+                }
             // Right-click BASE → step back through the curve slots. Left-click
             // cycles forward through the whole shape pool (MOD slots, then the
             // wavetables); this is the shortcut for picking a curve slot without
@@ -269,6 +278,12 @@ bool KapibaraUI::onMouse(const MouseEvent &ev)
         }
 
         if(handleOscModTypeMenuClick(x, y))
+        {
+            repaint();
+            return true;
+        }
+
+        if(handleBasicOscModMenuClick(x, y))
         {
             repaint();
             return true;

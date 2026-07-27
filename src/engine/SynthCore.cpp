@@ -694,6 +694,8 @@ void SynthCore::publishSnapshotNoLock()
         runtime.outputMode = track.outputMode;
         runtime.mods = track.mods;
         runtime.basicMod = track.basicMod;
+        runtime.basicModSourceAudible =
+            track.basicUnits[(size_t)std::clamp<int>(track.basicMod.source, 0, kBasicOscUnits - 1)].enabled;
         runtime.perVoiceFilterCount = std::clamp(track.perVoiceFilterCount, 0, kMaxPerVoiceFilters);
         runtime.perVoiceFilters = track.perVoiceFilters;
         runtime.perVoiceFilterOrderCount = std::clamp(track.perVoiceFilterOrderCount, 0, kMaxPerVoiceFilters);

@@ -273,6 +273,10 @@ class Voice
     // Control-rate offset applied to each track's osc-mod depth, so the matrix
     // (an LFO, an envelope) can sweep a modulation that is otherwise source-local.
     std::array<float, kMaxSourceTracks> oscModDepthMod_ {};
+    std::array<float, kMaxVoiceRenderBlockSamples> oscPmScratch_ {};  // FM/PM phase offset
+    // FM integrates the modulator, so the accumulator must persist across render
+    // blocks — restarting it per block restarts the phase ramp and buzzes.
+    std::array<double, kMaxSourceTracks> oscFmAcc_ {};
     int renderTrackCount_ = 0;
     std::array<std::array<float, kMaxVoiceRenderBlockSamples>, kMaxAmpEnvs> ampEnvScratch_ {};
     std::array<std::array<float, kMaxVoiceRenderBlockSamples>, kMaxSourceTracks> trackEnvScratch_ {};

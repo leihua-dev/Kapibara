@@ -282,6 +282,7 @@ void Voice::noteOn(int midiNote, float velocity, const StaticSpectralFrame &fram
     filterNodeStates_ = {};
     utilBandStates_ = {};
     for(auto &acc : fmPhaseAcc_) acc.fill(0.0);
+    oscFmAcc_.fill(0.0);
     syncPrev_.fill(0.0f);
 
     updateUnisonLayout(unison);
@@ -1158,9 +1159,14 @@ void Voice::renderTrackPartials(float *left, float *right, int numSamples, int s
     const auto &mod = trackRuntime_[(size_t)source].basicMod;
     const float depth = clampf(mod.depth + depthMod, 0.0f, 1.0f);
     const int si = int(mod.source), ti = int(mod.target);
-    const bool wants = mod.mode != BasicOscModMode::Off && depth > 1.0e-4f
+    // Deliberately NOT gated on depth: with a mode selected the modulator unit is
+    // rendered whether or not it is switched on, and the plain path would put a
+    // switched-off modulator straight into the output. Depth only decides whether
+    // the modulation is applied, below.
+    const bool wants = mod.mode != BasicOscModMode::Off
                        && si != ti && si >= 0 && si < kBasicOscUnits
                        && ti >= 0 && ti < kBasicOscUnits && wavetable_ != nullptr;
+    const bool active = depth > 1.0e-4f;
     if(!wants)
     {
         renderPartialRangeRaw(left, right, numSamples, partialBegin, partialEnd, pmBuffer, syncBuffer);
@@ -1203,29 +1209,61 @@ void Voice::renderTrackPartials(float *left, float *right, int numSamples, int s
     if(hi1 < partialEnd)
         renderPartialRangeRaw(left, right, numSamples, hi1, partialEnd, pmBuffer, syncBuffer);
 
-    // 3) The carrier unit, hard-synced to the modulator when asked.
+    // 3) The carrier unit, driven by the modulator in whichever domain the mode
+    //    asks for: phase (FM/PM/Sync) before it renders, amplitude (Ring/AM) after.
     std::fill(oscCarL_.begin(), oscCarL_.begin() + numSamples, 0.0f);
     std::fill(oscCarR_.begin(), oscCarR_.begin() + numSamples, 0.0f);
     const float *carrierSync = syncBuffer;
-    if(mod.mode == BasicOscModMode::Sync)
+    const float *carrierPm = pmBuffer;
+    if(active && mod.mode == BasicOscModMode::Sync)
     {
         for(int s = 0; s < numSamples; ++s)
             syncMonoScratch_[(size_t)s] = 0.5f * (oscModL_[(size_t)s] + oscModR_[(size_t)s]);
         carrierSync = syncMonoScratch_.data();
     }
-    renderPartialRangeRaw(oscCarL_.data(), oscCarR_.data(), numSamples, cb, ce, pmBuffer, carrierSync);
+    else if(active && (mod.mode == BasicOscModMode::PM || mod.mode == BasicOscModMode::FM))
+    {
+        // Added to, never replacing, any cross-track phase modulation already
+        // aimed at this carrier.
+        if(mod.mode == BasicOscModMode::PM)
+        {
+            const float idx = depth * 24.0f;  // radians at full depth
+            for(int s = 0; s < numSamples; ++s)
+                oscPmScratch_[(size_t)s] = (pmBuffer != nullptr ? pmBuffer[s] : 0.0f)
+                    + idx * 0.5f * (oscModL_[(size_t)s] + oscModR_[(size_t)s]);
+        }
+        else
+        {
+            const float devHz = depth * 8000.0f;  // peak deviation
+            const double invSr = 1.0 / double(sampleRate_);
+            double acc = oscFmAcc_[(size_t)source];
+            for(int s = 0; s < numSamples; ++s)
+            {
+                acc += double(devHz) * 0.5 * double(oscModL_[(size_t)s] + oscModR_[(size_t)s])
+                       * invSr * 6.2831853071795865;
+                oscPmScratch_[(size_t)s] = (pmBuffer != nullptr ? pmBuffer[s] : 0.0f) + float(acc);
+            }
+            oscFmAcc_[(size_t)source] = std::remainder(acc, 6.283185307179586);
+        }
+        carrierPm = oscPmScratch_.data();
+    }
+    renderPartialRangeRaw(oscCarL_.data(), oscCarR_.data(), numSamples, cb, ce, carrierPm, carrierSync);
 
-    if(mod.mode == BasicOscModMode::Ring || mod.mode == BasicOscModMode::AM)
+    if(active && (mod.mode == BasicOscModMode::Ring || mod.mode == BasicOscModMode::AM))
         applySourceMod(oscCarL_.data(), oscCarR_.data(), oscModL_.data(), oscModR_.data(),
                        numSamples,
                        mod.mode == BasicOscModMode::Ring ? SourceModType::RingMod
                                                          : SourceModType::AM,
                        depth);
 
+    // The modulator reaches the output only when its own switch is on. Switched
+    // off it still drove the carrier above — the switch controls audibility, not
+    // whether the unit exists.
+    const bool modAudible = trackRuntime_[(size_t)source].basicModSourceAudible;
     for(int s = 0; s < numSamples; ++s)
     {
-        left[s] += oscCarL_[(size_t)s] + oscModL_[(size_t)s];
-        right[s] += oscCarR_[(size_t)s] + oscModR_[(size_t)s];
+        left[s] += oscCarL_[(size_t)s] + (modAudible ? oscModL_[(size_t)s] : 0.0f);
+        right[s] += oscCarR_[(size_t)s] + (modAudible ? oscModR_[(size_t)s] : 0.0f);
     }
 }
 
