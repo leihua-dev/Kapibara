@@ -262,6 +262,13 @@ struct SourceTrackParams
     BasicOscillatorShape basicShape = BasicOscillatorShape::Sine;
     float pulseWidth = 0.5f;
     float subLevel = 0.0f;
+    // Basic-oscillator pitch offset. Meta keeps its OCT/SEM/FIN/CRS on metaOsc
+    // and Partial Bank on its seed's slot 0, but a basic osc's partials are
+    // generated from scratch every rebuild, so its offset has to live here.
+    int basicPitchOct = 0;
+    int basicPitchSem = 0;
+    float basicPitchFin = 0.0f;
+    float basicPitchCrs = 0.0f;
     SampleNoiseMode sampleNoiseMode = SampleNoiseMode::Noise;
     float noiseColor = 0.5f;
     int perVoiceFilterCount = 0;

@@ -51,7 +51,9 @@ void KapibaraUI::saveModernState(const std::string &path)
                 << ' ' << t.ampEnvIndex << ' ' << int(t.mute) << ' ' << int(t.solo)
                 << ' ' << t.unison.voices << ' ' << t.unison.detuneCents << ' ' << t.unison.widthStereo << ' ' << t.unison.phaseSpread
                 << ' ' << int(t.basicShape) << ' ' << t.pulseWidth << ' ' << t.subLevel << ' ' << int(t.sampleNoiseMode) << ' ' << t.noiseColor
-                << ' ' << t.partialBank.partialCount << ' ' << t.perVoiceFilterCount << ' ' << t.inserts.size() << "\n";
+                << ' ' << t.partialBank.partialCount << ' ' << t.perVoiceFilterCount << ' ' << t.inserts.size()
+                << ' ' << t.basicPitchOct << ' ' << t.basicPitchSem
+                << ' ' << t.basicPitchFin << ' ' << t.basicPitchCrs << "\n";
             out << "mtname " << ti << ' ' << t.name << "\n";
             for(int s = 0; s < t.perVoiceFilterCount && s < synth::kMaxPerVoiceFilters; ++s)
             {
@@ -166,6 +168,17 @@ void KapibaraUI::loadModernState(const std::string &path)
                 t.id = id; t.type = synth::SourceTrackType(type); t.mute = mute; t.solo = solo;
                 t.basicShape = synth::BasicOscillatorShape(bshape); t.sampleNoiseMode = synth::SampleNoiseMode(snmode);
                 t.partialBank.partialCount = pc; t.perVoiceFilterCount = pvfc; t.inserts.clear();
+                // Optional tail (basic-osc pitch), each re-defaulted on its own:
+                // a failed >> writes 0 AND poisons the stream for later fields.
+                int boct = 0, bsem = 0; float bfin = 0.0f, bcrs = 0.0f;
+                if(!(ss >> boct)) boct = 0;
+                if(!(ss >> bsem)) bsem = 0;
+                if(!(ss >> bfin)) bfin = 0.0f;
+                if(!(ss >> bcrs)) bcrs = 0.0f;
+                t.basicPitchOct = clampi(boct, -4, 4);
+                t.basicPitchSem = clampi(bsem, -12, 12);
+                t.basicPitchFin = clampf(bfin, -100.0f, 100.0f);
+                t.basicPitchCrs = clampf(bcrs, -100.0f, 100.0f);
             }
             else if(tok == "mtname")
             {

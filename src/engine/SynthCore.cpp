@@ -120,9 +120,15 @@ bool sourceTrackSoundContentChanged(const SourceTrackParams &a, const SourceTrac
             // Runtime params (ratio/amp/phase/pan/morph/warp) are patched via fast path.
             return frameTableContentChanged(a.metaOsc, b.metaOsc);
         case SourceTrackType::BasicOscillator:
+            // Pitch belongs here too: buildBasicSeed folds it into the partial
+            // ratios, so without a rebuild the offset would never be heard.
             return a.basicShape != b.basicShape
                    || std::abs(a.pulseWidth - b.pulseWidth) > 1.0e-6f
-                   || std::abs(a.subLevel - b.subLevel) > 1.0e-6f;
+                   || std::abs(a.subLevel - b.subLevel) > 1.0e-6f
+                   || a.basicPitchOct != b.basicPitchOct
+                   || a.basicPitchSem != b.basicPitchSem
+                   || std::abs(a.basicPitchFin - b.basicPitchFin) > 1.0e-6f
+                   || std::abs(a.basicPitchCrs - b.basicPitchCrs) > 1.0e-6f;
         case SourceTrackType::SampleNoise:
             return a.sampleNoiseMode != b.sampleNoiseMode
                    || std::abs(a.noiseColor - b.noiseColor) > 1.0e-6f;

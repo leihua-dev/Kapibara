@@ -136,49 +136,26 @@ bool KapibaraUI::handleControlPress(float x, float y)
         if(metaMorphSliderRect_.contains(x, y)) return setDragAbs(DragTarget::MetaMorphSlider);
         if(metaWaveformRect_.contains(x, y)) return setDragMetaAbs(DragTarget::MetaWaveform);
 
-        // Pitch controls (OCT/SEM/FIN/CRS) — MetaOscillator or whole PartialBank group.
-        if(track && (track->type == synth::SourceTrackType::MetaOscillator
-                     || track->type == synth::SourceTrackType::PartialBank))
+        // Pitch controls (OCT/SEM/FIN/CRS) — Meta, the whole PartialBank group, or
+        // a Basic oscillator's harmonic series. trackGroupPitch says where the
+        // offset lives for this track type; the rects and drag cases are shared.
+        if(TrackPitch tp; track != nullptr && trackGroupPitch(*track, tp))
         {
-            auto &ms = track->type == synth::SourceTrackType::MetaOscillator
-                           ? track->metaOsc
-                           : track->partialBank.partials[0];
-            if(metaOctRect_.contains(x, y))
-            {
+            const auto startPitchDrag = [&](DragTarget tgt) {
                 if(track->type == synth::SourceTrackType::MetaOscillator)
                     pushMetaUndoSnapshot();
-                dragTarget_   = DragTarget::MetaPitchOct;
+                dragTarget_   = tgt;
                 dragStartY_   = y;
-                dragStartOct_ = ms.pitchOct;
+                dragStartOct_ = tp.oct;
+                dragStartSem_ = tp.sem;
+                dragStartFin_ = tp.fin;
+                dragStartCrs_ = tp.crs;
                 return true;
-            }
-            if(metaSemRect_.contains(x, y))
-            {
-                if(track->type == synth::SourceTrackType::MetaOscillator)
-                    pushMetaUndoSnapshot();
-                dragTarget_   = DragTarget::MetaPitchSem;
-                dragStartY_   = y;
-                dragStartSem_ = ms.pitchSem;
-                return true;
-            }
-            if(metaFinRect_.contains(x, y))
-            {
-                if(track->type == synth::SourceTrackType::MetaOscillator)
-                    pushMetaUndoSnapshot();
-                dragTarget_   = DragTarget::MetaPitchFin;
-                dragStartY_   = y;
-                dragStartFin_ = ms.pitchFin;
-                return true;
-            }
-            if(metaCrsRect_.contains(x, y))
-            {
-                if(track->type == synth::SourceTrackType::MetaOscillator)
-                    pushMetaUndoSnapshot();
-                dragTarget_   = DragTarget::MetaPitchCrs;
-                dragStartY_   = y;
-                dragStartCrs_ = ms.pitchCrs;
-                return true;
-            }
+            };
+            if(metaOctRect_.contains(x, y)) return startPitchDrag(DragTarget::MetaPitchOct);
+            if(metaSemRect_.contains(x, y)) return startPitchDrag(DragTarget::MetaPitchSem);
+            if(metaFinRect_.contains(x, y)) return startPitchDrag(DragTarget::MetaPitchFin);
+            if(metaCrsRect_.contains(x, y)) return startPitchDrag(DragTarget::MetaPitchCrs);
         }
 
         if(track && track->type == synth::SourceTrackType::PartialBank)

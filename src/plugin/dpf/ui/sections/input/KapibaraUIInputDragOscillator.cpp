@@ -111,71 +111,34 @@ bool KapibaraUI::applyOscillatorDragValue(float x, float y)
                 { track->metaOsc.warpAmount = knobNorm() * 2.0f - 1.0f; pushCurrentTrack(); }
                 else { metaSlot.warpAmount = knobNorm() * 2.0f - 1.0f; pushMetaPartialRuntime(); }
                 break;
+            // OCT/SEM/FIN/CRS for whichever track type is selected — the offset's
+            // storage differs per type, applyTrackGroupPitch resolves it.
             case DragTarget::MetaPitchOct:
-                if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::MetaOscillator)
-                {
-                    const int delta = int((dragStartY_ - y) / 22.0f);
-                    track->metaOsc.pitchOct = std::max(-4, std::min(4, dragStartOct_ + delta));
-                    track->metaOsc.syncRatioFromPitch();
-                    pushCurrentTrack();
-                }
-                else if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::PartialBank)
-                {
-                    const int delta = int((dragStartY_ - y) / 22.0f);
-                    const int oct = std::max(-4, std::min(4, dragStartOct_ + delta));
-                    const auto &base = track->partialBank.partials[0];
-                    applyPartialBankGroupPitch(track->partialBank, oct, base.pitchSem, base.pitchFin, base.pitchCrs);
-                    pushCurrentTrack();
-                }
-                break;
             case DragTarget::MetaPitchSem:
-                if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::MetaOscillator)
-                {
-                    const int delta = int((dragStartY_ - y) / 12.0f);
-                    track->metaOsc.pitchSem = std::max(-12, std::min(12, dragStartSem_ + delta));
-                    track->metaOsc.syncRatioFromPitch();
-                    pushCurrentTrack();
-                }
-                else if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::PartialBank)
-                {
-                    const int delta = int((dragStartY_ - y) / 12.0f);
-                    const int sem = std::max(-12, std::min(12, dragStartSem_ + delta));
-                    const auto &base = track->partialBank.partials[0];
-                    applyPartialBankGroupPitch(track->partialBank, base.pitchOct, sem, base.pitchFin, base.pitchCrs);
-                    pushCurrentTrack();
-                }
-                break;
             case DragTarget::MetaPitchFin:
-                if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::MetaOscillator)
-                {
-                    const float delta = (dragStartY_ - y) * 0.6f;
-                    track->metaOsc.pitchFin = clampf(dragStartFin_ + delta, -100.0f, 100.0f);
-                    track->metaOsc.syncRatioFromPitch();
-                    pushCurrentTrack();
-                }
-                else if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::PartialBank)
-                {
-                    const float delta = (dragStartY_ - y) * 0.6f;
-                    const float fin = clampf(dragStartFin_ + delta, -100.0f, 100.0f);
-                    const auto &base = track->partialBank.partials[0];
-                    applyPartialBankGroupPitch(track->partialBank, base.pitchOct, base.pitchSem, fin, base.pitchCrs);
-                    pushCurrentTrack();
-                }
-                break;
             case DragTarget::MetaPitchCrs:
-                if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::MetaOscillator)
+                if(TrackPitch tp; auto *track = currentTrack())
                 {
-                    const float delta = (dragStartY_ - y) * 0.1f;
-                    track->metaOsc.pitchCrs = clampf(dragStartCrs_ + delta, -100.0f, 100.0f);
-                    track->metaOsc.syncRatioFromPitch();
-                    pushCurrentTrack();
-                }
-                else if(auto *track = currentTrack(); track != nullptr && track->type == synth::SourceTrackType::PartialBank)
-                {
-                    const float delta = (dragStartY_ - y) * 0.1f;
-                    const float crs = clampf(dragStartCrs_ + delta, -100.0f, 100.0f);
-                    const auto &base = track->partialBank.partials[0];
-                    applyPartialBankGroupPitch(track->partialBank, base.pitchOct, base.pitchSem, base.pitchFin, crs);
+                    if(!trackGroupPitch(*track, tp))
+                        break;
+                    // Only the dragged component moves; the rest stay where the
+                    // press latched them.
+                    tp.oct = dragStartOct_;
+                    tp.sem = dragStartSem_;
+                    tp.fin = dragStartFin_;
+                    tp.crs = dragStartCrs_;
+                    switch(dragTarget_)
+                    {
+                        case DragTarget::MetaPitchOct:
+                            tp.oct = dragStartOct_ + int((dragStartY_ - y) / 22.0f); break;
+                        case DragTarget::MetaPitchSem:
+                            tp.sem = dragStartSem_ + int((dragStartY_ - y) / 12.0f); break;
+                        case DragTarget::MetaPitchFin:
+                            tp.fin = dragStartFin_ + (dragStartY_ - y) * 0.6f; break;
+                        default:
+                            tp.crs = dragStartCrs_ + (dragStartY_ - y) * 0.1f; break;
+                    }
+                    applyTrackGroupPitch(*track, tp);
                     pushCurrentTrack();
                 }
                 break;

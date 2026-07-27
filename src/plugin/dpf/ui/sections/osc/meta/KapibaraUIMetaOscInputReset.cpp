@@ -17,18 +17,21 @@ bool KapibaraUI::handleDoubleClickReset(float x, float y)
         {
             if(auto *t = currentTrack()) { t->send = 0.0f; pushCurrentTrack(); return true; }
         }
-        // Meta OCT/SEM/FIN/CRS
+        // OCT/SEM/FIN/CRS — every track type that has a pitch offset, not just
+        // Meta: the rects are shared and the storage differs per type.
         if(metaOctRect_.contains(x, y) || metaSemRect_.contains(x, y)
            || metaFinRect_.contains(x, y) || metaCrsRect_.contains(x, y))
         {
-            if(auto *t = currentTrack(); t && t->type == synth::SourceTrackType::MetaOscillator)
+            if(TrackPitch tp; auto *t = currentTrack())
             {
-                pushMetaUndoSnapshot();
-                t->metaOsc.pitchOct = 0; t->metaOsc.pitchSem = 0;
-                t->metaOsc.pitchFin = 0.0f; t->metaOsc.pitchCrs = 0.0f;
-                t->metaOsc.syncRatioFromPitch();
-                pushCurrentTrack();
-                return true;
+                if(trackGroupPitch(*t, tp))
+                {
+                    if(t->type == synth::SourceTrackType::MetaOscillator)
+                        pushMetaUndoSnapshot();
+                    applyTrackGroupPitch(*t, TrackPitch {});
+                    pushCurrentTrack();
+                    return true;
+                }
             }
         }
         // Meta knobs (morph, phase, pan, warpAmount)

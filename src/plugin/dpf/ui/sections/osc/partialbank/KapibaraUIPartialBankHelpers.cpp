@@ -49,6 +49,58 @@ void KapibaraUI::applyPartialBankGroupPitch(synth::WavetableSeedParams &seed,
         }
     }
 
+bool KapibaraUI::trackGroupPitch(const synth::SourceTrackParams &t, TrackPitch &out)
+{
+        switch(t.type)
+        {
+            case synth::SourceTrackType::MetaOscillator:
+                out = { t.metaOsc.pitchOct, t.metaOsc.pitchSem, t.metaOsc.pitchFin, t.metaOsc.pitchCrs };
+                return true;
+            case synth::SourceTrackType::PartialBank:
+            {
+                const auto &s = t.partialBank.partials[0];
+                out = { s.pitchOct, s.pitchSem, s.pitchFin, s.pitchCrs };
+                return true;
+            }
+            case synth::SourceTrackType::BasicOscillator:
+                out = { t.basicPitchOct, t.basicPitchSem, t.basicPitchFin, t.basicPitchCrs };
+                return true;
+            default:
+                return false;  // Sample / Noise has no harmonic series to shift
+        }
+    }
+
+void KapibaraUI::applyTrackGroupPitch(synth::SourceTrackParams &t, const TrackPitch &p)
+{
+        const int oct = clampi(p.oct, -4, 4);
+        const int sem = clampi(p.sem, -12, 12);
+        const float fin = clampf(p.fin, -100.0f, 100.0f);
+        const float crs = clampf(p.crs, -100.0f, 100.0f);
+        switch(t.type)
+        {
+            case synth::SourceTrackType::MetaOscillator:
+                t.metaOsc.pitchOct = oct;
+                t.metaOsc.pitchSem = sem;
+                t.metaOsc.pitchFin = fin;
+                t.metaOsc.pitchCrs = crs;
+                t.metaOsc.syncRatioFromPitch();
+                break;
+            case synth::SourceTrackType::PartialBank:
+                applyPartialBankGroupPitch(t.partialBank, oct, sem, fin, crs);
+                break;
+            case synth::SourceTrackType::BasicOscillator:
+                // The seed is regenerated from these on every rebuild
+                // (dsp/BasicOscDsp.cpp buildBasicSeed), so storing them is enough.
+                t.basicPitchOct = oct;
+                t.basicPitchSem = sem;
+                t.basicPitchFin = fin;
+                t.basicPitchCrs = crs;
+                break;
+            default:
+                break;
+        }
+    }
+
 Kwt2PackedBin KapibaraUI::packKwtBin(float amp, float phase)
 {
         Kwt2PackedBin bin;

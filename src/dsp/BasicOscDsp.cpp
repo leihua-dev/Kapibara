@@ -55,6 +55,18 @@ void buildBasicSeed(const SourceTrackParams &track, WavetableSeedParams &seed)
             }
             break;
     }
+
+    // Pitch offset scales the whole harmonic series, so the shape is preserved
+    // and only its fundamental moves — the same thing OCT/SEM/FIN/CRS do on the
+    // other track types.
+    const float semis = float(track.basicPitchOct) * 12.0f + float(track.basicPitchSem)
+                        + track.basicPitchFin / 100.0f + track.basicPitchCrs / 100.0f;
+    if(std::abs(semis) > 1.0e-4f)
+    {
+        const float ratio = std::pow(2.0f, semis / 12.0f);
+        for(int i = 0; i < seed.partialCount && i < kMaxWavetablePartials; ++i)
+            seed.partials[(size_t)i].ratio *= ratio;
+    }
 }
 
 } // namespace synth

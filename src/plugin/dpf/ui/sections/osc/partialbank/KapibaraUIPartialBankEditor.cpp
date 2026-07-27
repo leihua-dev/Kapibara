@@ -96,29 +96,49 @@ void KapibaraUI::drawPartialBankTrackEditor(const Rect &r, synth::SourceTrackPar
 
         metaFrameStripRect_ = {};
         metaFrameScrollRect_ = {};
-        const float pitchRowH = 30.0f;
-        const float editY = r.y + r.h - pitchRowH;
-        const float spectrumTop = topY + 66.0f;
-        const float spectrumH = std::max(120.0f, editY - 12.0f - spectrumTop);
-        const Rect spectrum { r.x, spectrumTop, r.w, spectrumH };
-        partialSpectrumRect_ = spectrum;
-        drawPartialBankLayerPreview(spectrum, seed);
 
+        // Pitch sits ABOVE the preview, which then takes whatever is left. It used
+        // to be pinned to the panel bottom with the preview floored at 120 px, so
+        // the moment the panel got short — every OSC MOD entry takes 24 px out of
+        // this editor — the preview grew straight over the OCT/SEM/FIN/CRS row.
+        // Placed inline with the knob row when the panel is wide enough, which
+        // keeps a whole row of height for the preview on cramped patches.
+        constexpr float pitchRowH = 30.0f;
         selectedPartialIndex_ = clampi(selectedPartialIndex_, 0, std::max(0, seed.partialCount - 1));
         partialAmpRect_ = {};
         partialRatioRect_ = {};
         const auto &groupPitch = seed.partials[0];
-        const float pitchX = r.x;
         const float pitchGap = 6.0f;
-        const float pitchW = std::min(96.0f, std::max(64.0f, (r.w - pitchGap * 3.0f) * 0.25f));
-        metaOctRect_ = { pitchX, editY, pitchW, 30.0f };
-        metaSemRect_ = { metaOctRect_.x + pitchW + pitchGap, editY, pitchW, 30.0f };
-        metaFinRect_ = { metaSemRect_.x + pitchW + pitchGap, editY, pitchW, 30.0f };
-        metaCrsRect_ = { metaFinRect_.x + pitchW + pitchGap, editY, pitchW, 30.0f };
+        const float inlineX = metaMorphRect_.x + knobW + 12.0f;
+        const float inlineAvail = (r.x + r.w) - inlineX;
+        const bool inlinePitch = (inlineAvail - pitchGap * 3.0f) * 0.25f >= 52.0f;
+        const float pitchW = inlinePitch
+                                 ? std::min(96.0f, (inlineAvail - pitchGap * 3.0f) * 0.25f)
+                                 : std::min(96.0f, std::max(56.0f, (r.w - pitchGap * 3.0f) * 0.25f));
+        const float pitchX = inlinePitch ? inlineX : r.x;
+        // Never past the panel bottom: on a very short panel (small window plus a
+        // full OSC MOD zone) the stacked row would otherwise draw over the UNISON
+        // divider below — the same collision, one element further down.
+        const float pitchY = std::min(inlinePitch ? topY + 12.0f : topY + 60.0f,
+                                      r.y + r.h - pitchRowH);
+        metaOctRect_ = { pitchX, pitchY, pitchW, pitchRowH };
+        metaSemRect_ = { metaOctRect_.x + pitchW + pitchGap, pitchY, pitchW, pitchRowH };
+        metaFinRect_ = { metaSemRect_.x + pitchW + pitchGap, pitchY, pitchW, pitchRowH };
+        metaCrsRect_ = { metaFinRect_.x + pitchW + pitchGap, pitchY, pitchW, pitchRowH };
         drawPitchControl(metaOctRect_, "OCT", groupPitch.pitchOct, false);
         drawPitchControl(metaSemRect_, "SEM", groupPitch.pitchSem, false);
         drawPitchControl(metaFinRect_, "FIN", int(std::round(groupPitch.pitchFin)), false);
         drawPitchControl(metaCrsRect_, "CRS", int(std::round(groupPitch.pitchCrs)), false);
+
+        const float spectrumTop = inlinePitch ? topY + 66.0f : pitchY + pitchRowH + 8.0f;
+        const float spectrumH = (r.y + r.h) - spectrumTop;
+        partialSpectrumRect_ = {};
+        if(spectrumH >= 48.0f)
+        {
+            const Rect spectrum { r.x, spectrumTop, r.w, spectrumH };
+            partialSpectrumRect_ = spectrum;
+            drawPartialBankLayerPreview(spectrum, seed);
+        }
     }
 
 END_NAMESPACE_DISTRHO

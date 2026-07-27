@@ -425,6 +425,12 @@ class KapibaraUI final : public KapibaraUIDrawing
     static void ensurePartialBankFrameDefaults(synth::WavetableSeedParams &seed, int frameIndex);
     static int partialBankMorphFrameIndex(const synth::WavetableSeedParams &seed);
     static float partialBankPitchRatio(int oct, int sem, float fin, float crs);
+    // A track's OCT/SEM/FIN/CRS offset, wherever that track type happens to keep
+    // it (Meta on metaOsc, Partial Bank on its seed's slot 0, Basic on the track
+    // itself). Lets one set of pitch rects and drag cases serve all of them.
+    struct TrackPitch { int oct = 0; int sem = 0; float fin = 0.0f; float crs = 0.0f; };
+    static bool trackGroupPitch(const synth::SourceTrackParams &t, TrackPitch &out);
+    void applyTrackGroupPitch(synth::SourceTrackParams &t, const TrackPitch &p);
     static void applyPartialBankGroupPitch(synth::WavetableSeedParams &seed,
                                            int oct, int sem, float fin, float crs);
     static Kwt2PackedBin packKwtBin(float amp, float phase);
