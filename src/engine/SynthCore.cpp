@@ -125,7 +125,8 @@ bool sourceTrackSoundContentChanged(const SourceTrackParams &a, const SourceTrac
             // is a POD, so one memcmp covers the whole stack and cannot fall
             // behind when a field is added.
             return std::memcmp(a.basicUnits.data(), b.basicUnits.data(),
-                               sizeof(BasicOscUnit) * size_t(kBasicOscUnits)) != 0;
+                               sizeof(BasicOscUnit) * size_t(kBasicOscUnits)) != 0
+                   || std::memcmp(&a.basicMod, &b.basicMod, sizeof(BasicOscModParams)) != 0;
         case SourceTrackType::SampleNoise:
             return a.sampleNoiseMode != b.sampleNoiseMode
                    || std::abs(a.noiseColor - b.noiseColor) > 1.0e-6f;
@@ -187,7 +188,7 @@ SourceTrackParams makeDefaultTrack(SourceTrackType type, uint32_t id, const char
 }
 
 
-WavetableSeedParams seedForTrack(const SourceTrackParams &track)
+WavetableSeedParams seedForTrack(const SourceTrackParams &track, int *unitCount = nullptr)
 {
     if(track.type == SourceTrackType::PartialBank)
         return track.partialBank;
@@ -201,7 +202,7 @@ WavetableSeedParams seedForTrack(const SourceTrackParams &track)
     }
     if(track.type == SourceTrackType::BasicOscillator)
     {
-        buildBasicSeed(track, seed);
+        buildBasicSeed(track, seed, unitCount);
         return seed;
     }
     buildNoiseSeed(track, seed);
@@ -401,7 +402,8 @@ void SynthCore::rebuildTrackRenderStateNoLock(bool rebakeTables)
         if(renderTrack >= kMaxSourceTracks || partialOffset >= kMaxRenderPartials)
             break;
 
-        auto seed = seedForTrack(track);
+        std::array<int, kBasicOscUnits> unitCount {};
+        auto seed = seedForTrack(track, unitCount.data());
         seed.partialCount = std::clamp(seed.partialCount, 1, kMaxWavetablePartials);
         SourceGenParams local;
         local.wavetableSeed = seed;
@@ -458,6 +460,19 @@ void SynthCore::rebuildTrackRenderStateNoLock(bool rebakeTables)
         partialOffset += copyCount;
         baked->trackBegin[(size_t)renderTrack] = begin;
         baked->trackEnd[(size_t)renderTrack] = partialOffset;
+        // Basic Oscillator units occupy consecutive slices of this track's block,
+        // in unit order. Clipped against copyCount so a truncated block never
+        // hands the voice a range past the partials that were actually copied.
+        {
+            int u0 = begin;
+            for(int u = 0; u < kBasicOscUnits; ++u)
+            {
+                const int u1 = std::min(u0 + unitCount[(size_t)u], partialOffset);
+                baked->unitBegin[(size_t)renderTrack][(size_t)u] = std::min(u0, partialOffset);
+                baked->unitEnd[(size_t)renderTrack][(size_t)u] = std::max(u1, std::min(u0, partialOffset));
+                u0 = u1;
+            }
+        }
         baked->trackAdsr[(size_t)renderTrack] = track.ampEnvelope;
         baked->trackOutputMode[(size_t)renderTrack] = track.outputMode;
         auto strip = track.strip;
@@ -678,6 +693,7 @@ void SynthCore::publishSnapshotNoLock()
         runtime.unison.voices = std::clamp(runtime.unison.voices, 1, kMaxUnison);
         runtime.outputMode = track.outputMode;
         runtime.mods = track.mods;
+        runtime.basicMod = track.basicMod;
         runtime.perVoiceFilterCount = std::clamp(track.perVoiceFilterCount, 0, kMaxPerVoiceFilters);
         runtime.perVoiceFilters = track.perVoiceFilters;
         runtime.perVoiceFilterOrderCount = std::clamp(track.perVoiceFilterOrderCount, 0, kMaxPerVoiceFilters);

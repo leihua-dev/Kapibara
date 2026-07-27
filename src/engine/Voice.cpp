@@ -404,6 +404,9 @@ void Voice::updateControl(const StaticSpectralFrame &frame,
     renderQuality_ = quality;
     trackRuntime_ = trackRuntime;
     renderTrackCount_ = std::clamp(renderTrackCount, 0, kMaxSourceTracks);
+    // Matrix offset for each rack's own cross-unit modulation depth — the one
+    // bridge between the router and a modulation that is otherwise source-local.
+    oscModDepthMod_ = matrixOut.dOscMod;
     sourceParams_ = {};
     for(int t = 0; t < renderTrackCount_; ++t)
         sourceParams_[(size_t)t] = trackRuntime_[(size_t)t].strip;
@@ -610,7 +613,8 @@ void Voice::renderAdd(float *left, float *right, int numSamples)
             currentRenderTrack_ = source;
             std::fill(sourceRawL_.begin(), sourceRawL_.begin() + numSamples, 0.0f);
             std::fill(sourceRawR_.begin(), sourceRawR_.begin() + numSamples, 0.0f);
-            renderPartialRangeRaw(sourceRawL_.data(), sourceRawR_.data(), numSamples, begin, end);
+            renderTrackPartials(sourceRawL_.data(), sourceRawR_.data(), numSamples, source,
+                                begin, end, nullptr, nullptr, oscModDepthMod_[(size_t)source]);
             if(trackRuntime_[(size_t)source].muted)
             {
                 std::fill(sourceRawL_.begin(), sourceRawL_.begin() + numSamples, 0.0f);
@@ -775,8 +779,9 @@ void Voice::renderAdd(float *left, float *right, int numSamples)
         updateUnisonLayout(trackRuntime_[(size_t)source].unison);
         updateUnisonPhaseOffsets(trackRuntime_[(size_t)source].unison, source);
         currentRenderTrack_ = source;
-        renderPartialRangeRaw(bL, bR, numSamples, begin, end,
-                              hasPm ? pmScratch_.data() : nullptr, syncBuf);
+        renderTrackPartials(bL, bR, numSamples, source, begin, end,
+                            hasPm ? pmScratch_.data() : nullptr, syncBuf,
+                            oscModDepthMod_[(size_t)source]);
         if(trackRuntime_[(size_t)source].muted)
         {
             std::fill(bL, bL + numSamples, 0.0f);
@@ -1139,6 +1144,88 @@ void Voice::beginPartialRender(int numSamples)
                 trackEnvScratch_[(size_t)t][(size_t)s] = 1.0f;
             }
         }
+    }
+}
+
+// Cross-unit modulation inside one Basic Oscillator rack. The units are just
+// consecutive slices of the track's partial block, so each can be rendered on
+// its own and fed to another exactly the way a cross-TRACK source mod is — this
+// is the same machinery, scoped inside a single source.
+void Voice::renderTrackPartials(float *left, float *right, int numSamples, int source,
+                                int partialBegin, int partialEnd,
+                                const float *pmBuffer, const float *syncBuffer, float depthMod)
+{
+    const auto &mod = trackRuntime_[(size_t)source].basicMod;
+    const float depth = clampf(mod.depth + depthMod, 0.0f, 1.0f);
+    const int si = int(mod.source), ti = int(mod.target);
+    const bool wants = mod.mode != BasicOscModMode::Off && depth > 1.0e-4f
+                       && si != ti && si >= 0 && si < kBasicOscUnits
+                       && ti >= 0 && ti < kBasicOscUnits && wavetable_ != nullptr;
+    if(!wants)
+    {
+        renderPartialRangeRaw(left, right, numSamples, partialBegin, partialEnd, pmBuffer, syncBuffer);
+        return;
+    }
+
+    const auto &ub = wavetable_->unitBegin[(size_t)source];
+    const auto &ue = wavetable_->unitEnd[(size_t)source];
+    const int mb = std::clamp(ub[(size_t)si], partialBegin, partialEnd);
+    const int me = std::clamp(ue[(size_t)si], mb, partialEnd);
+    const int cb = std::clamp(ub[(size_t)ti], partialBegin, partialEnd);
+    const int ce = std::clamp(ue[(size_t)ti], cb, partialEnd);
+    // A disabled unit contributes no partials, so it can be neither modulator nor
+    // carrier — fall back rather than silently doing nothing.
+    if(mb >= me || cb >= ce)
+    {
+        renderPartialRangeRaw(left, right, numSamples, partialBegin, partialEnd, pmBuffer, syncBuffer);
+        return;
+    }
+
+    // Every partial must be rendered EXACTLY once per block: the oscillator phase
+    // accumulators advance inside renderPartialRangeRaw, so covering a partial
+    // twice would run it at double speed and desync the copy used as a modulator.
+    // The modulator and carrier ranges are disjoint slices of the track's block,
+    // so the untouched remainder is the three gaps around them.
+    const int lo0 = std::min(mb, cb), lo1 = (lo0 == mb) ? me : ce;
+    const int hi0 = std::max(mb, cb), hi1 = (hi0 == mb) ? me : ce;
+
+    // 1) The modulator unit on its own. It stays audible in the rack's sum, so
+    //    this buffer is both the modulation source and part of the output.
+    std::fill(oscModL_.begin(), oscModL_.begin() + numSamples, 0.0f);
+    std::fill(oscModR_.begin(), oscModR_.begin() + numSamples, 0.0f);
+    renderPartialRangeRaw(oscModL_.data(), oscModR_.data(), numSamples, mb, me, pmBuffer, syncBuffer);
+
+    // 2) The units neither side of the modulation, straight into the output.
+    if(partialBegin < lo0)
+        renderPartialRangeRaw(left, right, numSamples, partialBegin, lo0, pmBuffer, syncBuffer);
+    if(lo1 < hi0)
+        renderPartialRangeRaw(left, right, numSamples, lo1, hi0, pmBuffer, syncBuffer);
+    if(hi1 < partialEnd)
+        renderPartialRangeRaw(left, right, numSamples, hi1, partialEnd, pmBuffer, syncBuffer);
+
+    // 3) The carrier unit, hard-synced to the modulator when asked.
+    std::fill(oscCarL_.begin(), oscCarL_.begin() + numSamples, 0.0f);
+    std::fill(oscCarR_.begin(), oscCarR_.begin() + numSamples, 0.0f);
+    const float *carrierSync = syncBuffer;
+    if(mod.mode == BasicOscModMode::Sync)
+    {
+        for(int s = 0; s < numSamples; ++s)
+            syncMonoScratch_[(size_t)s] = 0.5f * (oscModL_[(size_t)s] + oscModR_[(size_t)s]);
+        carrierSync = syncMonoScratch_.data();
+    }
+    renderPartialRangeRaw(oscCarL_.data(), oscCarR_.data(), numSamples, cb, ce, pmBuffer, carrierSync);
+
+    if(mod.mode == BasicOscModMode::Ring || mod.mode == BasicOscModMode::AM)
+        applySourceMod(oscCarL_.data(), oscCarR_.data(), oscModL_.data(), oscModR_.data(),
+                       numSamples,
+                       mod.mode == BasicOscModMode::Ring ? SourceModType::RingMod
+                                                         : SourceModType::AM,
+                       depth);
+
+    for(int s = 0; s < numSamples; ++s)
+    {
+        left[s] += oscCarL_[(size_t)s] + oscModL_[(size_t)s];
+        right[s] += oscCarR_[(size_t)s] + oscModR_[(size_t)s];
     }
 }
 

@@ -52,10 +52,13 @@ enum class ModDestination : uint8_t
     InsertP0,
     InsertP1,
     InsertP2,
-    InsertP3
+    InsertP3,
+    // Depth of a Basic Oscillator rack's own cross-unit modulation. Scoped to a
+    // track, not a partial — the rule's targetTrackId picks the rack.
+    OscModDepth
 };
 
-constexpr int kModDestinationCount = int(ModDestination::InsertP3) + 1;
+constexpr int kModDestinationCount = int(ModDestination::OscModDepth) + 1;
 
 constexpr int kMaxModInserts = 8;
 constexpr int kInsertModParams = 4;
@@ -198,6 +201,8 @@ struct MatrixVoiceOutput
     std::array<float, kMaxPartials> dPan {};
     std::array<float, kMaxPartials> dMorph {};
     std::array<float, kMaxPartials> dWarp {};
+    // Per-track, not per-partial: see ModDestination::OscModDepth.
+    std::array<float, kMaxSourceTracks> dOscMod {};
 };
 
 inline void initMatrixOutput(MatrixVoiceOutput &o)
@@ -208,6 +213,7 @@ inline void initMatrixOutput(MatrixVoiceOutput &o)
     o.dPan.fill(0.0f);
     o.dMorph.fill(0.0f);
     o.dWarp.fill(0.0f);
+    o.dOscMod.fill(0.0f);
 }
 
 // -----------------------------------------------------------------------------

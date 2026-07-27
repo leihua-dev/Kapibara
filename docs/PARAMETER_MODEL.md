@@ -35,11 +35,13 @@ Track types and their generators:
 |------|-----------|--------|
 | Partial Bank | independent additive bank up to 64 partials with frame morph | `dsp/GeneratorBank` |
 | Meta Oscillator | multi-frame wavetable, up to 512 × 2048-sample frames | `dsp/WavetableCore` |
-| Basic Oscillator | sine/triangle/saw/pulse/sub from bounded partial data | `dsp/BasicOscDsp` |
+| Basic Oscillator | rack of 3 units (sine/triangle/saw/pulse/sub each), summed, with Ring/AM/Sync between units | `dsp/BasicOscDsp` |
 | Sample / Noise | Noise active; File/Capture are UI placeholders | `dsp/SampleNoiseDsp` |
 
 Each track owns: generator params, gain, pan, send, mute/solo, output mode
-(Audio / ModOnly / AudioAndMod), unison params, per-voice filter chain
+(Audio / ModOnly / AudioAndMod), unison params (Basic Oscillator excepted — the
+rack is already three oscillators, so unison is forced to one lane and its zone
+is not offered), per-voice filter chain
 (≤4 nodes), source-mod entries (≤3), strip insert chain, and `ampEnvIndex`
 (0–3) referencing one shared Amp ADSR.
 
@@ -146,7 +148,8 @@ Lines grow by appending optional fields at the END, each read with its own
 `operator>>` extraction *writes 0* into its target and leaves the stream in
 fail state, so a pre-initialized default is silently destroyed and every later
 field on the line fails too. `mgrp`'s tail is, in order: `enabled`,
-`waveSource`, `waveTrackId`, `rateHz`.
+`waveSource`, `waveTrackId`, `rateHz`. Basic Oscillator racks add `mbosc`
+(one line per unit) and `mbmod` (the cross-unit modulation).
 
 A mask group whose base is a wavetable stores only the *track id* of the table
 owner. Since per-track frames are not written to the modern section, such a

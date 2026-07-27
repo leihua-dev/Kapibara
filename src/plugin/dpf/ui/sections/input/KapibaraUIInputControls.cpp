@@ -76,6 +76,8 @@ bool KapibaraUI::handleControlPress(float x, float y)
         // left zeroed by the editor, so they never match here.
         if(track != nullptr && track->type == synth::SourceTrackType::BasicOscillator)
         {
+            if(basicModDepthRect_.w > 0.0f && basicModDepthRect_.contains(x, y))
+                return setDragKnob(DragTarget::BasicModDepth, track->basicMod.depth);
             for(int u = 0; u < synth::kBasicOscUnits; ++u)
             {
                 auto &unit = track->basicUnits[(size_t)u];

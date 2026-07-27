@@ -63,8 +63,11 @@ int basicOscPartials(const BasicOscUnit &unit, int budget, float *ratio, float *
     return n;
 }
 
-void buildBasicSeed(const SourceTrackParams &track, WavetableSeedParams &seed)
+void buildBasicSeed(const SourceTrackParams &track, WavetableSeedParams &seed, int *unitCount)
 {
+    if(unitCount != nullptr)
+        for(int i = 0; i < kBasicOscUnits; ++i)
+            unitCount[i] = 0;
     seed = WavetableSeedParams {};
     // The default seed fills every slot with a harmonic at amp 1/n; silence them
     // all first so a shape only occupies the slots it actually writes.
@@ -103,6 +106,8 @@ void buildBasicSeed(const SourceTrackParams &track, WavetableSeedParams &seed)
                             + u.pitchFin / 100.0f + u.pitchCrs / 100.0f;
         const float pitchRatio = std::pow(2.0f, semis / 12.0f);
         const float level = std::clamp(u.level, 0.0f, 1.0f);
+        if(unitCount != nullptr)
+            unitCount[ui] = n;
         for(int i = 0; i < n; ++i)
         {
             auto &p = seed.partials[(size_t)write++];

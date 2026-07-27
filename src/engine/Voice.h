@@ -102,6 +102,11 @@ class Voice
     }
     int activePartialCount() const { return activeCount_; }
     void beginPartialRender(int numSamples);
+    // Renders one track's partials, splitting them into modulator / carrier /
+    // untouched passes when the track's oscillator rack modulates itself.
+    void renderTrackPartials(float *left, float *right, int numSamples, int source,
+                             int partialBegin, int partialEnd,
+                             const float *pmBuffer, const float *syncBuffer, float depthMod);
     void renderPartialRangeRaw(float *left, float *right, int numSamples, int partialBegin, int partialEnd,
                                const float *pmBuffer = nullptr, const float *syncBuffer = nullptr);
     void finishPartialRender(float *left, float *right, const float *rawLeft, const float *rawRight, int numSamples);
@@ -260,6 +265,14 @@ class Voice
     float *const *busR_ = nullptr;
     std::array<float, kMaxVoiceRenderBlockSamples> pmScratch_ {};      // phase-mod (radians) for FM/PM
     std::array<float, kMaxVoiceRenderBlockSamples> syncMonoScratch_ {}; // mono modulator for hard sync
+    // Cross-unit modulation inside one Basic Oscillator rack (source-local, not a
+    // matrix route): the modulator unit and the carrier unit each need their own
+    // buffer before they can be combined.
+    std::array<float, kMaxVoiceRenderBlockSamples> oscModL_ {}, oscModR_ {};
+    std::array<float, kMaxVoiceRenderBlockSamples> oscCarL_ {}, oscCarR_ {};
+    // Control-rate offset applied to each track's osc-mod depth, so the matrix
+    // (an LFO, an envelope) can sweep a modulation that is otherwise source-local.
+    std::array<float, kMaxSourceTracks> oscModDepthMod_ {};
     int renderTrackCount_ = 0;
     std::array<std::array<float, kMaxVoiceRenderBlockSamples>, kMaxAmpEnvs> ampEnvScratch_ {};
     std::array<std::array<float, kMaxVoiceRenderBlockSamples>, kMaxSourceTracks> trackEnvScratch_ {};

@@ -222,6 +222,29 @@ bool KapibaraUI::handleButtonClick(float x, float y)
             // left-click cycling, so no left-click handling here.
             if(track->type == synth::SourceTrackType::BasicOscillator)
             {
+                auto &mod = track->basicMod;
+                if(basicModModeRect_.w > 0.0f && basicModModeRect_.contains(x, y))
+                {
+                    mod.mode = static_cast<synth::BasicOscModMode>((int(mod.mode) + 1) % 4);
+                    pushCurrentTrack();
+                    return true;
+                }
+                if(basicModSrcRect_.w > 0.0f && basicModSrcRect_.contains(x, y))
+                {
+                    // Skip the target: a unit modulating itself is meaningless and
+                    // the render path would reject it anyway.
+                    do { mod.source = uint8_t((mod.source + 1) % synth::kBasicOscUnits); }
+                    while(mod.source == mod.target);
+                    pushCurrentTrack();
+                    return true;
+                }
+                if(basicModDstRect_.w > 0.0f && basicModDstRect_.contains(x, y))
+                {
+                    do { mod.target = uint8_t((mod.target + 1) % synth::kBasicOscUnits); }
+                    while(mod.target == mod.source);
+                    pushCurrentTrack();
+                    return true;
+                }
                 for(int u = 0; u < synth::kBasicOscUnits; ++u)
                 {
                     auto &unit = track->basicUnits[(size_t)u];

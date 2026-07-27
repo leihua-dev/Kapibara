@@ -48,7 +48,6 @@ constexpr int kMaxWavetablePartials = 64; // per-source-track partial slot count
 // starving each other; bounded by the spectral-frame ceiling (kMaxPartials).
 constexpr int kMaxRenderPartials = kMaxPartials;
 constexpr int kEditableMetaPartials = 8;
-constexpr int kMaxSourceTracks = 12;
 constexpr int kWavetableSize = 2048;
 constexpr int kMaxWavetableFrames = 512;
 constexpr int kDefaultWavetableFrames = 16;
@@ -175,6 +174,25 @@ struct BasicOscUnit
     float pitchCrs = 0.0f;
 };
 
+// Modulation BETWEEN the units of one Basic Oscillator rack. This is local to
+// the source — it is not a matrix route — but its depth is a matrix destination,
+// so an LFO can still sweep it.
+enum class BasicOscModMode : uint8_t
+{
+    Off = 0,
+    Ring = 1,   // carrier * modulator
+    AM = 2,     // carrier * (1 + modulator)
+    Sync = 3    // modulator's upward zero crossings reset the carrier's phases
+};
+
+struct BasicOscModParams
+{
+    BasicOscModMode mode = BasicOscModMode::Off;
+    uint8_t source = 1;   // modulator unit index
+    uint8_t target = 0;   // carrier unit index
+    float depth = 0.0f;
+};
+
 // One unit's harmonic series, written into caller-provided arrays (at most
 // `budget` entries). Shared by the seed builder and the UI's waveform display so
 // the picture cannot drift from what is rendered. Returns how many it wrote.
@@ -284,6 +302,7 @@ struct SourceTrackParams
     WavetableSeedParams partialBank {};
     WavetablePartialSlot metaOsc {};
     std::array<BasicOscUnit, kBasicOscUnits> basicUnits {};
+    BasicOscModParams basicMod {};
     SampleNoiseMode sampleNoiseMode = SampleNoiseMode::Noise;
     float noiseColor = 0.5f;
     int perVoiceFilterCount = 0;
@@ -398,6 +417,7 @@ struct RenderTrackRuntime
     UnisonParams unison {};
     SourceTrackOutputMode outputMode = SourceTrackOutputMode::Audio;
     std::array<SourceModEntry, kMaxTrackMods> mods {};
+    BasicOscModParams basicMod {};        // the rack's own cross-unit modulation
     int perVoiceFilterCount = 0;
     std::array<SourceFilterParams, kMaxPerVoiceFilters> perVoiceFilters {};
     int perVoiceFilterOrderCount = 0;
@@ -437,6 +457,10 @@ struct WavetableSeedRenderState
     int trackCount = 0;
     std::array<int, kMaxSourceTracks> trackBegin {};
     std::array<int, kMaxSourceTracks> trackEnd {};
+    // Where each Basic Oscillator unit landed inside its track's block, so the
+    // voice can render one unit as a modulator for another.
+    std::array<std::array<int, kBasicOscUnits>, kMaxSourceTracks> unitBegin {};
+    std::array<std::array<int, kBasicOscUnits>, kMaxSourceTracks> unitEnd {};
     std::array<AdsrParams, kMaxSourceTracks> trackAdsr {};
     std::array<SourceTrackOutputMode, kMaxSourceTracks> trackOutputMode {};
 };
@@ -513,7 +537,10 @@ class GeneratorBank
     void generateTimeline(const SourceGenParams &p, SpectralTimeline &out) const;
 };
 
-void buildBasicSeed(const SourceTrackParams &track, WavetableSeedParams &seed);
+// unitCount, when given, receives each unit's partial count (kBasicOscUnits
+// entries) so the caller can map units onto the flattened partial pool.
+void buildBasicSeed(const SourceTrackParams &track, WavetableSeedParams &seed,
+                    int *unitCount = nullptr);
 void buildNoiseSeed(const SourceTrackParams &track, WavetableSeedParams &seed);
 
 } // namespace synth

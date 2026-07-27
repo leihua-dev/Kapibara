@@ -61,7 +61,9 @@ constexpr synth::ModDestination kCardDestPool[] = {
     synth::ModDestination::MetaMorph, synth::ModDestination::MetaWarp, synth::ModDestination::MetaPan,
     synth::ModDestination::TrackGain, synth::ModDestination::TrackPan,
     synth::ModDestination::PitchOct, synth::ModDestination::PitchSem, synth::ModDestination::PitchFine,
-    synth::ModDestination::PitchCrs
+    synth::ModDestination::PitchCrs,
+    // Source-local cross-unit modulation depth on a Basic Oscillator rack.
+    synth::ModDestination::OscModDepth
 };
 
 struct StripGroup
@@ -167,7 +169,7 @@ enum class DragTarget
     PartialTableAmp, PartialTablePhase,
     MatrixEnvCurve, MatrixEnvSeg, ModEnvRate, AmpAdsrSeg, HarmonicEditor, MetaTimeEditor, MetaSpectrumEditor,
     RuleDepth, RuleBandLo, RuleBandHi, RuleXfer, MatrixRoutesScroll,
-    BasicLevel, BasicPitchOct, BasicPitchSem, BasicPitchFin, BasicPitchCrs,
+    BasicLevel, BasicModDepth, BasicPitchOct, BasicPitchSem, BasicPitchFin, BasicPitchCrs,
     GroupRate, GroupFreqSpread, GroupPhaseSpread, GroupSpreadCurve, GroupSlotDepth, GroupFamilyDepth,
     ModDepth,
     ChaosRate, ChaosAmount, ShapePhase, ShapeRho, ShapeUp, ShapeDown,
@@ -367,6 +369,7 @@ inline const char *destName(synth::ModDestination d)
         case synth::ModDestination::InsertP1: return "Fx P2";
         case synth::ModDestination::InsertP2: return "Fx P3";
         case synth::ModDestination::InsertP3: return "Fx P4";
+        case synth::ModDestination::OscModDepth: return "Osc Mod";
     }
     return "Dest";
 }

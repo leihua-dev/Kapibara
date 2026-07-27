@@ -46,6 +46,57 @@ struct UnitWave
 };
 } // namespace
 
+// Cross-unit modulation, local to this source. Deliberately NOT a matrix route:
+// it wires one oscillator of the rack into another inside the voice, the way a
+// classic two-oscillator synth does. Its DEPTH is a matrix destination though,
+// so an LFO can still sweep it (ModDestination::OscModDepth).
+void KapibaraUI::drawBasicOscModModule(const Rect &r, synth::SourceTrackParams &track)
+{
+        drawPanel(r, DesignTokens::groove(), DesignTokens::border());
+        drawGroupLabel(r.x + 8.0f, r.y + 6.0f, "OSC MOD");
+
+        auto &mod = track.basicMod;
+        const char *modeName = "OFF";
+        switch(mod.mode)
+        {
+            case synth::BasicOscModMode::Ring: modeName = "RING"; break;
+            case synth::BasicOscModMode::AM:   modeName = "AM";   break;
+            case synth::BasicOscModMode::Sync: modeName = "SYNC"; break;
+            default: break;
+        }
+        const float pad = 8.0f;
+        const float w = r.w - pad * 2.0f;
+        float y = r.y + 22.0f;
+        basicModModeRect_ = { r.x + pad, y, w, 22.0f };
+        drawButton(basicModModeRect_, modeName, mod.mode != synth::BasicOscModMode::Off);
+        y += 26.0f;
+
+        // Which unit drives which. Kept as two chips rather than a matrix row —
+        // this routing never leaves the source.
+        const float half = (w - 6.0f) * 0.5f;
+        basicModSrcRect_ = { r.x + pad, y, half, 20.0f };
+        basicModDstRect_ = { r.x + pad + half + 6.0f, y, half, 20.0f };
+        drawButton(basicModSrcRect_, buttonText("SRC %d", int(mod.source) + 1), false);
+        drawButton(basicModDstRect_, buttonText("DST %d", int(mod.target) + 1), false);
+        y += 24.0f;
+
+        if(r.y + r.h - y >= 22.0f)
+        {
+            basicModDepthRect_ = { r.x + pad, y, w, 20.0f };
+            drawSlider(basicModDepthRect_, "Depth", mod.depth, mod.depth);
+            y += 24.0f;
+        }
+
+        useUiFont();
+        uiFontSize(7.5f);
+        textAlign(ALIGN_LEFT | ALIGN_TOP);
+        fillColor(DesignTokens::textSecondary().withAlpha(0.6f));
+        if(r.y + r.h - y >= 12.0f)
+            text(r.x + pad, y, mod.source == mod.target
+                                   ? "SRC and DST must differ"
+                                   : "source-local - Depth is an LFO target", nullptr);
+    }
+
 // The Basic Oscillator editor is a rack of kBasicOscUnits oscillators side by
 // side: one basic shape is four controls, and stacking three is what makes the
 // track worth having.
@@ -58,6 +109,10 @@ void KapibaraUI::drawBasicTrackEditor(const Rect &r, synth::SourceTrackParams &t
         basicSubRects_.fill({});
         for(auto &row : basicPitchRects_)
             row.fill({});
+
+        basicWaveRects_.fill({});
+        basicModModeRect_ = {}; basicModSrcRect_ = {};
+        basicModDstRect_ = {};  basicModDepthRect_ = {};
 
         constexpr float kColGap = 10.0f;
         const int units = synth::kBasicOscUnits;
@@ -73,8 +128,10 @@ void KapibaraUI::drawBasicTrackEditor(const Rect &r, synth::SourceTrackParams &t
         // Controls on top, one shared waveform plot underneath.
         constexpr float rowH = 22.0f;
         constexpr float pitchH = 24.0f;
+        constexpr float miniH = 30.0f;   // per-unit waveform strip
         const float extraH = anyShapeExtra ? rowH + 4.0f : 0.0f;
-        const float controlsH = 20.0f + rowH + 4.0f + rowH + 4.0f + extraH + pitchH * 2.0f + 4.0f;
+        const float controlsH = 20.0f + rowH + 4.0f + miniH + 4.0f + rowH + 4.0f
+                                + extraH + pitchH * 2.0f + 4.0f;
         const float plotTop = r.y + controlsH + 18.0f;
         const float plotH = (r.y + r.h) - plotTop;
 
@@ -94,6 +151,36 @@ void KapibaraUI::drawBasicTrackEditor(const Rect &r, synth::SourceTrackParams &t
             drawButton(basicShapeRects_[(size_t)u],
                        synth::basicOscillatorShapeName(unit.shape), false);
             y += rowH + 4.0f;
+
+            // This unit's own waveform, one cycle, at its own pitch.
+            basicWaveRects_[(size_t)u] = { cx, y, colW, miniH };
+            {
+                const Rect &mr = basicWaveRects_[(size_t)u];
+                beginPath();
+                roundedRect(mr.x, mr.y, mr.w, mr.h, 2.0f);
+                fillColor(DesignTokens::appBackground().withAlpha(0.35f));
+                fill();
+                UnitWave w;
+                w.bind(unit);
+                const float my = mr.y + mr.h * 0.5f;
+                const float ms = mr.h * 0.40f / std::max(0.25f, w.peak);
+                const int mn = clampi(int(mr.w), 48, 256);
+                scissor(mr.x + 1.0f, mr.y + 1.0f, mr.w - 2.0f, mr.h - 2.0f);
+                beginPath();
+                for(int sIdx = 0; sIdx <= mn; ++sIdx)
+                {
+                    const float t = float(sIdx) / float(mn);
+                    const float px = mr.x + t * mr.w;
+                    const float py = my - w.at(t) * ms;
+                    if(sIdx == 0) moveTo(px, py); else lineTo(px, py);
+                }
+                strokeColor(unit.enabled ? DesignTokens::accentCyan()
+                                         : DesignTokens::textSecondary().withAlpha(0.35f));
+                strokeWidth(1.3f);
+                stroke();
+                resetScissor();
+            }
+            y += miniH + 4.0f;
 
             basicLevelRects_[(size_t)u] = { cx, y, colW, rowH };
             drawSlider(basicLevelRects_[(size_t)u], "Level", unit.level, unit.level);
@@ -136,7 +223,9 @@ void KapibaraUI::drawBasicTrackEditor(const Rect &r, synth::SourceTrackParams &t
 
         // Real waveform, not a stand-in: each active unit faint, their sum bright.
         // The old preview drew a fixed two-cycle sine whatever the shape was.
-        const Rect plot { r.x, plotTop, r.w, plotH };
+        const float modW = std::min(230.0f, std::max(150.0f, r.w * 0.30f));
+        const Rect plot { r.x, plotTop, r.w - modW - 12.0f, plotH };
+        drawBasicOscModModule({ r.x + plot.w + 12.0f, plotTop, modW, plotH }, track);
         drawSectionTitle(r.x, plotTop - 16.0f, "Waveform");
         drawPlotBackground(plot, 8, 4);
         const float midY = plot.y + plot.h * 0.5f;

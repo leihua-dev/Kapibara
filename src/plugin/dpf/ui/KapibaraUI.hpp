@@ -253,6 +253,7 @@ class KapibaraUI final : public KapibaraUIDrawing
     void drawPartialBankTrackEditor(const Rect &r, synth::SourceTrackParams &track);
     void drawMetaTrackEditor(const Rect &r, synth::SourceTrackParams &track);
     void drawBasicTrackEditor(const Rect &r, synth::SourceTrackParams &track);
+    void drawBasicOscModModule(const Rect &r, synth::SourceTrackParams &track);
     void drawNoiseTrackEditor(const Rect &r, synth::SourceTrackParams &track);
 
     // source/KapibaraUISourceEnv

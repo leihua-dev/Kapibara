@@ -65,6 +65,9 @@ void KapibaraUI::saveModernState(const std::string &path)
                     << ' ' << bu.pitchOct << ' ' << bu.pitchSem
                     << ' ' << bu.pitchFin << ' ' << bu.pitchCrs << "\n";
             }
+            if(t.basicMod.mode != synth::BasicOscModMode::Off || t.basicMod.depth != 0.0f)
+                out << "mbmod " << ti << ' ' << int(t.basicMod.mode) << ' ' << int(t.basicMod.source)
+                    << ' ' << int(t.basicMod.target) << ' ' << t.basicMod.depth << "\n";
             out << "mtname " << ti << ' ' << t.name << "\n";
             for(int s = 0; s < t.perVoiceFilterCount && s < synth::kMaxPerVoiceFilters; ++s)
             {
@@ -208,6 +211,19 @@ void KapibaraUI::loadModernState(const std::string &path)
                 auto &f = tracks[(size_t)ti].perVoiceFilters[(size_t)s];
                 ss >> en >> topo >> f.cutoffHz >> f.resonance >> f.drive >> f.feedback >> f.mix;
                 f.enabled = en; f.topology = synth::SourceFilterTopology(topo);
+            }
+            else if(tok == "mbmod")
+            {
+                int ti, mode, src, dst; float depth;
+                if(!(ss >> ti >> mode >> src >> dst >> depth))
+                    continue;
+                ensureTrack(ti);
+                if(ti < 0) continue;
+                auto &bm = tracks[(size_t)ti].basicMod;
+                bm.mode = synth::BasicOscModMode(clampi(mode, 0, 3));
+                bm.source = uint8_t(clampi(src, 0, synth::kBasicOscUnits - 1));
+                bm.target = uint8_t(clampi(dst, 0, synth::kBasicOscUnits - 1));
+                bm.depth = clampf(depth, 0.0f, 1.0f);
             }
             else if(tok == "mbosc")
             {

@@ -66,7 +66,12 @@ void KapibaraUI::drawTrackEditor(const Rect &r)
         // oscBodyBottomY_ (e.g. the meta editor ends level with the WAVETABLE panel /
         // PAN row) so the UNISON row tucks right under it, with OSC MOD below that.
         const Rect content { r.x + 16.0f, r.y + 44.0f, r.w - 32.0f, r.h - 56.0f };
-        const float unisonH = 52.0f;  // label + control row
+        // A Basic Oscillator rack is already three oscillators: stacking unison
+        // lanes on top of that is redundant voicing, so the zone is not shown and
+        // its rects stay zeroed (no stale click targets). The engine is told to
+        // render one lane per partial in pushCurrentTrack.
+        const bool showUnison = track->type != synth::SourceTrackType::BasicOscillator;
+        const float unisonH = showUnison ? 52.0f : 0.0f;  // label + control row
         // OSC MOD zone grows with the number of active source-mod entries.
         int activeMods = 0;
         for(const auto &m : track->mods)
@@ -90,6 +95,15 @@ void KapibaraUI::drawTrackEditor(const Rect &r)
         const float uy = clampf(oscBodyBottomY_ + 10.0f, content.y,
                                 content.y + content.h - unisonH - modZoneH - 6.0f);
         const float unisonW = oscBodyLeftW_ > 0.0f ? oscBodyLeftW_ : content.w;
+        if(!showUnison)
+        {
+            unisonVoicesRect_ = {}; unisonDetuneRect_ = {};
+            unisonWidthRect_ = {};  unisonPhaseRect_ = {};
+            unisonVoicesDownRect_ = {}; unisonVoicesUpRect_ = {};
+            const float modOnlyY = uy + 6.0f;
+            drawModEditor({ content.x, modOnlyY, unisonW, modZoneH }, *track);
+            return;
+        }
         strokeLine(content.x, uy - 2.0f, content.x + unisonW, uy - 2.0f,
                    DesignTokens::divider(), 1.0f);
         drawGroupLabel(content.x, uy + 2.0f, "UNISON");
@@ -186,6 +200,9 @@ void KapibaraUI::clearTrackEditorRects()
         metaHarmonicRatioRect_ = {};
         metaHarmonicAmpRect_ = {};
         metaHarmonicPhaseRect_ = {};
+        basicWaveRects_.fill({});
+        basicModModeRect_ = {}; basicModSrcRect_ = {};
+        basicModDstRect_ = {};  basicModDepthRect_ = {};
         basicUnitEnableRects_.fill({});
         basicShapeRects_.fill({});
         basicLevelRects_.fill({});

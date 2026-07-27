@@ -12,6 +12,7 @@ namespace synth
 constexpr int kMaxPartials = 500;      // N hard cap per StaticSpectralFrame.
 constexpr int kMaxUnison = 16;         // U: unison spread parameter upper bound (§4 Unison).
 constexpr int kMaxTimelineFrames = 32; // T: source-intrinsic frames per SpectralTimeline
+constexpr int kMaxSourceTracks = 12;   // source-track rack size
 constexpr int kMaxVoices = 16;         // V: polyphony budget (§7)
 constexpr int kMaxModSlots = 8;        // Unified modulator slots (loop + one-shot, was kMaxLfos+kMaxModEnvs)
 constexpr int kMaxLfos = 4;            // kept for backward compat (= first half of kMaxModSlots)

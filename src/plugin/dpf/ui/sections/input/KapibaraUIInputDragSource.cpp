@@ -56,6 +56,10 @@ bool KapibaraUI::applySourceDragValue(float x, float y)
                     deferTrackPush_ = true;
                 }
                 break;
+            case DragTarget::BasicModDepth:
+                if(auto *track = currentTrack())
+                { track->basicMod.depth = knobNorm(); pushCurrentTrack(); }
+                break;
             // Basic Oscillator rack — basicDragUnit_ says which column the press
             // started in; every one of these edits one unit of the stack.
             case DragTarget::BasicPulse:

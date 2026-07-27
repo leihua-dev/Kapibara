@@ -428,6 +428,22 @@ void ModMatrix::evaluateForVoice(MatrixVoiceOutput &out,
             continue;
         if(insertModParamForDest(rule.dest) >= 0)
             continue;
+        if(rule.dest == ModDestination::OscModDepth)
+        {
+            // Track-scoped, not per-partial: the rack's own cross-unit modulation
+            // depth. An untargeted rule would have to mean "every rack", which is
+            // never what a user means here, so it is simply skipped.
+            if(rule.targetTrackId == 0 || trackIds == nullptr)
+                continue;
+            for(int t = 0; t < trackCount && t < kMaxSourceTracks; ++t)
+                if(trackIds[t] == rule.targetTrackId)
+                {
+                    out.dOscMod[(size_t)t] += rule.depth
+                                              * applyTransfer(rule, sourceValue(rule.source, 0));
+                    break;
+                }
+            continue;
+        }
         int begin, end;
         if(!resolveRange(rule.targetTrackId, begin, end))
             continue;

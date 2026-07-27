@@ -94,6 +94,7 @@ Rect KapibaraUI::modulationDestinationRect(const synth::MatrixRule &rule) const
             case synth::ModDestination::Amp: return partialAmpRect_;
             case synth::ModDestination::Freq: return partialRatioRect_;
             case synth::ModDestination::Phase: return metaPhaseRect_;
+            case synth::ModDestination::OscModDepth: return basicModDepthRect_;
             case synth::ModDestination::InsertP0:
             case synth::ModDestination::InsertP1:
             case synth::ModDestination::InsertP2:

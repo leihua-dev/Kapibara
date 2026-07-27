@@ -123,7 +123,18 @@ drawn shape.
 
 Each track carries up to 3 source-mod entries (`SourceModEntry`): another
 track modulates it via AM, RingMod, FM, PM, or hard sync, rendered inside
-`Voice` before bus accumulation. The per-voice chain adds up to 4 filter
+`Voice` before bus accumulation.
+
+A Basic Oscillator track additionally has modulation *inside* itself
+(`BasicOscModParams`): one unit of its oscillator rack drives another via
+Ring, AM, or Sync. This is not a matrix route — the wiring never leaves the
+source — but its depth is `ModDestination::OscModDepth`, so an LFO can still
+sweep it. The units are contiguous slices of the track's partial block
+(`WavetableSeedRenderState::unitBegin/unitEnd`), so `Voice::renderTrackPartials`
+renders the modulator and carrier into their own buffers and the untouched
+units straight to the output. Every partial is rendered exactly once per
+block: the phase accumulators advance during rendering, so covering one
+twice would run it at double speed. The per-voice chain adds up to 4 filter
 nodes per track, also processed in `Voice`.
 
 ## Source Routing And Strip Buses

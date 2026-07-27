@@ -270,6 +270,15 @@ void KapibaraPlugin::updateSourceTrack(uint32_t trackId, const synth::SourceTrac
     clean.partialBank.morph = clampf(clean.partialBank.morph, 0.0f, 1.0f);
     clean.metaOsc.frameCount = std::clamp(clean.metaOsc.frameCount, 1, synth::kMaxWavetableFrames);
     clean.metaOsc.phaseRandom = clampf(clean.metaOsc.phaseRandom, 0.0f, 1.0f);
+    if(clean.type == synth::SourceTrackType::BasicOscillator)
+    {
+        // The rack IS the voicing; unison lanes on top of it are redundant and
+        // the zone is not offered in the editor, so never render them.
+        clean.unison.voices = 1;
+        clean.basicMod.source = uint8_t(std::clamp<int>(clean.basicMod.source, 0, synth::kBasicOscUnits - 1));
+        clean.basicMod.target = uint8_t(std::clamp<int>(clean.basicMod.target, 0, synth::kBasicOscUnits - 1));
+        clean.basicMod.depth = clampf(clean.basicMod.depth, 0.0f, 1.0f);
+    }
     for(auto &u : clean.basicUnits)
     {
         u.pulseWidth = clampf(u.pulseWidth, 0.05f, 0.95f);

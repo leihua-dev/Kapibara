@@ -16,6 +16,9 @@
         basicLevelRects_ {}, basicPulseRects_ {}, basicSubRects_ {};
     std::array<std::array<Rect, 4>, synth::kBasicOscUnits> basicPitchRects_ {};
     int basicDragUnit_ = -1;
+    std::array<Rect, synth::kBasicOscUnits> basicWaveRects_ {};   // per-unit mini preview
+    // Source-local cross-unit modulation module (not a matrix route).
+    Rect basicModModeRect_ {}, basicModSrcRect_ {}, basicModDstRect_ {}, basicModDepthRect_ {};
     Rect noiseModeRect_ {}, noiseColorRect_ {};
     Rect sourceGainRect_ {}, sourcePanRect_ {}, sourceFilterEnableRect_ {}, sourceFilterTopologyRect_ {};
     Rect sourceFilterCutoffRect_ {}, sourceFilterResRect_ {}, sourceFilterDriveRect_ {}, sourceFilterFeedbackRect_ {};
