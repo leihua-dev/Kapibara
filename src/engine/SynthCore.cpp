@@ -120,15 +120,12 @@ bool sourceTrackSoundContentChanged(const SourceTrackParams &a, const SourceTrac
             // Runtime params (ratio/amp/phase/pan/morph/warp) are patched via fast path.
             return frameTableContentChanged(a.metaOsc, b.metaOsc);
         case SourceTrackType::BasicOscillator:
-            // Pitch belongs here too: buildBasicSeed folds it into the partial
-            // ratios, so without a rebuild the offset would never be heard.
-            return a.basicShape != b.basicShape
-                   || std::abs(a.pulseWidth - b.pulseWidth) > 1.0e-6f
-                   || std::abs(a.subLevel - b.subLevel) > 1.0e-6f
-                   || a.basicPitchOct != b.basicPitchOct
-                   || a.basicPitchSem != b.basicPitchSem
-                   || std::abs(a.basicPitchFin - b.basicPitchFin) > 1.0e-6f
-                   || std::abs(a.basicPitchCrs - b.basicPitchCrs) > 1.0e-6f;
+            // Every unit field feeds buildBasicSeed, pitch and level included:
+            // without a rebuild the edit is stored but never heard. BasicOscUnit
+            // is a POD, so one memcmp covers the whole stack and cannot fall
+            // behind when a field is added.
+            return std::memcmp(a.basicUnits.data(), b.basicUnits.data(),
+                               sizeof(BasicOscUnit) * size_t(kBasicOscUnits)) != 0;
         case SourceTrackType::SampleNoise:
             return a.sampleNoiseMode != b.sampleNoiseMode
                    || std::abs(a.noiseColor - b.noiseColor) > 1.0e-6f;
@@ -175,7 +172,10 @@ SourceTrackParams makeDefaultTrack(SourceTrackType type, uint32_t id, const char
     }
     else if(type == SourceTrackType::BasicOscillator)
     {
-        t.basicShape = BasicOscillatorShape::Sine;
+        // Unit 1 on, the other two parked — a new track is one oscillator until
+        // the user turns the others on.
+        t.basicUnits[0].enabled = true;
+        t.basicUnits[0].shape = BasicOscillatorShape::Sine;
         t.name = name != nullptr && name[0] != '\0' ? name : "Basic Osc";
     }
     else if(type == SourceTrackType::SampleNoise)

@@ -186,9 +186,13 @@ void KapibaraUI::clearTrackEditorRects()
         metaHarmonicRatioRect_ = {};
         metaHarmonicAmpRect_ = {};
         metaHarmonicPhaseRect_ = {};
-        basicShapeRect_ = {};
-        basicPulseRect_ = {};
-        basicSubRect_ = {};
+        basicUnitEnableRects_.fill({});
+        basicShapeRects_.fill({});
+        basicLevelRects_.fill({});
+        basicPulseRects_.fill({});
+        basicSubRects_.fill({});
+        for(auto &row : basicPitchRects_)
+            row.fill({});
         noiseModeRect_ = {};
         noiseColorRect_ = {};
         attackRect_ = {};

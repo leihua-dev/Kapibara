@@ -270,8 +270,16 @@ void KapibaraPlugin::updateSourceTrack(uint32_t trackId, const synth::SourceTrac
     clean.partialBank.morph = clampf(clean.partialBank.morph, 0.0f, 1.0f);
     clean.metaOsc.frameCount = std::clamp(clean.metaOsc.frameCount, 1, synth::kMaxWavetableFrames);
     clean.metaOsc.phaseRandom = clampf(clean.metaOsc.phaseRandom, 0.0f, 1.0f);
-    clean.pulseWidth = clampf(clean.pulseWidth, 0.05f, 0.95f);
-    clean.subLevel = clampf(clean.subLevel, 0.0f, 1.0f);
+    for(auto &u : clean.basicUnits)
+    {
+        u.pulseWidth = clampf(u.pulseWidth, 0.05f, 0.95f);
+        u.subLevel = clampf(u.subLevel, 0.0f, 1.0f);
+        u.level = clampf(u.level, 0.0f, 1.0f);
+        u.pitchOct = std::clamp(u.pitchOct, -4, 4);
+        u.pitchSem = std::clamp(u.pitchSem, -12, 12);
+        u.pitchFin = clampf(u.pitchFin, -100.0f, 100.0f);
+        u.pitchCrs = clampf(u.pitchCrs, -100.0f, 100.0f);
+    }
     clean.noiseColor = clampf(clean.noiseColor, 0.0f, 1.0f);
     clean.perVoiceFilterCount = std::clamp(clean.perVoiceFilterCount, 0, synth::kMaxPerVoiceFilters);
     clean.perVoiceFilterOrderCount = std::clamp(clean.perVoiceFilterOrderCount, 0, synth::kMaxPerVoiceFilters);

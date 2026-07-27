@@ -186,6 +186,51 @@ void KapibaraUI::drawStripThumbnail(const Rect &r, const synth::SourceTrackParam
                 fill();
             }
         }
+        else if(track.type == synth::SourceTrackType::BasicOscillator)
+        {
+            // The real summed waveform of the oscillator rack. This used to be a
+            // fixed two-cycle sine regardless of shape, so the thumbnail said
+            // nothing about what the track actually sounded like.
+            float ratio[synth::kMaxWavetablePartials];
+            float amp[synth::kMaxWavetablePartials];
+            float phase[synth::kMaxWavetablePartials];
+            int n = 0;
+            float peak = 0.0f;
+            for(const auto &u : track.basicUnits)
+            {
+                if(!u.enabled || n >= synth::kMaxWavetablePartials)
+                    continue;
+                const int got = synth::basicOscPartials(u, synth::kMaxWavetablePartials - n,
+                                                        ratio + n, amp + n, phase + n);
+                const float semis = float(u.pitchOct) * 12.0f + float(u.pitchSem)
+                                    + u.pitchFin / 100.0f + u.pitchCrs / 100.0f;
+                const float pr = std::pow(2.0f, semis / 12.0f);
+                const float lvl = clampf(u.level, 0.0f, 1.0f);
+                for(int i = n; i < n + got; ++i)
+                {
+                    ratio[i] *= pr;
+                    amp[i] *= lvl;
+                    peak += amp[i];
+                }
+                n += got;
+            }
+            const float midY = plot.y + plot.h * 0.5f;
+            const float scale = plot.h * 0.40f / std::max(0.25f, peak);
+            beginPath();
+            for(int sp = 0; sp < int(plot.w); ++sp)
+            {
+                const float t = float(sp) / std::max(1.0f, plot.w);
+                float v = 0.0f;
+                for(int i = 0; i < n; ++i)
+                    v += amp[i] * std::sin(2.0f * kPi * t * ratio[i] + phase[i]);
+                const float px = plot.x + float(sp);
+                const float py = midY - v * scale;
+                if(sp == 0) moveTo(px, py); else lineTo(px, py);
+            }
+            strokeColor(line.withAlpha(0.85f));
+            strokeWidth(1.25f);
+            stroke();
+        }
         else
         {
             const float midY = plot.y + plot.h * 0.5f;
@@ -193,14 +238,12 @@ void KapibaraUI::drawStripThumbnail(const Rect &r, const synth::SourceTrackParam
             for(int sp = 0; sp < int(plot.w); ++sp)
             {
                 const float t = float(sp) / std::max(1.0f, plot.w);
-                const float v = track.type == synth::SourceTrackType::BasicOscillator
-                                  ? std::sin(t * kPi * 4.0f)
-                                  : 0.55f * std::sin(t * kPi * 41.0f) * std::sin(t * kPi * 7.0f);
+                const float v = 0.55f * std::sin(t * kPi * 41.0f) * std::sin(t * kPi * 7.0f);
                 const float px = plot.x + float(sp);
                 const float py = midY - v * plot.h * 0.38f;
                 if(sp == 0) moveTo(px, py); else lineTo(px, py);
             }
-            strokeColor(line.withAlpha(track.type == synth::SourceTrackType::BasicOscillator ? 0.85f : 0.55f));
+            strokeColor(line.withAlpha(0.55f));
             strokeWidth(1.25f);
             stroke();
         }

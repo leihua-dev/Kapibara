@@ -220,11 +220,33 @@ bool KapibaraUI::handleButtonClick(float x, float y)
             }
             // Warp mode is chosen via right-click menu (openWarpModeMenu), not by
             // left-click cycling, so no left-click handling here.
-            if(basicShapeRect_.contains(x, y) && track->type == synth::SourceTrackType::BasicOscillator)
+            if(track->type == synth::SourceTrackType::BasicOscillator)
             {
-                track->basicShape = static_cast<synth::BasicOscillatorShape>((int(track->basicShape) + 1) % 5);
-                pushCurrentTrack();
-                return true;
+                for(int u = 0; u < synth::kBasicOscUnits; ++u)
+                {
+                    auto &unit = track->basicUnits[(size_t)u];
+                    if(basicShapeRects_[(size_t)u].w > 0.0f
+                       && basicShapeRects_[(size_t)u].contains(x, y))
+                    {
+                        unit.shape = static_cast<synth::BasicOscillatorShape>(
+                            (int(unit.shape) + 1) % 5);
+                        pushCurrentTrack();
+                        return true;
+                    }
+                    if(basicUnitEnableRects_[(size_t)u].w > 0.0f
+                       && basicUnitEnableRects_[(size_t)u].contains(x, y))
+                    {
+                        // Keep at least one unit on — an all-off rack is a silent
+                        // track with no obvious way back.
+                        int on = 0;
+                        for(const auto &o : track->basicUnits)
+                            if(o.enabled) ++on;
+                        if(!(unit.enabled && on <= 1))
+                            unit.enabled = !unit.enabled;
+                        pushCurrentTrack();
+                        return true;
+                    }
+                }
             }
             if(noiseModeRect_.contains(x, y) && track->type == synth::SourceTrackType::SampleNoise)
             {

@@ -157,6 +157,30 @@ enum class SampleNoiseMode : uint8_t
     Capture = 2
 };
 
+// A Basic Oscillator track hosts a small stack of independent oscillators rather
+// than one: on its own a basic shape is a handful of controls, and three of them
+// side by side is what the shape is actually useful for.
+constexpr int kBasicOscUnits = 3;
+
+struct BasicOscUnit
+{
+    bool enabled = false;
+    BasicOscillatorShape shape = BasicOscillatorShape::Sine;
+    float pulseWidth = 0.5f;   // Pulse only
+    float subLevel = 0.0f;     // Sub only
+    float level = 1.0f;
+    int pitchOct = 0;
+    int pitchSem = 0;
+    float pitchFin = 0.0f;
+    float pitchCrs = 0.0f;
+};
+
+// One unit's harmonic series, written into caller-provided arrays (at most
+// `budget` entries). Shared by the seed builder and the UI's waveform display so
+// the picture cannot drift from what is rendered. Returns how many it wrote.
+int basicOscPartials(const BasicOscUnit &unit, int budget,
+                     float *ratio, float *amp, float *phase);
+
 struct WavetableHarmonic
 {
     float ratio = 1.0f;
@@ -259,16 +283,7 @@ struct SourceTrackParams
     GeneratorSourceParams strip {};
     WavetableSeedParams partialBank {};
     WavetablePartialSlot metaOsc {};
-    BasicOscillatorShape basicShape = BasicOscillatorShape::Sine;
-    float pulseWidth = 0.5f;
-    float subLevel = 0.0f;
-    // Basic-oscillator pitch offset. Meta keeps its OCT/SEM/FIN/CRS on metaOsc
-    // and Partial Bank on its seed's slot 0, but a basic osc's partials are
-    // generated from scratch every rebuild, so its offset has to live here.
-    int basicPitchOct = 0;
-    int basicPitchSem = 0;
-    float basicPitchFin = 0.0f;
-    float basicPitchCrs = 0.0f;
+    std::array<BasicOscUnit, kBasicOscUnits> basicUnits {};
     SampleNoiseMode sampleNoiseMode = SampleNoiseMode::Noise;
     float noiseColor = 0.5f;
     int perVoiceFilterCount = 0;

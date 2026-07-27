@@ -6,67 +6,113 @@
 namespace synth
 {
 
-void buildBasicSeed(const SourceTrackParams &track, WavetableSeedParams &seed)
+namespace
 {
-    seed = WavetableSeedParams {};
-    const auto setPartial = [&](int i, float ratio, float amp) {
-        if(i < 0 || i >= kMaxWavetablePartials)
-            return;
-        auto &p = seed.partials[(size_t)i];
-        p.enabled = true;
-        p.ratio = ratio;
-        p.amp = amp;
-        p.phase = 0.0f;
-    };
+constexpr float kPiF = 3.14159265358979323846f;
+}
 
-    switch(track.basicShape)
+int basicOscPartials(const BasicOscUnit &unit, int budget, float *ratio, float *amp, float *phase)
+{
+    int n = 0;
+    const auto put = [&](float r, float a, float ph) {
+        if(n >= budget)
+            return;
+        ratio[n] = r;
+        amp[n] = a;
+        phase[n] = ph;
+        ++n;
+    };
+    switch(unit.shape)
     {
         case BasicOscillatorShape::Sine:
-            seed.partialCount = 1;
-            setPartial(0, 1.0f, 1.0f);
+            put(1.0f, 1.0f, 0.0f);
             break;
         case BasicOscillatorShape::Sub:
-            seed.partialCount = 2;
-            setPartial(0, 0.5f, 1.0f);
-            setPartial(1, 1.0f, std::clamp(track.subLevel, 0.0f, 1.0f));
+            put(0.5f, 1.0f, 0.0f);
+            put(1.0f, std::clamp(unit.subLevel, 0.0f, 1.0f), 0.0f);
             break;
         case BasicOscillatorShape::Saw:
-            seed.partialCount = 32;
-            for(int i = 0; i < seed.partialCount; ++i)
-                setPartial(i, float(i + 1), 1.0f / float(i + 1));
+            for(int i = 0; i < 32 && n < budget; ++i)
+                put(float(i + 1), 1.0f / float(i + 1), 0.0f);
             break;
         case BasicOscillatorShape::Triangle:
-            seed.partialCount = 31;
-            for(int i = 0; i < seed.partialCount; i += 2)
+            // Odd harmonics only, packed contiguously. They used to be written to
+            // every OTHER slot, which left the slots between them at the default
+            // ratio 1 / amp 1 — 15 extra full-level fundamentals stacked on the
+            // triangle, so it did not sound like one.
+            for(int k = 0; n < budget; ++k)
             {
-                const int n = i + 1;
-                const float sign = ((n - 1) / 2) & 1 ? -1.0f : 1.0f;
-                setPartial(i, float(n), std::abs(sign / float(n * n)));
-                seed.partials[(size_t)i].phase = sign < 0.0f ? 3.14159265358979323846f : 0.0f;
+                const int h = 2 * k + 1;
+                if(h > 31)
+                    break;
+                const bool flip = (k & 1) != 0;
+                put(float(h), 1.0f / float(h * h), flip ? kPiF : 0.0f);
             }
             break;
         case BasicOscillatorShape::Pulse:
-            seed.partialCount = 32;
-            for(int i = 0; i < seed.partialCount; ++i)
+        {
+            const float duty = std::clamp(unit.pulseWidth, 0.05f, 0.95f);
+            for(int i = 0; i < 32 && n < budget; ++i)
             {
-                const float n = float(i + 1);
-                const float duty = std::clamp(track.pulseWidth, 0.05f, 0.95f);
-                setPartial(i, n, std::abs(std::sin(3.14159265358979323846f * n * duty) / n));
+                const float h = float(i + 1);
+                put(h, std::abs(std::sin(kPiF * h * duty) / h), 0.0f);
             }
             break;
+        }
+    }
+    return n;
+}
+
+void buildBasicSeed(const SourceTrackParams &track, WavetableSeedParams &seed)
+{
+    seed = WavetableSeedParams {};
+    // The default seed fills every slot with a harmonic at amp 1/n; silence them
+    // all first so a shape only occupies the slots it actually writes.
+    for(auto &p : seed.partials)
+    {
+        p.enabled = false;
+        p.ratio = 1.0f;
+        p.amp = 0.0f;
+        p.phase = 0.0f;
     }
 
-    // Pitch offset scales the whole harmonic series, so the shape is preserved
-    // and only its fundamental moves — the same thing OCT/SEM/FIN/CRS do on the
-    // other track types.
-    const float semis = float(track.basicPitchOct) * 12.0f + float(track.basicPitchSem)
-                        + track.basicPitchFin / 100.0f + track.basicPitchCrs / 100.0f;
-    if(std::abs(semis) > 1.0e-4f)
+    int active = 0;
+    for(const auto &u : track.basicUnits)
+        if(u.enabled)
+            ++active;
+    const bool fallbackToFirst = active == 0;  // never render silence
+    if(fallbackToFirst)
+        active = 1;
+    // Share the track's partial budget between the active units.
+    const int budget = std::max(1, kMaxWavetablePartials / active);
+
+    float ratio[kMaxWavetablePartials], amp[kMaxWavetablePartials], phase[kMaxWavetablePartials];
+    int write = 0;
+    for(int ui = 0; ui < kBasicOscUnits; ++ui)
     {
-        const float ratio = std::pow(2.0f, semis / 12.0f);
-        for(int i = 0; i < seed.partialCount && i < kMaxWavetablePartials; ++i)
-            seed.partials[(size_t)i].ratio *= ratio;
+        const auto &u = track.basicUnits[(size_t)ui];
+        if(!u.enabled && !(fallbackToFirst && ui == 0))
+            continue;
+        const int room = std::min(budget, kMaxWavetablePartials - write);
+        if(room <= 0)
+            break;
+        const int n = basicOscPartials(u, room, ratio, amp, phase);
+        // Pitch scales the whole series, so the shape is preserved and only its
+        // fundamental moves.
+        const float semis = float(u.pitchOct) * 12.0f + float(u.pitchSem)
+                            + u.pitchFin / 100.0f + u.pitchCrs / 100.0f;
+        const float pitchRatio = std::pow(2.0f, semis / 12.0f);
+        const float level = std::clamp(u.level, 0.0f, 1.0f);
+        for(int i = 0; i < n; ++i)
+        {
+            auto &p = seed.partials[(size_t)write++];
+            p.enabled = true;
+            p.ratio = ratio[i] * pitchRatio;
+            p.amp = amp[i] * level;
+            p.phase = phase[i];
+        }
     }
+    seed.partialCount = std::max(1, write);
 }
 
 } // namespace synth

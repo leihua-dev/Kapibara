@@ -71,10 +71,41 @@ bool KapibaraUI::handleControlPress(float x, float y)
             return setDragKnob(DragTarget::PartialRatio, std::min(1.0f, ratio / 64.0f));
         }
 
-        if(basicPulseRect_.contains(x, y))
-            return setDragKnob(DragTarget::BasicPulse, track ? track->pulseWidth : 0.5f);
-        if(basicSubRect_.contains(x, y))
-            return setDragKnob(DragTarget::BasicSub, track ? track->subLevel : 0.0f);
+        // Basic Oscillator rack: every control is per unit, so the press records
+        // which column it belongs to. Rects of controls a shape does not use are
+        // left zeroed by the editor, so they never match here.
+        if(track != nullptr && track->type == synth::SourceTrackType::BasicOscillator)
+        {
+            for(int u = 0; u < synth::kBasicOscUnits; ++u)
+            {
+                auto &unit = track->basicUnits[(size_t)u];
+                const auto grabKnob = [&](DragTarget tgt, float norm) {
+                    basicDragUnit_ = u;
+                    return setDragKnob(tgt, norm);
+                };
+                const auto grabPitch = [&](DragTarget tgt) {
+                    basicDragUnit_ = u;
+                    dragTarget_   = tgt;
+                    dragStartY_   = y;
+                    dragStartOct_ = unit.pitchOct;
+                    dragStartSem_ = unit.pitchSem;
+                    dragStartFin_ = unit.pitchFin;
+                    dragStartCrs_ = unit.pitchCrs;
+                    return true;
+                };
+                if(basicLevelRects_[(size_t)u].w > 0.0f && basicLevelRects_[(size_t)u].contains(x, y))
+                    return grabKnob(DragTarget::BasicLevel, unit.level);
+                if(basicPulseRects_[(size_t)u].w > 0.0f && basicPulseRects_[(size_t)u].contains(x, y))
+                    return grabKnob(DragTarget::BasicPulse, unit.pulseWidth);
+                if(basicSubRects_[(size_t)u].w > 0.0f && basicSubRects_[(size_t)u].contains(x, y))
+                    return grabKnob(DragTarget::BasicSub, unit.subLevel);
+                const auto &pr = basicPitchRects_[(size_t)u];
+                if(pr[0].w > 0.0f && pr[0].contains(x, y)) return grabPitch(DragTarget::BasicPitchOct);
+                if(pr[1].w > 0.0f && pr[1].contains(x, y)) return grabPitch(DragTarget::BasicPitchSem);
+                if(pr[2].w > 0.0f && pr[2].contains(x, y)) return grabPitch(DragTarget::BasicPitchFin);
+                if(pr[3].w > 0.0f && pr[3].contains(x, y)) return grabPitch(DragTarget::BasicPitchCrs);
+            }
+        }
         if(noiseColorRect_.contains(x, y))
             return setDragKnob(DragTarget::NoiseColor, track ? track->noiseColor : 0.5f);
         if(partialCountRect_.contains(x, y)) {

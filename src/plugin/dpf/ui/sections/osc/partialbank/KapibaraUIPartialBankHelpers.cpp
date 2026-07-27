@@ -62,11 +62,11 @@ bool KapibaraUI::trackGroupPitch(const synth::SourceTrackParams &t, TrackPitch &
                 out = { s.pitchOct, s.pitchSem, s.pitchFin, s.pitchCrs };
                 return true;
             }
-            case synth::SourceTrackType::BasicOscillator:
-                out = { t.basicPitchOct, t.basicPitchSem, t.basicPitchFin, t.basicPitchCrs };
-                return true;
             default:
-                return false;  // Sample / Noise has no harmonic series to shift
+                // Basic Oscillator has one pitch PER UNIT, not one per track, so
+                // it uses its own rects and drag cases; Sample / Noise has no
+                // harmonic series to shift at all.
+                return false;
         }
     }
 
@@ -88,16 +88,8 @@ void KapibaraUI::applyTrackGroupPitch(synth::SourceTrackParams &t, const TrackPi
             case synth::SourceTrackType::PartialBank:
                 applyPartialBankGroupPitch(t.partialBank, oct, sem, fin, crs);
                 break;
-            case synth::SourceTrackType::BasicOscillator:
-                // The seed is regenerated from these on every rebuild
-                // (dsp/BasicOscDsp.cpp buildBasicSeed), so storing them is enough.
-                t.basicPitchOct = oct;
-                t.basicPitchSem = sem;
-                t.basicPitchFin = fin;
-                t.basicPitchCrs = crs;
-                break;
             default:
-                break;
+                break;  // see trackGroupPitch
         }
     }
 

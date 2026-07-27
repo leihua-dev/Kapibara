@@ -56,11 +56,39 @@ bool KapibaraUI::applySourceDragValue(float x, float y)
                     deferTrackPush_ = true;
                 }
                 break;
+            // Basic Oscillator rack — basicDragUnit_ says which column the press
+            // started in; every one of these edits one unit of the stack.
             case DragTarget::BasicPulse:
-                if(auto *track = currentTrack()) { track->pulseWidth = knobNorm(); pushCurrentTrack(); }
-                break;
             case DragTarget::BasicSub:
-                if(auto *track = currentTrack()) { track->subLevel = knobNorm(); pushCurrentTrack(); }
+            case DragTarget::BasicLevel:
+            case DragTarget::BasicPitchOct:
+            case DragTarget::BasicPitchSem:
+            case DragTarget::BasicPitchFin:
+            case DragTarget::BasicPitchCrs:
+                if(auto *track = currentTrack();
+                   track != nullptr && basicDragUnit_ >= 0 && basicDragUnit_ < synth::kBasicOscUnits)
+                {
+                    auto &unit = track->basicUnits[(size_t)basicDragUnit_];
+                    switch(dragTarget_)
+                    {
+                        case DragTarget::BasicPulse: unit.pulseWidth = knobNorm(); break;
+                        case DragTarget::BasicSub:   unit.subLevel = knobNorm(); break;
+                        case DragTarget::BasicLevel: unit.level = knobNorm(); break;
+                        case DragTarget::BasicPitchOct:
+                            unit.pitchOct = clampi(dragStartOct_ + int((dragStartY_ - y) / 22.0f), -4, 4);
+                            break;
+                        case DragTarget::BasicPitchSem:
+                            unit.pitchSem = clampi(dragStartSem_ + int((dragStartY_ - y) / 12.0f), -12, 12);
+                            break;
+                        case DragTarget::BasicPitchFin:
+                            unit.pitchFin = clampf(dragStartFin_ + (dragStartY_ - y) * 0.6f, -100.0f, 100.0f);
+                            break;
+                        default:
+                            unit.pitchCrs = clampf(dragStartCrs_ + (dragStartY_ - y) * 0.1f, -100.0f, 100.0f);
+                            break;
+                    }
+                    pushCurrentTrack();
+                }
                 break;
             case DragTarget::NoiseColor:
                 if(auto *track = currentTrack()) { track->noiseColor = knobNorm(); pushCurrentTrack(); }

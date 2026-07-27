@@ -50,10 +50,21 @@ void KapibaraUI::saveModernState(const std::string &path)
             out << "mtrack " << ti << ' ' << t.id << ' ' << int(t.type) << ' ' << t.gain << ' ' << t.pan << ' ' << t.send
                 << ' ' << t.ampEnvIndex << ' ' << int(t.mute) << ' ' << int(t.solo)
                 << ' ' << t.unison.voices << ' ' << t.unison.detuneCents << ' ' << t.unison.widthStereo << ' ' << t.unison.phaseSpread
-                << ' ' << int(t.basicShape) << ' ' << t.pulseWidth << ' ' << t.subLevel << ' ' << int(t.sampleNoiseMode) << ' ' << t.noiseColor
+                << ' ' << int(t.basicUnits[0].shape) << ' ' << t.basicUnits[0].pulseWidth
+                << ' ' << t.basicUnits[0].subLevel << ' ' << int(t.sampleNoiseMode) << ' ' << t.noiseColor
                 << ' ' << t.partialBank.partialCount << ' ' << t.perVoiceFilterCount << ' ' << t.inserts.size()
-                << ' ' << t.basicPitchOct << ' ' << t.basicPitchSem
-                << ' ' << t.basicPitchFin << ' ' << t.basicPitchCrs << "\n";
+                << ' ' << t.basicUnits[0].pitchOct << ' ' << t.basicUnits[0].pitchSem
+                << ' ' << t.basicUnits[0].pitchFin << ' ' << t.basicUnits[0].pitchCrs << "\n";
+            // Full oscillator rack. Unit 0 also rides the legacy mtrack fields
+            // above so an older build still loads something that sounds right.
+            for(int u = 0; u < synth::kBasicOscUnits; ++u)
+            {
+                const auto &bu = t.basicUnits[(size_t)u];
+                out << "mbosc " << ti << ' ' << u << ' ' << int(bu.enabled) << ' ' << int(bu.shape)
+                    << ' ' << bu.pulseWidth << ' ' << bu.subLevel << ' ' << bu.level
+                    << ' ' << bu.pitchOct << ' ' << bu.pitchSem
+                    << ' ' << bu.pitchFin << ' ' << bu.pitchCrs << "\n";
+            }
             out << "mtname " << ti << ' ' << t.name << "\n";
             for(int s = 0; s < t.perVoiceFilterCount && s < synth::kMaxPerVoiceFilters; ++s)
             {
@@ -164,9 +175,12 @@ void KapibaraUI::loadModernState(const std::string &path)
                 int type, mute, solo, bshape, snmode, pc, pvfc, insc; unsigned id;
                 ss >> id >> type >> t.gain >> t.pan >> t.send >> t.ampEnvIndex >> mute >> solo
                    >> t.unison.voices >> t.unison.detuneCents >> t.unison.widthStereo >> t.unison.phaseSpread
-                   >> bshape >> t.pulseWidth >> t.subLevel >> snmode >> t.noiseColor >> pc >> pvfc >> insc;
+                   >> bshape >> t.basicUnits[0].pulseWidth >> t.basicUnits[0].subLevel
+                   >> snmode >> t.noiseColor >> pc >> pvfc >> insc;
                 t.id = id; t.type = synth::SourceTrackType(type); t.mute = mute; t.solo = solo;
-                t.basicShape = synth::BasicOscillatorShape(bshape); t.sampleNoiseMode = synth::SampleNoiseMode(snmode);
+                t.basicUnits[0].enabled = true;
+                t.basicUnits[0].shape = synth::BasicOscillatorShape(bshape);
+                t.sampleNoiseMode = synth::SampleNoiseMode(snmode);
                 t.partialBank.partialCount = pc; t.perVoiceFilterCount = pvfc; t.inserts.clear();
                 // Optional tail (basic-osc pitch), each re-defaulted on its own:
                 // a failed >> writes 0 AND poisons the stream for later fields.
@@ -175,10 +189,10 @@ void KapibaraUI::loadModernState(const std::string &path)
                 if(!(ss >> bsem)) bsem = 0;
                 if(!(ss >> bfin)) bfin = 0.0f;
                 if(!(ss >> bcrs)) bcrs = 0.0f;
-                t.basicPitchOct = clampi(boct, -4, 4);
-                t.basicPitchSem = clampi(bsem, -12, 12);
-                t.basicPitchFin = clampf(bfin, -100.0f, 100.0f);
-                t.basicPitchCrs = clampf(bcrs, -100.0f, 100.0f);
+                t.basicUnits[0].pitchOct = clampi(boct, -4, 4);
+                t.basicUnits[0].pitchSem = clampi(bsem, -12, 12);
+                t.basicUnits[0].pitchFin = clampf(bfin, -100.0f, 100.0f);
+                t.basicUnits[0].pitchCrs = clampf(bcrs, -100.0f, 100.0f);
             }
             else if(tok == "mtname")
             {
@@ -194,6 +208,25 @@ void KapibaraUI::loadModernState(const std::string &path)
                 auto &f = tracks[(size_t)ti].perVoiceFilters[(size_t)s];
                 ss >> en >> topo >> f.cutoffHz >> f.resonance >> f.drive >> f.feedback >> f.mix;
                 f.enabled = en; f.topology = synth::SourceFilterTopology(topo);
+            }
+            else if(tok == "mbosc")
+            {
+                int ti, u, en, shape, oct, sem;
+                float pw, sub, lvl, fin, crs;
+                if(!(ss >> ti >> u >> en >> shape >> pw >> sub >> lvl >> oct >> sem >> fin >> crs))
+                    continue;
+                ensureTrack(ti);
+                if(ti < 0 || u < 0 || u >= synth::kBasicOscUnits) continue;
+                auto &bu = tracks[(size_t)ti].basicUnits[(size_t)u];
+                bu.enabled = en != 0;
+                bu.shape = synth::BasicOscillatorShape(clampi(shape, 0, 4));
+                bu.pulseWidth = clampf(pw, 0.05f, 0.95f);
+                bu.subLevel = clampf(sub, 0.0f, 1.0f);
+                bu.level = clampf(lvl, 0.0f, 1.0f);
+                bu.pitchOct = clampi(oct, -4, 4);
+                bu.pitchSem = clampi(sem, -12, 12);
+                bu.pitchFin = clampf(fin, -100.0f, 100.0f);
+                bu.pitchCrs = clampf(crs, -100.0f, 100.0f);
             }
             else if(tok == "mmod")
             {

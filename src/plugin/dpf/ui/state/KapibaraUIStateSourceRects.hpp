@@ -10,7 +10,12 @@
     Rect stripEnvRect_ {}, stripDupRect_ {};
     Rect ampEnvSelectRect_ {}, duplicateEnvRect_ {};
     Rect partialSpectrumRect_ {}, partialAmpRect_ {}, partialRatioRect_ {};
-    Rect basicShapeRect_ {}, basicPulseRect_ {}, basicSubRect_ {};
+    // Basic Oscillator hosts kBasicOscUnits oscillators side by side, so each
+    // control is per unit. basicDragUnit_ carries which column a drag belongs to.
+    std::array<Rect, synth::kBasicOscUnits> basicUnitEnableRects_ {}, basicShapeRects_ {},
+        basicLevelRects_ {}, basicPulseRects_ {}, basicSubRects_ {};
+    std::array<std::array<Rect, 4>, synth::kBasicOscUnits> basicPitchRects_ {};
+    int basicDragUnit_ = -1;
     Rect noiseModeRect_ {}, noiseColorRect_ {};
     Rect sourceGainRect_ {}, sourcePanRect_ {}, sourceFilterEnableRect_ {}, sourceFilterTopologyRect_ {};
     Rect sourceFilterCutoffRect_ {}, sourceFilterResRect_ {}, sourceFilterDriveRect_ {}, sourceFilterFeedbackRect_ {};
