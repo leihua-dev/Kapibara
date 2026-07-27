@@ -53,8 +53,6 @@ struct UnitWave
 void KapibaraUI::drawBasicOscModModule(const Rect &r, synth::SourceTrackParams &track)
 {
         drawPanel(r, DesignTokens::groove(), DesignTokens::border());
-        drawGroupLabel(r.x + 8.0f, r.y + 6.0f, "OSC MOD");
-
         auto &mod = track.basicMod;
         const char *modeName = "OFF";
         switch(mod.mode)
@@ -66,35 +64,56 @@ void KapibaraUI::drawBasicOscModModule(const Rect &r, synth::SourceTrackParams &
         }
         const float pad = 8.0f;
         const float w = r.w - pad * 2.0f;
-        float y = r.y + 22.0f;
-        basicModModeRect_ = { r.x + pad, y, w, 22.0f };
+        const float gap = 4.0f;
+        // The module's height is whatever the waveform plot leaves it, which on a
+        // busy patch is not much, so what survives is decided by priority rather
+        // than by draw order: Depth first (it is what the module exists for, and
+        // the LFO target), then MODE, then SRC/DST (one-click cycles with usable
+        // defaults), and the header last.
+        constexpr float kMinRow = 13.0f;
+        const auto rowFor = [&](float top, int rows) {
+            return ((r.y + r.h) - top - 2.0f - gap * float(rows - 1)) / float(rows);
+        };
+        const bool showRouting = rowFor(r.y + 2.0f, 3) >= kMinRow;
+        const int rows = showRouting ? 3 : 2;
+        const bool showLabel = rowFor(r.y + 20.0f, rows) >= kMinRow;
+        if(showLabel)
+            drawGroupLabel(r.x + 8.0f, r.y + 6.0f, "OSC MOD");
+
+        float y = r.y + (showLabel ? 20.0f : 2.0f);
+        const float rowH = std::min(rowFor(y, rows), 22.0f);
+
+        basicModModeRect_ = { r.x + pad, y, w, rowH };
         drawButton(basicModModeRect_, modeName, mod.mode != synth::BasicOscModMode::Off);
-        y += 26.0f;
+        y += rowH + gap;
 
-        // Which unit drives which. Kept as two chips rather than a matrix row —
-        // this routing never leaves the source.
-        const float half = (w - 6.0f) * 0.5f;
-        basicModSrcRect_ = { r.x + pad, y, half, 20.0f };
-        basicModDstRect_ = { r.x + pad + half + 6.0f, y, half, 20.0f };
-        drawButton(basicModSrcRect_, buttonText("SRC %d", int(mod.source) + 1), false);
-        drawButton(basicModDstRect_, buttonText("DST %d", int(mod.target) + 1), false);
-        y += 24.0f;
-
-        if(r.y + r.h - y >= 22.0f)
+        if(showRouting)
         {
-            basicModDepthRect_ = { r.x + pad, y, w, 20.0f };
-            drawSlider(basicModDepthRect_, "Depth", mod.depth, mod.depth);
-            y += 24.0f;
+            // Which unit drives which. Two chips rather than a matrix row — this
+            // routing never leaves the source.
+            const float half = (w - 6.0f) * 0.5f;
+            basicModSrcRect_ = { r.x + pad, y, half, rowH };
+            basicModDstRect_ = { r.x + pad + half + 6.0f, y, half, rowH };
+            drawButton(basicModSrcRect_, buttonText("SRC %d", int(mod.source) + 1), false);
+            drawButton(basicModDstRect_, buttonText("DST %d", int(mod.target) + 1), false);
+            y += rowH + gap;
         }
 
-        useUiFont();
-        uiFontSize(7.5f);
-        textAlign(ALIGN_LEFT | ALIGN_TOP);
-        fillColor(DesignTokens::textSecondary().withAlpha(0.6f));
-        if(r.y + r.h - y >= 12.0f)
-            text(r.x + pad, y, mod.source == mod.target
-                                   ? "SRC and DST must differ"
-                                   : "source-local - Depth is an LFO target", nullptr);
+        basicModDepthRect_ = { r.x + pad, y, w, rowH };
+        drawSlider(basicModDepthRect_, "Depth", mod.depth, mod.depth);
+        y += rowH + gap;
+
+        if((r.y + r.h) - y >= 11.0f)
+        {
+            useUiFont();
+            uiFontSize(7.5f);
+            textAlign(ALIGN_LEFT | ALIGN_TOP);
+            fillColor(DesignTokens::textSecondary().withAlpha(0.6f));
+            text(r.x + pad, y, showRouting ? "Depth is an LFO target"
+                                           : buttonText("SRC %d -> DST %d",
+                                                        int(mod.source) + 1, int(mod.target) + 1),
+                 nullptr);
+        }
     }
 
 // The Basic Oscillator editor is a rack of kBasicOscUnits oscillators side by
