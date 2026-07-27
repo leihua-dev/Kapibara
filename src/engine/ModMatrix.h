@@ -142,7 +142,12 @@ struct MaskGroupTarget
 struct MaskGroup
 {
     bool enabled = false;
-    int8_t baseSlot = 0;         // MOD slot whose curve + rate is the base LFO
+    int8_t baseSlot = 0;         // MOD slot supplying the base curve (shape only)
+    // The fan's own rate. Deliberately not the base MOD slot's: the group is a
+    // component and owns its speed, so the shape source can change (curve slot,
+    // wavetable) without the fan changing speed — and unlike ModSlotParams this
+    // is persisted with the group.
+    float rateHz = 1.0f;
     float freqSpread = 0.0f;     // -1..+1: lane rate multiplier offset at fan end (0..2x)
     float phaseSpread = 0.0f;    // -1..+1: lane phase offset at fan end, in cycles
     float spreadCurve = 0.0f;    // progression bend across the fan (0 = linear)

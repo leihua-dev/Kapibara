@@ -45,6 +45,17 @@ bool KapibaraUI::applyModFxLayoutDragValue(float x, float y)
                                             -1.0f, 1.0f);
                 pushRuleOnly();
                 break;
+            case DragTarget::GroupRate:
+            {
+                auto &g = maskGroups_[(size_t)clampi(selectedMaskGroup_, 0, synth::kMaxMaskGroups - 1)];
+                // Exponential: the useful range spans three decades (a 0.05 Hz
+                // spectral drift and a 20 Hz tremolo are both normal fan rates),
+                // so a linear drag would spend most of its travel above 10 Hz.
+                const float oct = (dragStartY_ - y) * uiRenderScale_ / 40.0f;
+                g.rateHz = clampf(dragStartDepth_ * std::pow(2.0f, oct), 0.01f, 40.0f);
+                pushGroup(selectedMaskGroup_);
+                break;
+            }
             case DragTarget::GroupFreqSpread:
             case DragTarget::GroupPhaseSpread:
             case DragTarget::GroupSpreadCurve:

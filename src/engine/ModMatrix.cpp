@@ -102,8 +102,7 @@ void ModMatrix::advanceControl(int samples)
         const auto &g = groups_[(size_t)gi];
         if(!g.enabled)
             continue;
-        const int bs = std::clamp(int(g.baseSlot), 0, kMaxModSlots - 1);
-        const double dt = double(std::max(0.0f, slotParams_[(size_t)bs].rateHz))
+        const double dt = double(std::clamp(g.rateHz, 0.0f, 100.0f))
                           * double(samples) / sampleRate_;
         // Lane count comes from the bank: 16 for the discrete slots, one lane per
         // element for a partial family. Latched here so evaluateForVoice cannot

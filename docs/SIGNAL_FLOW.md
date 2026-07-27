@@ -93,12 +93,18 @@ A rule is one source driving one destination. A **mask group** (`MaskGroup`,
 target — the way to modulate a whole set of simultaneous things with one
 drawn shape.
 
+- **The group owns its rate.** `MaskGroup::rateHz` drives the fan, not the base
+  MOD slot's rate: the shape source can change (curve slot, wavetable) without
+  the fan changing speed, and unlike `ModSlotParams` it is persisted.
 - **Lanes are real.** Each lane owns a phase accumulator advanced at its own
   rate every control block, wrapped mod 1 individually. `freqSpread` scales
   lane rate (up to 2×) across the fan, `phaseSpread` offsets lane phase (±1
   cycle), and `spreadCurve` bends the progression (linear at 0). Because the
   accumulators are real, editing any spread only changes future rates — no
-  lane ever jumps, however long the group has been running.
+  lane ever jumps, however long the group has been running. Two things keep the
+  fan coherent: a lane-count change resamples the old fan's phases onto the new
+  lane grid, and zero rate spread pulls every lane back onto lane 0, so "no
+  spread" always means one LFO no matter what the fan did earlier.
 - **The lane count follows the targets.** 16 for the discrete target slots;
   for a per-partial family it is the track's *resolved* partial range
   (`trackEnd - trackBegin`), so a 64-partial bank really gets 64 independent
@@ -106,8 +112,7 @@ drawn shape.
   Resolved on the parameter thread in `SynthCore::rebuildMaskWaveBankNoLock`.
 - **The base shape is a MOD curve or a wavetable.** With a wavetable, lane *k*
   morphs to the frame sitting at its own bent fan position — one layer of the
-  table per lane — while the base MOD slot still supplies the fan's rate.
-  Frames are decimated to 128-entry bipolar LUTs by `bakeModWaveLut` on the
+  table per lane. Frames are decimated to 128-entry bipolar LUTs by `bakeModWaveLut` on the
   parameter thread and normalized by a single table-wide gain, so the
   frame-to-frame amplitude contour survives into the fan.
 - The baked LUTs travel in `RenderSnapshot::maskWaves` as a shared pointer

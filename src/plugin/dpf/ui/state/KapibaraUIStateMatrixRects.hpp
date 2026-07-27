@@ -14,7 +14,7 @@
     std::vector<MatrixCardHit> groupSlotHits_;    // slot column (rule field = slot index)
     std::array<Rect, synth::kMaxMaskGroups> groupSelRects_ {};
     Rect groupEnableRect_ {}, groupBaseRect_ {};
-    Rect groupFreqRect_ {}, groupPhaseRect_ {}, groupCurveRect_ {};
+    Rect groupRateRect_ {}, groupFreqRect_ {}, groupPhaseRect_ {}, groupCurveRect_ {};
     Rect groupFamilyRect_ {}, groupFamilyDestRect_ {}, groupFamilyTrackRect_ {}, groupFamilyDepthRect_ {};
     Rect groupPreviewRect_ {};
     int groupDragSlot_ = -1;

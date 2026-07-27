@@ -139,17 +139,18 @@ bool KapibaraUI::onMouse(const MouseEvent &ev)
                 repaint();
                 return true;
             }
-            // Right-click BASE → advance the MOD slot that supplies the fan's
-            // RATE. Left-click cycles the fan's SHAPE (curve slots, then the
-            // wavetables), so without this the rate would be stuck on whatever
-            // slot happened to be selected when the shape moved to a wavetable.
+            // Right-click BASE → step back through the curve slots. Left-click
+            // cycles forward through the whole shape pool (MOD slots, then the
+            // wavetables); this is the shortcut for picking a curve slot without
+            // walking the wavetables. The fan's RATE is its own control now.
             if(matrixViewInteractive() && matrixViewTab_ == 1
                && groupBaseRect_.w > 0.0f && groupBaseRect_.contains(x, y))
             {
                 auto &g = maskGroups_[(size_t)clampi(selectedMaskGroup_, 0,
                                                      synth::kMaxMaskGroups - 1)];
-                g.baseSlot = int8_t((clampi(int(g.baseSlot), 0, synth::kMaxModSlots - 1) + 1)
-                                    % synth::kMaxModSlots);
+                g.waveSource = 0;
+                g.baseSlot = int8_t((clampi(int(g.baseSlot), 0, synth::kMaxModSlots - 1)
+                                     + synth::kMaxModSlots - 1) % synth::kMaxModSlots);
                 selectedMatrixModSlot_ = int(g.baseSlot);
                 pushGroup(selectedMaskGroup_);
                 repaint();

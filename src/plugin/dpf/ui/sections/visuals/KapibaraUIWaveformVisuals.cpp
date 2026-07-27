@@ -21,6 +21,60 @@ void KapibaraUI::drawPlotBackground(const Rect &r, int columns, int rows)
         }
     }
 
+namespace
+{
+// A frame's live harmonics, collected once. sampleFrame() scans all 1024
+// harmonic slots for EVERY point it evaluates, which caps how finely a frame
+// can be drawn — at 80 points across a wide panel a saw or a square is visibly
+// polygonal. Hoisting the scan out of the point loop makes a per-pixel polyline
+// cheaper than the old coarse one for any normally-populated frame.
+struct FrameHarmonics
+{
+    // Full width, not the editable subset: a .kwt or an analyzed frame can carry
+    // content past harmonic 256, and dropping it would make the display less
+    // faithful than the coarse version it replaces.
+    static constexpr int kMax = synth::kMaxWavetableHarmonics;
+    int count = 0;
+    std::array<synth::WavetableHarmonic, kMax> h {};
+    bool imported = false;
+    const synth::WavetableFrame *frame = nullptr;
+
+    void bind(const synth::WavetableFrame &f)
+    {
+        frame = &f;
+        imported = f.useImportedWaveform && f.waveform;
+        count = 0;
+        if(imported)
+            return;
+        for(const auto &x : f.harmonics)
+        {
+            if(x.amp <= 0.0f || x.ratio <= 0.0f)
+                continue;
+            h[(size_t)count++] = x;
+            if(count >= kMax)
+                break;
+        }
+    }
+
+    float at(float t) const
+    {
+        if(imported)
+        {
+            const float pos = t * float(synth::kWavetableSize - 1);
+            const int a = clampi(int(pos), 0, synth::kWavetableSize - 1);
+            const int b = std::min(a + 1, synth::kWavetableSize - 1);
+            const float f = pos - float(a);
+            const auto &w = *frame->waveform;
+            return w[(size_t)a] * (1.0f - f) + w[(size_t)b] * f;
+        }
+        float v = 0.0f;
+        for(int i = 0; i < count; ++i)
+            v += h[(size_t)i].amp * std::sin(6.28318530718f * t * h[(size_t)i].ratio + h[(size_t)i].phase);
+        return clampf(v, -1.0f, 1.0f);
+    }
+};
+} // namespace
+
 void KapibaraUI::drawMeta3DWaveform(const Rect &r, const synth::WavetablePartialSlot &slot, int trackIndex)
 {
         // No framed box — the stacked waves blend directly into the module panel.
@@ -95,7 +149,9 @@ void KapibaraUI::drawMeta3DWaveform(const Rect &r, const synth::WavetablePartial
         float morphYC = 0.0f, morphAmp = 0.0f;
         bool haveMorphGeom = false;
 
-        constexpr int kPts = 80;
+        // One sample per pixel of the drawn span: below that, a frame's sharp
+        // edges get cut across and the display stops matching the real waveform.
+        const int kPts = clampi(int(xR - xL), 96, 512);
         // Background stack: every sampled frame drawn faint and receding by depth.
         // The bright "current" waveform is a separate crossfading playhead below.
         for(int di = 0; di < N; ++di)
@@ -109,13 +165,16 @@ void KapibaraUI::drawMeta3DWaveform(const Rect &r, const synth::WavetablePartial
                        DesignTokens::divider().withAlpha(0.14f + 0.18f * depthT), 0.6f);
 
             const auto &frame = slot.frames[(size_t)frameIdx];
+            FrameHarmonics fh;
+            fh.bind(frame);
             lineCap(ROUND);
             beginPath();
             for(int s = 0; s <= kPts; ++s)
             {
                 const float t = float(s) / float(kPts);
                 const float px = xL + t * (xR - xL);
-                const float py = yCenter - sampleFrameWarped(frame, t, slot.warpMode, slot.warpAmount) * ampScale;
+                const float py = yCenter
+                                 - fh.at(warpPhase01(slot.warpMode, slot.warpAmount, t)) * ampScale;
                 if(s == 0) moveTo(px, py); else lineTo(px, py);
             }
             strokeColor(DesignTokens::accentBlue().withAlpha(0.10f + 0.16f * depthT));
@@ -139,9 +198,13 @@ void KapibaraUI::drawMeta3DWaveform(const Rect &r, const synth::WavetablePartial
             const float amp = (kAmpBaseMin + (1.0f - kAmpBaseMin) * depthT) * waveH * kAmpFactor;
             morphYC = yC; morphAmp = amp; haveMorphGeom = true;
 
+            FrameHarmonics fhA, fhB;
+            fhA.bind(frA);
+            fhB.bind(frB);
             const auto sampleBlend = [&](float t) {
-                const float a = sampleFrameWarped(frA, t, slot.warpMode, slot.warpAmount);
-                const float b = sampleFrameWarped(frB, t, slot.warpMode, slot.warpAmount);
+                const float w = warpPhase01(slot.warpMode, slot.warpAmount, t);
+                const float a = fhA.at(w);
+                const float b = fhB.at(w);
                 return a + (b - a) * frac;
             };
 

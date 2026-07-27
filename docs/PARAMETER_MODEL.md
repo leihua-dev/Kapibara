@@ -146,7 +146,7 @@ Lines grow by appending optional fields at the END, each read with its own
 `operator>>` extraction *writes 0* into its target and leaves the stream in
 fail state, so a pre-initialized default is silently destroyed and every later
 field on the line fails too. `mgrp`'s tail is, in order: `enabled`,
-`waveSource`, `waveTrackId`.
+`waveSource`, `waveTrackId`, `rateHz`.
 
 A mask group whose base is a wavetable stores only the *track id* of the table
 owner. Since per-track frames are not written to the modern section, such a

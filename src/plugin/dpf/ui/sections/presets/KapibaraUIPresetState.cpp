@@ -107,7 +107,8 @@ void KapibaraUI::saveModernState(const std::string &path)
             out << "mgrp " << gi << ' ' << int(g.baseSlot) << ' ' << g.freqSpread << ' '
                 << g.phaseSpread << ' ' << g.spreadCurve << ' ' << int(g.family) << ' '
                 << int(g.familyDest) << ' ' << g.familyTrackId << ' ' << g.familyDepth << ' '
-                << int(g.enabled) << ' ' << int(g.waveSource) << ' ' << g.waveTrackId << "\n";
+                << int(g.enabled) << ' ' << int(g.waveSource) << ' ' << g.waveTrackId << ' '
+                << g.rateHz << "\n";
             for(int k = 0; k < synth::kMaskGroupSlots; ++k)
             {
                 const auto &t = g.targets[(size_t)k];
@@ -215,14 +216,17 @@ void KapibaraUI::loadModernState(const std::string &path)
                 // once one >> fails the stream stays in fail state AND writes 0.
                 int en = 1, wsrc = 0;
                 unsigned wtid = 0;
+                float rate = 1.0f;
                 if(!(ss >> en)) en = 1;      // lines written before the field existed
                 if(!(ss >> wsrc)) wsrc = 0;
                 if(!(ss >> wtid)) wtid = 0;
+                if(!(ss >> rate)) rate = 1.0f;
                 if(gi < 0 || gi >= synth::kMaxMaskGroups) continue;
                 auto &g = parsedGroups[(size_t)gi];
                 g.enabled = (en != 0);
                 g.waveSource = uint8_t(wsrc != 0);
                 g.waveTrackId = wtid;
+                g.rateHz = clampf(rate, 0.01f, 40.0f);
                 g.baseSlot = int8_t(clampi(base, 0, synth::kMaxModSlots - 1));
                 g.freqSpread = clampf(fs, -1.0f, 1.0f);
                 g.phaseSpread = clampf(ps, -1.0f, 1.0f);

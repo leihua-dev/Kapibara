@@ -33,6 +33,7 @@ void KapibaraUI::drawMatrixView(const Rect &r)
             groupSlotHits_.clear();
             groupSelRects_.fill({});
             groupEnableRect_ = {}; groupBaseRect_ = {};
+            groupRateRect_ = {};
             groupFreqRect_ = {}; groupPhaseRect_ = {}; groupCurveRect_ = {};
             groupFamilyRect_ = {}; groupFamilyDestRect_ = {};
             groupFamilyTrackRect_ = {}; groupFamilyDepthRect_ = {};
@@ -66,6 +67,7 @@ void KapibaraUI::clearMatrixRects()
         groupSlotHits_.clear();
         groupSelRects_.fill({});
         groupEnableRect_ = {}; groupBaseRect_ = {};
+        groupRateRect_ = {};
         groupFreqRect_ = {}; groupPhaseRect_ = {}; groupCurveRect_ = {};
         groupFamilyRect_ = {}; groupFamilyDestRect_ = {};
         groupFamilyTrackRect_ = {}; groupFamilyDepthRect_ = {};
@@ -550,7 +552,9 @@ void KapibaraUI::drawMaskGroupPreview(const Rect &r, const synth::MaskGroup &g, 
         // Draw every lane when the fan is small enough to read; beyond that step
         // through it so a 64-partial family still shows its shape.
         const int drawLanes = clampi(lanes, 2, 24);
-        constexpr int kSteps = 48;
+        // One sample per pixel of lane width (a lane with FREQ SPRD shows more
+        // than one cycle, so anything coarser rounds off the curve's corners).
+        const int kSteps = clampi(int(r.w), 64, 384);
         const float perspH = std::min(r.h * 0.45f, float(drawLanes) * 6.0f);
         const float waveH = (r.h - perspH - 14.0f) * 0.5f;
         scissor(r.x + 2.0f, r.y + 2.0f, r.w - 4.0f, r.h - 4.0f);
@@ -636,12 +640,9 @@ void KapibaraUI::drawMaskGroups(const Rect &r)
         const int baseSlot = clampi(int(g.baseSlot), 0, synth::kMaxModSlots - 1);
         if(g.waveSource != 0)
         {
-            // The MOD slot is still the rate reference, so name it — right-click
-            // advances it (see onMouse right-click handling).
             const int ti = trackIndexOfId(g.waveTrackId);
-            std::snprintf(bl, sizeof(bl), "WT:%s @M%d",
-                          ti >= 0 ? generator_.tracks[(size_t)ti].name.c_str() : "?",
-                          baseSlot + 1);
+            std::snprintf(bl, sizeof(bl), "BASE WT:%s",
+                          ti >= 0 ? generator_.tracks[(size_t)ti].name.c_str() : "?");
         }
         else
         {
@@ -669,8 +670,8 @@ void KapibaraUI::drawMaskGroups(const Rect &r)
             scissor(hintX, r.y, hintW, 16.0f);
             text(hintX, r.y + 8.0f,
                  g.waveSource != 0
-                     ? "each lane plays its own frame - right-click BASE to move the rate slot"
-                     : "edit the base curve in MODULATORS below - drag FREQ/PHASE/CURVE to fan",
+                     ? "each lane plays its own frame of the table - drag RATE/FREQ/PHASE/CURVE"
+                     : "edit the base curve in MODULATORS below - drag RATE/FREQ/PHASE/CURVE",
                  nullptr);
             resetScissor();
         }
@@ -683,7 +684,7 @@ void KapibaraUI::drawMaskGroups(const Rect &r)
         groupPreviewRect_ = { body.x, body.y, leftW - 12.0f, body.h - paramH - 6.0f };
         drawMaskGroupPreview(groupPreviewRect_, g, lanes);
         const float py = body.y + body.h - paramH;
-        const float pw = (leftW - 12.0f - 12.0f) / 3.0f;
+        const float pw = (leftW - 12.0f - 18.0f) / 4.0f;
         const auto paramChip = [&](Rect &rc, float px, const char *label, float value) {
             rc = { px, py, pw, paramH };
             drawPanel(rc, DesignTokens::groove(), DesignTokens::border());
@@ -700,9 +701,25 @@ void KapibaraUI::drawMaskGroups(const Rect &r)
             fillColor(DesignTokens::textPrimary());
             text(rc.x + rc.w - 5.0f, rc.y + rc.h * 0.5f, vb, nullptr);
         };
-        paramChip(groupFreqRect_, body.x, "FREQ SPRD", g.freqSpread);
-        paramChip(groupPhaseRect_, body.x + pw + 6.0f, "PHASE SPRD", g.phaseSpread);
-        paramChip(groupCurveRect_, body.x + (pw + 6.0f) * 2.0f, "CURVE", g.spreadCurve);
+        // RATE is the group's own, not the base MOD slot's — see MaskGroup::rateHz.
+        groupRateRect_ = { body.x, py, pw, paramH };
+        drawPanel(groupRateRect_, DesignTokens::groove(), DesignTokens::border());
+        useUiFont();
+        uiFontSize(8.0f);
+        textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+        fillColor(DesignTokens::textSecondary());
+        text(groupRateRect_.x + 5.0f, groupRateRect_.y + groupRateRect_.h * 0.5f, "RATE", nullptr);
+        char rb[16];
+        std::snprintf(rb, sizeof(rb), "%.2f Hz", g.rateHz);
+        useMonoFont();
+        uiFontSize(9.0f);
+        textAlign(ALIGN_RIGHT | ALIGN_MIDDLE);
+        fillColor(DesignTokens::accentCyan());
+        text(groupRateRect_.x + groupRateRect_.w - 5.0f, groupRateRect_.y + groupRateRect_.h * 0.5f,
+             rb, nullptr);
+        paramChip(groupFreqRect_, body.x + pw + 6.0f, "FREQ SPRD", g.freqSpread);
+        paramChip(groupPhaseRect_, body.x + (pw + 6.0f) * 2.0f, "PHASE SPRD", g.phaseSpread);
+        paramChip(groupCurveRect_, body.x + (pw + 6.0f) * 3.0f, "CURVE", g.spreadCurve);
 
         // --- Right: family selector + 16 target slots -----------------------
         const float rx = body.x + leftW;
@@ -911,6 +928,8 @@ bool KapibaraUI::handleMaskGroupsPress(float x, float y)
             dragStartDepth_ = startVal;
             return true;
         };
+        if(groupRateRect_.w > 0.0f && groupRateRect_.contains(x, y))
+            return startDrag(DragTarget::GroupRate, std::max(0.01f, g.rateHz));
         if(groupFreqRect_.w > 0.0f && groupFreqRect_.contains(x, y))
             return startDrag(DragTarget::GroupFreqSpread, g.freqSpread);
         if(groupPhaseRect_.w > 0.0f && groupPhaseRect_.contains(x, y))
