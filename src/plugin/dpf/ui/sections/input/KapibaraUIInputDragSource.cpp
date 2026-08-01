@@ -94,6 +94,26 @@ bool KapibaraUI::applySourceDragValue(float x, float y)
                     pushCurrentTrack();
                 }
                 break;
+            case DragTarget::SamplerStart:
+            case DragTarget::SamplerEnd:
+            case DragTarget::SamplerLoopStart:
+            case DragTarget::SamplerLoopEnd:
+            case DragTarget::SamplerGain:
+                if(auto *track = currentTrack();
+                   track != nullptr && track->type == synth::SourceTrackType::SampleNoise)
+                {
+                    auto &sp = track->sampler;
+                    switch(dragTarget_)
+                    {
+                        case DragTarget::SamplerStart:     sp.startNorm = knobNorm(); break;
+                        case DragTarget::SamplerEnd:       sp.endNorm = knobNorm(); break;
+                        case DragTarget::SamplerLoopStart: sp.loopStartNorm = knobNorm(); break;
+                        case DragTarget::SamplerLoopEnd:   sp.loopEndNorm = knobNorm(); break;
+                        default:                           sp.gain = knobNorm() * 2.0f; break;
+                    }
+                    pushCurrentTrack();
+                }
+                break;
             case DragTarget::NoiseColor:
                 if(auto *track = currentTrack()) { track->noiseColor = knobNorm(); pushCurrentTrack(); }
                 break;

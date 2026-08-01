@@ -259,6 +259,9 @@ class KapibaraUI final : public KapibaraUIDrawing
     void drawBasicOscModMenu();
     bool handleBasicOscModMenuClick(float x, float y);
     void drawNoiseTrackEditor(const Rect &r, synth::SourceTrackParams &track);
+    void openSamplerFileBrowser();
+    bool loadSampleIntoTrack(synth::SourceTrackParams &track, const std::string &path);
+    static const char *sampleLoopModeName(synth::SampleLoopMode m);
 
     // source/KapibaraUISourceEnv
     int envUseCount(int envIndex) const;

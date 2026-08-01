@@ -68,6 +68,18 @@ void KapibaraUI::saveModernState(const std::string &path)
             if(t.basicMod.mode != synth::BasicOscModMode::Off || t.basicMod.depth != 0.0f)
                 out << "mbmod " << ti << ' ' << int(t.basicMod.mode) << ' ' << int(t.basicMod.source)
                     << ' ' << int(t.basicMod.target) << ' ' << t.basicMod.depth << "\n";
+            if(t.type == synth::SourceTrackType::SampleNoise)
+            {
+                const auto &sp = t.sampler;
+                out << "msmp " << ti << ' ' << sp.rootNote << ' ' << int(sp.keyTrack) << ' '
+                    << int(sp.loopMode) << ' ' << sp.startNorm << ' ' << sp.endNorm << ' '
+                    << sp.loopStartNorm << ' ' << sp.loopEndNorm << ' ' << sp.sliceCount << ' '
+                    << sp.gain << ' ' << int(sp.reverse) << "\n";
+                // Audio is not embedded — the path is re-read on load, same as an
+                // impulse response. A moved file simply comes back empty.
+                if(!sp.samplePath.empty())
+                    out << "msmpf " << ti << ' ' << sp.samplePath << "\n";
+            }
             out << "mtname " << ti << ' ' << t.name << "\n";
             for(int s = 0; s < t.perVoiceFilterCount && s < synth::kMaxPerVoiceFilters; ++s)
             {
@@ -211,6 +223,34 @@ void KapibaraUI::loadModernState(const std::string &path)
                 auto &f = tracks[(size_t)ti].perVoiceFilters[(size_t)s];
                 ss >> en >> topo >> f.cutoffHz >> f.resonance >> f.drive >> f.feedback >> f.mix;
                 f.enabled = en; f.topology = synth::SourceFilterTopology(topo);
+            }
+            else if(tok == "msmp")
+            {
+                int ti, root, keyTrk, loop, slices, rev; float a, b, la, lb, gain;
+                if(!(ss >> ti >> root >> keyTrk >> loop >> a >> b >> la >> lb >> slices >> gain >> rev))
+                    continue;
+                ensureTrack(ti);
+                if(ti < 0) continue;
+                auto &sp = tracks[(size_t)ti].sampler;
+                sp.rootNote = clampi(root, 0, 127);
+                sp.keyTrack = keyTrk != 0;
+                sp.loopMode = synth::SampleLoopMode(clampi(loop, 0, 2));
+                sp.startNorm = clampf(a, 0.0f, 1.0f);
+                sp.endNorm = clampf(b, 0.0f, 1.0f);
+                sp.loopStartNorm = clampf(la, 0.0f, 1.0f);
+                sp.loopEndNorm = clampf(lb, 0.0f, 1.0f);
+                sp.sliceCount = clampi(slices, 1, 64);
+                sp.gain = clampf(gain, 0.0f, 2.0f);
+                sp.reverse = rev != 0;
+            }
+            else if(tok == "msmpf")
+            {
+                int ti; ss >> ti;
+                std::string path; std::getline(ss, path);
+                if(!path.empty() && path.front() == ' ') path.erase(path.begin());
+                ensureTrack(ti);
+                if(ti < 0 || path.empty()) continue;
+                tracks[(size_t)ti].sampler.samplePath = path;
             }
             else if(tok == "mbmod")
             {
@@ -388,6 +428,27 @@ void KapibaraUI::loadModernState(const std::string &path)
         }
         if(!hasModern) return;
         if(!tracks.empty()) generator_.tracks = tracks;
+        // Sample audio is not embedded in the preset; re-read each referenced
+        // file now that the track list is in place.
+        for(auto &t : generator_.tracks)
+            if(t.type == synth::SourceTrackType::SampleNoise && !t.sampler.samplePath.empty()
+               && !t.sampler.sample)
+            {
+                const auto keep = t.sampler;   // loading resets the window
+                if(loadSampleIntoTrack(t, keep.samplePath))
+                {
+                    t.sampler.rootNote = keep.rootNote;
+                    t.sampler.keyTrack = keep.keyTrack;
+                    t.sampler.loopMode = keep.loopMode;
+                    t.sampler.startNorm = keep.startNorm;
+                    t.sampler.endNorm = keep.endNorm;
+                    t.sampler.loopStartNorm = keep.loopStartNorm;
+                    t.sampler.loopEndNorm = keep.loopEndNorm;
+                    t.sampler.sliceCount = keep.sliceCount;
+                    t.sampler.gain = keep.gain;
+                    t.sampler.reverse = keep.reverse;
+                }
+            }
         routeWires_ = wires;
         nodeOutPortCount_ = outPorts;
         structUtilCount_ = utilCount;

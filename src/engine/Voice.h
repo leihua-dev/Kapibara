@@ -102,6 +102,10 @@ class Voice
     }
     int activePartialCount() const { return activeCount_; }
     void beginPartialRender(int numSamples);
+    // Stream sources (Sample / Noise): rendered as audio rather than summed out
+    // of the partial pool. Multiplies in the same per-sample track envelope the
+    // partial renderer uses, so everything downstream is unchanged.
+    void renderStreamTrack(float *left, float *right, int numSamples, int source);
     // Renders one track's partials, splitting them into modulator / carrier /
     // untouched passes when the track's oscillator rack modulates itself.
     void renderTrackPartials(float *left, float *right, int numSamples, int source,
@@ -277,6 +281,12 @@ class Voice
     // FM integrates the modulator, so the accumulator must persist across render
     // blocks — restarting it per block restarts the phase ramp and buzzes.
     std::array<double, kMaxSourceTracks> oscFmAcc_ {};
+    // Stream-source playback state, per render track.
+    std::array<NoiseVoiceState, kMaxSourceTracks> noiseState_ {};
+    std::array<double, kMaxSourceTracks> samplePos_ {};
+    std::array<int8_t, kMaxSourceTracks> sampleDir_ {};
+    std::array<bool, kMaxSourceTracks> sampleDone_ {};
+    std::array<float, kMaxVoiceRenderBlockSamples> sourceStreamL_ {}, sourceStreamR_ {};
     int renderTrackCount_ = 0;
     std::array<std::array<float, kMaxVoiceRenderBlockSamples>, kMaxAmpEnvs> ampEnvScratch_ {};
     std::array<std::array<float, kMaxVoiceRenderBlockSamples>, kMaxSourceTracks> trackEnvScratch_ {};

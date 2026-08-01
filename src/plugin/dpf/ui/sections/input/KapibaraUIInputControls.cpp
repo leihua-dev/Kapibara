@@ -108,6 +108,20 @@ bool KapibaraUI::handleControlPress(float x, float y)
                 if(pr[3].w > 0.0f && pr[3].contains(x, y)) return grabPitch(DragTarget::BasicPitchCrs);
             }
         }
+        if(track != nullptr && track->type == synth::SourceTrackType::SampleNoise)
+        {
+            auto &sp = track->sampler;
+            if(samplerStartRect_.w > 0.0f && samplerStartRect_.contains(x, y))
+                return setDragKnob(DragTarget::SamplerStart, sp.startNorm);
+            if(samplerEndRect_.w > 0.0f && samplerEndRect_.contains(x, y))
+                return setDragKnob(DragTarget::SamplerEnd, sp.endNorm);
+            if(samplerLoopStartRect_.w > 0.0f && samplerLoopStartRect_.contains(x, y))
+                return setDragKnob(DragTarget::SamplerLoopStart, sp.loopStartNorm);
+            if(samplerLoopEndRect_.w > 0.0f && samplerLoopEndRect_.contains(x, y))
+                return setDragKnob(DragTarget::SamplerLoopEnd, sp.loopEndNorm);
+            if(samplerGainRect_.w > 0.0f && samplerGainRect_.contains(x, y))
+                return setDragKnob(DragTarget::SamplerGain, sp.gain * 0.5f);
+        }
         if(noiseColorRect_.contains(x, y))
             return setDragKnob(DragTarget::NoiseColor, track ? track->noiseColor : 0.5f);
         if(partialCountRect_.contains(x, y)) {

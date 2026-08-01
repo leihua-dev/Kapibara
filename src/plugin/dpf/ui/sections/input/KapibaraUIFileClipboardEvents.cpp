@@ -16,6 +16,18 @@ void KapibaraUI::uiFileBrowserSelected(const char *filename)
             repaint();
             return;
         }
+        if(samplerLoadPending_)
+        {
+            samplerLoadPending_ = false;
+            if(auto *t = currentTrack();
+               t != nullptr && t->type == synth::SourceTrackType::SampleNoise)
+            {
+                if(loadSampleIntoTrack(*t, filename))
+                    pushCurrentTrack();
+            }
+            repaint();
+            return;
+        }
         loadPathBuffer_ = filename;
         commitWavetableLoad();
         repaint();

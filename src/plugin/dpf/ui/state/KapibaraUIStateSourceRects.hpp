@@ -20,6 +20,12 @@
     // Source-local cross-unit modulation module (not a matrix route).
     Rect basicModModeRect_ {}, basicModSrcRect_ {}, basicModDstRect_ {}, basicModDepthRect_ {};
     Rect noiseModeRect_ {}, noiseColorRect_ {};
+    // Sampler (Sample / Noise track, File mode).
+    Rect samplerLoadRect_ {}, samplerRootRect_ {}, samplerKeyTrackRect_ {}, samplerLoopRect_ {};
+    Rect samplerSliceRect_ {}, samplerRevRect_ {}, samplerWaveRect_ {};
+    Rect samplerStartRect_ {}, samplerEndRect_ {};
+    Rect samplerLoopStartRect_ {}, samplerLoopEndRect_ {}, samplerGainRect_ {};
+    bool samplerLoadPending_ = false;   // file browser is opening for the sampler
     Rect sourceGainRect_ {}, sourcePanRect_ {}, sourceFilterEnableRect_ {}, sourceFilterTopologyRect_ {};
     Rect sourceFilterCutoffRect_ {}, sourceFilterResRect_ {}, sourceFilterDriveRect_ {}, sourceFilterFeedbackRect_ {};
     Rect sourceFilterMixRect_ {};

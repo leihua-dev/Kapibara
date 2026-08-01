@@ -128,6 +128,9 @@ bool sourceTrackSoundContentChanged(const SourceTrackParams &a, const SourceTrac
                                sizeof(BasicOscUnit) * size_t(kBasicOscUnits)) != 0
                    || std::memcmp(&a.basicMod, &b.basicMod, sizeof(BasicOscModParams)) != 0;
         case SourceTrackType::SampleNoise:
+            // Sampler edits are runtime playback params, not partial content —
+            // the track claims one silent slot whatever they are. Only the mode
+            // and colour can change what buildNoiseSeed produces.
             return a.sampleNoiseMode != b.sampleNoiseMode
                    || std::abs(a.noiseColor - b.noiseColor) > 1.0e-6f;
     }
@@ -692,6 +695,10 @@ void SynthCore::publishSnapshotNoLock()
         runtime.unison = track.unison;
         runtime.unison.voices = std::clamp(runtime.unison.voices, 1, kMaxUnison);
         runtime.outputMode = track.outputMode;
+        runtime.type = track.type;
+        runtime.sampleNoiseMode = track.sampleNoiseMode;
+        runtime.noiseColor = track.noiseColor;
+        runtime.sampler = track.sampler;
         runtime.mods = track.mods;
         runtime.basicMod = track.basicMod;
         runtime.basicModSourceAudible =

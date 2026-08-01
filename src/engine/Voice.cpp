@@ -283,6 +283,11 @@ void Voice::noteOn(int midiNote, float velocity, const StaticSpectralFrame &fram
     utilBandStates_ = {};
     for(auto &acc : fmPhaseAcc_) acc.fill(0.0);
     oscFmAcc_.fill(0.0);
+    samplePos_.fill(0.0);
+    sampleDir_.fill(1);
+    sampleDone_.fill(false);
+    for(size_t t = 0; t < noiseState_.size(); ++t)
+        noiseState_[t] = NoiseVoiceState { 0x9e3779b9u + uint32_t(t) * 2654435761u + rngSeed_, 0.0f, 0.0f };
     syncPrev_.fill(0.0f);
 
     updateUnisonLayout(unison);
@@ -1152,10 +1157,104 @@ void Voice::beginPartialRender(int numSamples)
 // consecutive slices of the track's partial block, so each can be rendered on
 // its own and fed to another exactly the way a cross-TRACK source mod is — this
 // is the same machinery, scoped inside a single source.
+// Sample / Noise tracks do not live in the partial pool: they produce audio
+// directly. The one thing they must do themselves is apply the per-sample track
+// envelope, which the partial renderer applies inside its own loop.
+void Voice::renderStreamTrack(float *left, float *right, int numSamples, int source)
+{
+    const auto &rt = trackRuntime_[(size_t)source];
+    const float *env = trackEnvScratch_[(size_t)std::clamp(source, 0, kMaxSourceTracks - 1)].data();
+
+    if(rt.sampleNoiseMode == SampleNoiseMode::Noise || !rt.sampler.sample)
+    {
+        renderNoiseBlock(noiseState_[(size_t)source], rt.noiseColor,
+                         sourceStreamL_.data(), sourceStreamR_.data(), numSamples, sampleRate_);
+        for(int s = 0; s < numSamples; ++s)
+        {
+            left[s] += sourceStreamL_[(size_t)s] * env[s];
+            right[s] += sourceStreamR_[(size_t)s] * env[s];
+        }
+        return;
+    }
+
+    const auto &sp = rt.sampler;
+    const SampleData &sd = *sp.sample;
+    const int frames = sd.frames();
+    int rb = 0, re = 0;
+    if(sampleDone_[(size_t)source] || !samplerRegionForNote(sp, frames, noteNumber_, rb, re))
+        return;
+
+    // Playback rate: the file's own rate against the engine's, times the note's
+    // transposition when key tracking is on.
+    const double srRatio = double(std::max(1u, sd.sampleRate)) / std::max(1.0, sampleRate_);
+    const double semis = sp.keyTrack ? double(noteNumber_ - sp.rootNote) : 0.0;
+    const double step = srRatio * std::pow(2.0, semis / 12.0);
+
+    // Loop window, expressed inside the region so slicing and looping compose.
+    const double span = double(re - rb);
+    const double la = double(rb) + double(std::clamp(std::min(sp.loopStartNorm, sp.loopEndNorm), 0.0f, 1.0f)) * span;
+    const double lb = double(rb) + double(std::clamp(std::max(sp.loopStartNorm, sp.loopEndNorm), 0.0f, 1.0f)) * span;
+    const bool loopOk = sp.loopMode != SampleLoopMode::Off && lb > la + 1.0;
+
+    double pos = samplePos_[(size_t)source];
+    if(pos < double(rb) || pos >= double(re))
+        pos = sp.reverse ? double(re) - 1.0 : double(rb);
+    int dir = sampleDir_[(size_t)source] >= 0 ? 1 : -1;
+    if(sp.reverse && samplePos_[(size_t)source] == 0.0)
+        dir = -1;
+    const float gain = clampf(sp.gain, 0.0f, 2.0f);
+
+    for(int s = 0; s < numSamples; ++s)
+    {
+        const int i0 = std::clamp(int(pos), 0, frames - 1);
+        const int i1 = std::min(i0 + 1, frames - 1);
+        const float fr = float(pos - double(i0));
+        const float l = sd.left[(size_t)i0] + (sd.left[(size_t)i1] - sd.left[(size_t)i0]) * fr;
+        const float r = sd.stereo()
+                            ? sd.right[(size_t)i0] + (sd.right[(size_t)i1] - sd.right[(size_t)i0]) * fr
+                            : l;
+        const float e = env[s] * gain;
+        left[s] += l * e;
+        right[s] += r * e;
+
+        pos += step * double(dir) * (sp.reverse ? -1.0 : 1.0);
+        if(loopOk)
+        {
+            if(sp.loopMode == SampleLoopMode::PingPong)
+            {
+                if(pos >= lb) { pos = lb - (pos - lb); dir = -dir; }
+                else if(pos <= la) { pos = la + (la - pos); dir = -dir; }
+            }
+            else if(pos >= lb)
+            {
+                pos = la + std::fmod(pos - la, lb - la);
+            }
+            else if(pos < la)
+            {
+                pos = lb - std::fmod(la - pos, lb - la);
+            }
+        }
+        else if(pos >= double(re) || pos < double(rb))
+        {
+            // One-shot finished: hold silence rather than wrapping into whatever
+            // sits next in the file.
+            sampleDone_[(size_t)source] = true;
+            break;
+        }
+    }
+    samplePos_[(size_t)source] = pos;
+    sampleDir_[(size_t)source] = int8_t(dir);
+}
+
 void Voice::renderTrackPartials(float *left, float *right, int numSamples, int source,
                                 int partialBegin, int partialEnd,
                                 const float *pmBuffer, const float *syncBuffer, float depthMod)
 {
+    if(trackRuntime_[(size_t)source].type == SourceTrackType::SampleNoise)
+    {
+        renderStreamTrack(left, right, numSamples, source);
+        return;
+    }
     const auto &mod = trackRuntime_[(size_t)source].basicMod;
     const float depth = clampf(mod.depth + depthMod, 0.0f, 1.0f);
     const int si = int(mod.source), ti = int(mod.target);

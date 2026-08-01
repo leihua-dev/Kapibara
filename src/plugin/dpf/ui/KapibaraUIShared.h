@@ -169,6 +169,7 @@ enum class DragTarget
     PartialTableAmp, PartialTablePhase,
     MatrixEnvCurve, MatrixEnvSeg, ModEnvRate, AmpAdsrSeg, HarmonicEditor, MetaTimeEditor, MetaSpectrumEditor,
     RuleDepth, RuleBandLo, RuleBandHi, RuleXfer, MatrixRoutesScroll,
+    SamplerStart, SamplerEnd, SamplerLoopStart, SamplerLoopEnd, SamplerGain,
     BasicLevel, BasicModDepth, BasicPitchOct, BasicPitchSem, BasicPitchFin, BasicPitchCrs,
     GroupRate, GroupFreqSpread, GroupPhaseSpread, GroupSpreadCurve, GroupSlotDepth, GroupFamilyDepth,
     ModDepth,

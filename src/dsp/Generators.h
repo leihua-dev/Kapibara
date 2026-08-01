@@ -156,6 +156,68 @@ enum class SampleNoiseMode : uint8_t
     Capture = 2
 };
 
+// Per-voice, per-track state for STREAM sources — tracks rendered as an audio
+// stream instead of from the additive partial pool. The filter state has to
+// persist across render blocks or the colour filter restarts every block.
+struct NoiseVoiceState
+{
+    uint32_t rng = 0x9e3779b9u;
+    float lpL = 0.0f, lpR = 0.0f;
+};
+
+// One block of stereo noise, colour-tilted. colour 0 = dark, 0.5 = white,
+// 1 = bright. Writes (does not accumulate) into out*.
+void renderNoiseBlock(NoiseVoiceState &state, float colour, float *outL, float *outR,
+                      int numSamples, double sampleRate);
+
+// ---------------------------------------------------------------------------
+// Sampler (Sample / Noise track, File mode)
+// ---------------------------------------------------------------------------
+// Audio lives behind a shared_ptr so a track can be copied to the audio thread
+// by value without copying the samples — the same shape ConvSlotParams uses for
+// impulse responses. The data itself is immutable once loaded.
+struct SampleData
+{
+    std::vector<float> left;
+    std::vector<float> right;   // empty = mono, play `left` on both channels
+    uint32_t sampleRate = 48000;
+    std::string name;
+
+    int frames() const { return int(left.size()); }
+    bool stereo() const { return right.size() == left.size() && !right.empty(); }
+};
+
+enum class SampleLoopMode : uint8_t
+{
+    Off = 0,
+    Forward = 1,
+    PingPong = 2
+};
+
+struct SamplerParams
+{
+    std::shared_ptr<const SampleData> sample;
+    std::string sampleName;        // shown in the UI, and what the preset stores
+    std::string samplePath;        // reloaded on preset load; audio is not persisted
+    int rootNote = 60;             // the note that plays the sample untransposed
+    bool keyTrack = true;          // false = always play at the sample's own rate
+    SampleLoopMode loopMode = SampleLoopMode::Off;
+    float startNorm = 0.0f;        // playback window inside the file
+    float endNorm = 1.0f;
+    float loopStartNorm = 0.0f;    // loop window inside the playback window
+    float loopEndNorm = 1.0f;
+    int sliceCount = 1;            // >1: the note picks a slice of the window
+    float gain = 1.0f;
+    bool reverse = false;
+};
+
+// The sample-frame window a note plays: the start/end window, subdivided into
+// `sliceCount` slices with the note picking one. Returns false when there is
+// nothing to play. Shared by the engine and the UI's waveform display so the
+// markers cannot drift from what is heard.
+bool samplerRegionForNote(const SamplerParams &p, int frames, int note,
+                          int &regionBegin, int &regionEnd);
+
 // A Basic Oscillator track hosts a small stack of independent oscillators rather
 // than one: on its own a basic shape is a handful of controls, and three of them
 // side by side is what the shape is actually useful for.
@@ -308,6 +370,7 @@ struct SourceTrackParams
     BasicOscModParams basicMod {};
     SampleNoiseMode sampleNoiseMode = SampleNoiseMode::Noise;
     float noiseColor = 0.5f;
+    SamplerParams sampler {};
     int perVoiceFilterCount = 0;
     std::array<SourceFilterParams, kMaxPerVoiceFilters> perVoiceFilters {};
     int perVoiceFilterOrderCount = 0;
@@ -414,6 +477,12 @@ struct CompiledPerVoiceRoute
 struct RenderTrackRuntime
 {
     uint32_t trackId = 0;
+    // Stream sources (Sample / Noise) are rendered as audio in Voice rather than
+    // summed out of the partial pool, so the voice needs their params here.
+    SourceTrackType type = SourceTrackType::PartialBank;
+    SampleNoiseMode sampleNoiseMode = SampleNoiseMode::Noise;
+    float noiseColor = 0.5f;
+    SamplerParams sampler {};
     GeneratorSourceParams strip {};
     bool muted = false;
     int ampEnvIndex = 0;

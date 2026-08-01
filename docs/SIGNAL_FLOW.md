@@ -37,9 +37,18 @@ at control-rate boundaries (every 32 samples).
   maps the first 64 harmonics to the 64 partial lanes.
 - `Meta Oscillator` tracks contribute a multi-frame wavetable (baked by
   `dsp/WavetableCore`).
-- `Basic Oscillator` and `Sample / Noise` tracks are converted into bounded
-  partial render data within the safety budget (12 source tracks, 64 partial
-  slots per track, 500 flattened partial lanes).
+- `Basic Oscillator` tracks are converted into bounded partial render data
+  within the safety budget (12 source tracks, 64 partial slots per track, 500
+  flattened partial lanes).
+- `Sample / Noise` tracks are a **stream source**: they are not summed out of
+  the partial pool at all but rendered as audio in `Voice::renderStreamTrack`
+  (WAV playback, or coloured noise). They still claim one silent partial slot
+  so that anything keyed off a track's partial range — matrix rules scoped to
+  the track, route ranges — keeps resolving. The one thing a stream source has
+  to do itself is multiply in `trackEnvScratch_[track][s]`, the same per-sample
+  amp envelope the partial renderer applies inside its own loop; everything
+  downstream (per-voice filters, strip gain/pan, inserts, buses, modulator
+  taps) operates on the track buffer and needs no change.
 
 The flattened wavetable state is read-only during audio rendering.
 Partial Bank count, inharmonic/harmonic-shape edits, and frame morph publish

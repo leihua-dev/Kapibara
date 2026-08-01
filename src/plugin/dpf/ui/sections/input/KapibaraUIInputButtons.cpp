@@ -272,10 +272,51 @@ bool KapibaraUI::handleButtonClick(float x, float y)
                     }
                 }
             }
-            if(noiseModeRect_.contains(x, y) && track->type == synth::SourceTrackType::SampleNoise)
+            if(track->type == synth::SourceTrackType::SampleNoise)
             {
-                track->sampleNoiseMode = synth::SampleNoiseMode::Noise;
-                return true;
+                auto &sp = track->sampler;
+                if(noiseModeRect_.contains(x, y))
+                {
+                    // Only Noise and File are real; Capture has no capture path.
+                    track->sampleNoiseMode =
+                        track->sampleNoiseMode == synth::SampleNoiseMode::Noise
+                            ? synth::SampleNoiseMode::File
+                            : synth::SampleNoiseMode::Noise;
+                    pushCurrentTrack();
+                    return true;
+                }
+                if(samplerLoadRect_.w > 0.0f && samplerLoadRect_.contains(x, y))
+                {
+                    openSamplerFileBrowser();
+                    return true;
+                }
+                if(samplerKeyTrackRect_.w > 0.0f && samplerKeyTrackRect_.contains(x, y))
+                { sp.keyTrack = !sp.keyTrack; pushCurrentTrack(); return true; }
+                if(samplerRevRect_.w > 0.0f && samplerRevRect_.contains(x, y))
+                { sp.reverse = !sp.reverse; pushCurrentTrack(); return true; }
+                if(samplerLoopRect_.w > 0.0f && samplerLoopRect_.contains(x, y))
+                {
+                    sp.loopMode = static_cast<synth::SampleLoopMode>((int(sp.loopMode) + 1) % 3);
+                    pushCurrentTrack();
+                    return true;
+                }
+                if(samplerSliceRect_.w > 0.0f && samplerSliceRect_.contains(x, y))
+                {
+                    // 1 / 2 / 4 / 8 / 16 / 32 / 64 then back.
+                    int n = clampi(sp.sliceCount, 1, 64) * 2;
+                    sp.sliceCount = n > 64 ? 1 : n;
+                    pushCurrentTrack();
+                    return true;
+                }
+                if(samplerRootRect_.w > 0.0f && samplerRootRect_.contains(x, y))
+                {
+                    // Drag would fight the slider row; a click steps an octave,
+                    // which is what a root note usually needs.
+                    sp.rootNote = clampi(sp.rootNote + 12, 0, 127);
+                    if(sp.rootNote > 108) sp.rootNote = 24;
+                    pushCurrentTrack();
+                    return true;
+                }
             }
             if(metaHarmonicEditRect_.contains(x, y) && track->type == synth::SourceTrackType::MetaOscillator)
             {
