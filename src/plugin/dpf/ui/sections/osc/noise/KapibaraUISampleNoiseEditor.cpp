@@ -35,15 +35,16 @@ void KapibaraUI::openSamplerFileBrowser()
 
 bool KapibaraUI::loadSampleIntoTrack(synth::SourceTrackParams &track, const std::string &path)
 {
-        std::vector<float> mono;
+        std::vector<float> left, right;
         uint32_t sr = 48000;
-        if(!synth::loadImpulseResponseMono(path, mono, sr) || mono.empty())
+        if(!synth::loadSampleFile(path, left, right, sr) || left.empty())
         {
             metaEditorStatus_ = "sample load failed";
             return false;
         }
         auto data = std::make_shared<synth::SampleData>();
-        data->left = std::move(mono);
+        data->left = std::move(left);
+        data->right = std::move(right);
         data->sampleRate = sr > 0 ? sr : 48000;
         const size_t slash = path.find_last_of("/\\");
         data->name = slash == std::string::npos ? path : path.substr(slash + 1);
@@ -60,7 +61,8 @@ bool KapibaraUI::loadSampleIntoTrack(synth::SourceTrackParams &track, const std:
         sp.loopEndNorm = 1.0f;
         track.sampleNoiseMode = synth::SampleNoiseMode::File;
         lastLoadPath_ = path;
-        metaEditorStatus_ = "sample loaded: " + data->name;
+        metaEditorStatus_ = std::string("sample loaded: ") + data->name
+                            + (data->stereo() ? " (stereo)" : " (mono)");
         return true;
     }
 
@@ -70,22 +72,25 @@ void KapibaraUI::drawNoiseTrackEditor(const Rect &r, synth::SourceTrackParams &t
         samplerLoopRect_ = {}; samplerSliceRect_ = {}; samplerRevRect_ = {};
         samplerWaveRect_ = {}; samplerStartRect_ = {}; samplerEndRect_ = {};
         samplerLoopStartRect_ = {}; samplerLoopEndRect_ = {}; samplerGainRect_ = {};
+        noiseTypeRect_ = {};
 
         auto &sp = track.sampler;
         constexpr float rowH = 22.0f;
         float y = r.y;
 
-        // Row 1: mode + the sample itself.
+        const bool sampling = track.sampleNoiseMode != synth::SampleNoiseMode::Noise;
+
+        // Row 1: mode, and — only when sampling — the file.
         noiseModeRect_ = { r.x, y, 96.0f, rowH };
-        drawButton(noiseModeRect_, synth::sampleNoiseModeName(track.sampleNoiseMode),
-                   track.sampleNoiseMode != synth::SampleNoiseMode::Noise);
-        samplerLoadRect_ = { r.x + 102.0f, y, 74.0f, rowH };
-        drawButton(samplerLoadRect_, "LOAD", false);
-        useUiFont();
-        uiFontSize(8.5f);
-        textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-        fillColor(sp.sample ? DesignTokens::textPrimary() : DesignTokens::textSecondary());
+        drawButton(noiseModeRect_, synth::sampleNoiseModeName(track.sampleNoiseMode), sampling);
+        if(sampling)
         {
+            samplerLoadRect_ = { r.x + 102.0f, y, 74.0f, rowH };
+            drawButton(samplerLoadRect_, "LOAD", false);
+            useUiFont();
+            uiFontSize(8.5f);
+            textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
+            fillColor(sp.sample ? DesignTokens::textPrimary() : DesignTokens::textSecondary());
             const float tx = r.x + 182.0f;
             scissor(tx, y, std::max(0.0f, r.x + r.w - tx), rowH);
             text(tx, y + rowH * 0.5f,
@@ -94,20 +99,26 @@ void KapibaraUI::drawNoiseTrackEditor(const Rect &r, synth::SourceTrackParams &t
         }
         y += rowH + 6.0f;
 
-        if(track.sampleNoiseMode == synth::SampleNoiseMode::Noise)
+        if(!sampling)
         {
-            noiseColorRect_ = { r.x, y, 260.0f, rowH };
-            drawSlider(noiseColorRect_, "Noise Color", track.noiseColor, track.noiseColor);
-            y += rowH + 8.0f;
-            const float ph = (r.y + r.h) - y;
-            if(ph > 60.0f)
-            {
-                drawSectionTitle(r.x, y - 16.0f, "Signal");
-                drawStripThumbnail({ r.x, y, r.w, ph }, track, selectedTrack_, false);
-            }
+            // Noise has no file and no waveform worth drawing — a noise plot is
+            // the same fuzz whatever the settings are. Type and colour is all it
+            // needs, so they get the room instead.
+            noiseTypeRect_ = { r.x, y, 120.0f, rowH };
+            drawButton(noiseTypeRect_, synth::noiseTypeName(track.noiseType), true);
+            noiseColorRect_ = { r.x + 128.0f, y, std::max(120.0f, r.w - 128.0f), rowH };
+            drawSlider(noiseColorRect_, "Tone", track.noiseColor, track.noiseColor);
+            y += rowH + 10.0f;
+            useUiFont();
+            uiFontSize(8.0f);
+            textAlign(ALIGN_LEFT | ALIGN_TOP);
+            fillColor(DesignTokens::textSecondary().withAlpha(0.65f));
+            text(r.x, y, "Tone tilts the chosen noise: dark at 0, flat at 0.5, bright at 1", nullptr);
+            oscBodyBottomY_ = y + 16.0f;
             return;
         }
         noiseColorRect_ = {};
+        noiseTypeRect_ = {};
 
         // Row 2: how a note maps onto the file.
         const float bw = std::min(104.0f, (r.w - 24.0f) * 0.2f);
@@ -127,7 +138,25 @@ void KapibaraUI::drawNoiseTrackEditor(const Rect &r, synth::SourceTrackParams &t
         drawButton(samplerSliceRect_, buttonText("SLICES %d", clampi(sp.sliceCount, 1, 64)),
                    sp.sliceCount > 1);
         drawButton(samplerRevRect_, "REV", sp.reverse);
-        y += rowH + 8.0f;
+        y += rowH + 6.0f;
+
+        // The same pitch module every other source has, on top of the root-note
+        // transposition. Shares the meta pitch rects — one editor is drawn at a
+        // time and the handlers resolve the target by track type.
+        {
+            constexpr float pitchH = 24.0f;
+            const float pgap = 6.0f;
+            const float pw = std::min(96.0f, std::max(56.0f, (r.w - pgap * 3.0f) * 0.25f));
+            metaOctRect_ = { r.x, y, pw, pitchH };
+            metaSemRect_ = { r.x + pw + pgap, y, pw, pitchH };
+            metaFinRect_ = { r.x + (pw + pgap) * 2.0f, y, pw, pitchH };
+            metaCrsRect_ = { r.x + (pw + pgap) * 3.0f, y, pw, pitchH };
+            drawPitchControl(metaOctRect_, "OCT", sp.pitchOct, false);
+            drawPitchControl(metaSemRect_, "SEM", sp.pitchSem, false);
+            drawPitchControl(metaFinRect_, "FIN", int(std::round(sp.pitchFin)), false);
+            drawPitchControl(metaCrsRect_, "CRS", int(std::round(sp.pitchCrs)), false);
+            y += pitchH + 8.0f;
+        }
 
         // Waveform with the playback window, slice divisions and loop markers.
         const float sliders = rowH * 2.0f + 6.0f + 8.0f;

@@ -19,7 +19,7 @@
     std::array<Rect, synth::kBasicOscUnits> basicWaveRects_ {};   // per-unit mini preview
     // Source-local cross-unit modulation module (not a matrix route).
     Rect basicModModeRect_ {}, basicModSrcRect_ {}, basicModDstRect_ {}, basicModDepthRect_ {};
-    Rect noiseModeRect_ {}, noiseColorRect_ {};
+    Rect noiseModeRect_ {}, noiseColorRect_ {}, noiseTypeRect_ {};
     // Sampler (Sample / Noise track, File mode).
     Rect samplerLoadRect_ {}, samplerRootRect_ {}, samplerKeyTrackRect_ {}, samplerLoopRect_ {};
     Rect samplerSliceRect_ {}, samplerRevRect_ {}, samplerWaveRect_ {};

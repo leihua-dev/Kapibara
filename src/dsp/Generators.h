@@ -156,6 +156,18 @@ enum class SampleNoiseMode : uint8_t
     Capture = 2
 };
 
+enum class NoiseType : uint8_t
+{
+    White = 0,   // flat
+    Pink = 1,    // -3 dB/oct
+    Brown = 2,   // -6 dB/oct, integrated
+    Blue = 3,    // +3 dB/oct
+    Violet = 4,  // +6 dB/oct, differentiated
+    Crackle = 5  // sparse impulses
+};
+constexpr int kNoiseTypes = 6;
+const char *noiseTypeName(NoiseType t);
+
 // Per-voice, per-track state for STREAM sources — tracks rendered as an audio
 // stream instead of from the additive partial pool. The filter state has to
 // persist across render blocks or the colour filter restarts every block.
@@ -163,12 +175,17 @@ struct NoiseVoiceState
 {
     uint32_t rng = 0x9e3779b9u;
     float lpL = 0.0f, lpR = 0.0f;
+    // Paul Kellett pink-noise cascade, per channel.
+    float pinkL[7] = { 0, 0, 0, 0, 0, 0, 0 };
+    float pinkR[7] = { 0, 0, 0, 0, 0, 0, 0 };
+    float brownL = 0.0f, brownR = 0.0f;
+    float prevL = 0.0f, prevR = 0.0f;
 };
 
-// One block of stereo noise, colour-tilted. colour 0 = dark, 0.5 = white,
-// 1 = bright. Writes (does not accumulate) into out*.
-void renderNoiseBlock(NoiseVoiceState &state, float colour, float *outL, float *outR,
-                      int numSamples, double sampleRate);
+// One block of stereo noise. `colour` tilts whatever the type produces: 0 dark,
+// 0.5 flat, 1 bright. Writes (does not accumulate) into out*.
+void renderNoiseBlock(NoiseVoiceState &state, NoiseType type, float colour,
+                      float *outL, float *outR, int numSamples, double sampleRate);
 
 // ---------------------------------------------------------------------------
 // Sampler (Sample / Noise track, File mode)
@@ -201,6 +218,12 @@ struct SamplerParams
     std::string samplePath;        // reloaded on preset load; audio is not persisted
     int rootNote = 60;             // the note that plays the sample untransposed
     bool keyTrack = true;          // false = always play at the sample's own rate
+    // The same OCT/SEM/FIN/CRS offset every other source type has, applied on
+    // top of the note's transposition against rootNote.
+    int pitchOct = 0;
+    int pitchSem = 0;
+    float pitchFin = 0.0f;
+    float pitchCrs = 0.0f;
     SampleLoopMode loopMode = SampleLoopMode::Off;
     float startNorm = 0.0f;        // playback window inside the file
     float endNorm = 1.0f;
@@ -369,6 +392,7 @@ struct SourceTrackParams
     std::array<BasicOscUnit, kBasicOscUnits> basicUnits {};
     BasicOscModParams basicMod {};
     SampleNoiseMode sampleNoiseMode = SampleNoiseMode::Noise;
+    NoiseType noiseType = NoiseType::White;
     float noiseColor = 0.5f;
     SamplerParams sampler {};
     int perVoiceFilterCount = 0;
@@ -481,6 +505,7 @@ struct RenderTrackRuntime
     // summed out of the partial pool, so the voice needs their params here.
     SourceTrackType type = SourceTrackType::PartialBank;
     SampleNoiseMode sampleNoiseMode = SampleNoiseMode::Noise;
+    NoiseType noiseType = NoiseType::White;
     float noiseColor = 0.5f;
     SamplerParams sampler {};
     GeneratorSourceParams strip {};
@@ -581,6 +606,9 @@ void refreshWavetableSeedRuntime(const WavetableSeedParams &params, int sourceCo
 bool loadWavetableFrameFromWav(const std::string &path, WavetableFrame &frame);
 // Decode a WAV impulse response down-mixed to mono (full length, not resampled).
 bool loadImpulseResponseMono(const std::string &path, std::vector<float> &out, uint32_t &srcRate);
+// Sampler load: keeps the channels. `right` comes back empty for a mono file.
+bool loadSampleFile(const std::string &path, std::vector<float> &left, std::vector<float> &right,
+                    uint32_t &srcRate);
 int loadWavetableFramesFromWav(const std::string &path, WavetablePartialSlot &slot, int startFrame = 0);
 WavetableImportResult importWavetableFramesFromWav(const std::string &path, WavetablePartialSlot &slot,
                                                     int startFrame, const WavetableImportOptions &options);

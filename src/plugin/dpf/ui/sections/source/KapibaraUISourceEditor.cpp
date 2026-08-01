@@ -211,6 +211,7 @@ void KapibaraUI::clearTrackEditorRects()
         for(auto &row : basicPitchRects_)
             row.fill({});
         noiseModeRect_ = {};
+        noiseTypeRect_ = {};
         samplerLoadRect_ = {}; samplerRootRect_ = {}; samplerKeyTrackRect_ = {};
         samplerLoopRect_ = {}; samplerSliceRect_ = {}; samplerRevRect_ = {};
         samplerWaveRect_ = {}; samplerStartRect_ = {}; samplerEndRect_ = {};

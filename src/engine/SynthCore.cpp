@@ -132,6 +132,7 @@ bool sourceTrackSoundContentChanged(const SourceTrackParams &a, const SourceTrac
             // the track claims one silent slot whatever they are. Only the mode
             // and colour can change what buildNoiseSeed produces.
             return a.sampleNoiseMode != b.sampleNoiseMode
+                   || a.noiseType != b.noiseType
                    || std::abs(a.noiseColor - b.noiseColor) > 1.0e-6f;
     }
     return true;
@@ -697,6 +698,7 @@ void SynthCore::publishSnapshotNoLock()
         runtime.outputMode = track.outputMode;
         runtime.type = track.type;
         runtime.sampleNoiseMode = track.sampleNoiseMode;
+        runtime.noiseType = track.noiseType;
         runtime.noiseColor = track.noiseColor;
         runtime.sampler = track.sampler;
         runtime.mods = track.mods;

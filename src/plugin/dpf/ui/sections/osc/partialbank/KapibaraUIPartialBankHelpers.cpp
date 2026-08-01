@@ -62,10 +62,13 @@ bool KapibaraUI::trackGroupPitch(const synth::SourceTrackParams &t, TrackPitch &
                 out = { s.pitchOct, s.pitchSem, s.pitchFin, s.pitchCrs };
                 return true;
             }
+            case synth::SourceTrackType::SampleNoise:
+                out = { t.sampler.pitchOct, t.sampler.pitchSem,
+                        t.sampler.pitchFin, t.sampler.pitchCrs };
+                return true;
             default:
                 // Basic Oscillator has one pitch PER UNIT, not one per track, so
-                // it uses its own rects and drag cases; Sample / Noise has no
-                // harmonic series to shift at all.
+                // it uses its own rects and drag cases.
                 return false;
         }
     }
@@ -87,6 +90,14 @@ void KapibaraUI::applyTrackGroupPitch(synth::SourceTrackParams &t, const TrackPi
                 break;
             case synth::SourceTrackType::PartialBank:
                 applyPartialBankGroupPitch(t.partialBank, oct, sem, fin, crs);
+                break;
+            case synth::SourceTrackType::SampleNoise:
+                // Folded into the playback rate alongside the root-note
+                // transposition (Voice::renderStreamTrack).
+                t.sampler.pitchOct = oct;
+                t.sampler.pitchSem = sem;
+                t.sampler.pitchFin = fin;
+                t.sampler.pitchCrs = crs;
                 break;
             default:
                 break;  // see trackGroupPitch

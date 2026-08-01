@@ -285,6 +285,13 @@ bool KapibaraUI::handleButtonClick(float x, float y)
                     pushCurrentTrack();
                     return true;
                 }
+                if(noiseTypeRect_.w > 0.0f && noiseTypeRect_.contains(x, y))
+                {
+                    track->noiseType = static_cast<synth::NoiseType>(
+                        (int(track->noiseType) + 1) % synth::kNoiseTypes);
+                    pushCurrentTrack();
+                    return true;
+                }
                 if(samplerLoadRect_.w > 0.0f && samplerLoadRect_.contains(x, y))
                 {
                     openSamplerFileBrowser();

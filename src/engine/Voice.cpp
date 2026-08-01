@@ -1167,7 +1167,7 @@ void Voice::renderStreamTrack(float *left, float *right, int numSamples, int sou
 
     if(rt.sampleNoiseMode == SampleNoiseMode::Noise || !rt.sampler.sample)
     {
-        renderNoiseBlock(noiseState_[(size_t)source], rt.noiseColor,
+        renderNoiseBlock(noiseState_[(size_t)source], rt.noiseType, rt.noiseColor,
                          sourceStreamL_.data(), sourceStreamR_.data(), numSamples, sampleRate_);
         for(int s = 0; s < numSamples; ++s)
         {
@@ -1187,7 +1187,9 @@ void Voice::renderStreamTrack(float *left, float *right, int numSamples, int sou
     // Playback rate: the file's own rate against the engine's, times the note's
     // transposition when key tracking is on.
     const double srRatio = double(std::max(1u, sd.sampleRate)) / std::max(1.0, sampleRate_);
-    const double semis = sp.keyTrack ? double(noteNumber_ - sp.rootNote) : 0.0;
+    const double semis = (sp.keyTrack ? double(noteNumber_ - sp.rootNote) : 0.0)
+                         + double(sp.pitchOct) * 12.0 + double(sp.pitchSem)
+                         + double(sp.pitchFin) / 100.0 + double(sp.pitchCrs) / 100.0;
     const double step = srRatio * std::pow(2.0, semis / 12.0);
 
     // Loop window, expressed inside the region so slicing and looping compose.

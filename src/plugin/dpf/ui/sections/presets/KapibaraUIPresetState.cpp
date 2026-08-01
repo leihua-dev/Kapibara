@@ -74,7 +74,9 @@ void KapibaraUI::saveModernState(const std::string &path)
                 out << "msmp " << ti << ' ' << sp.rootNote << ' ' << int(sp.keyTrack) << ' '
                     << int(sp.loopMode) << ' ' << sp.startNorm << ' ' << sp.endNorm << ' '
                     << sp.loopStartNorm << ' ' << sp.loopEndNorm << ' ' << sp.sliceCount << ' '
-                    << sp.gain << ' ' << int(sp.reverse) << "\n";
+                    << sp.gain << ' ' << int(sp.reverse) << ' ' << int(t.noiseType) << ' '
+                    << sp.pitchOct << ' ' << sp.pitchSem << ' '
+                    << sp.pitchFin << ' ' << sp.pitchCrs << "\n";
                 // Audio is not embedded — the path is re-read on load, same as an
                 // impulse response. A moved file simply comes back empty.
                 if(!sp.samplePath.empty())
@@ -242,6 +244,19 @@ void KapibaraUI::loadModernState(const std::string &path)
                 sp.sliceCount = clampi(slices, 1, 64);
                 sp.gain = clampf(gain, 0.0f, 2.0f);
                 sp.reverse = rev != 0;
+                // Optional tail, each re-defaulted on its own: a failed >> writes
+                // 0 AND poisons the stream for every later field.
+                int ntype = 0, poct = 0, psem = 0; float pfin = 0.0f, pcrs = 0.0f;
+                if(!(ss >> ntype)) ntype = 0;
+                if(!(ss >> poct)) poct = 0;
+                if(!(ss >> psem)) psem = 0;
+                if(!(ss >> pfin)) pfin = 0.0f;
+                if(!(ss >> pcrs)) pcrs = 0.0f;
+                tracks[(size_t)ti].noiseType = synth::NoiseType(clampi(ntype, 0, synth::kNoiseTypes - 1));
+                sp.pitchOct = clampi(poct, -4, 4);
+                sp.pitchSem = clampi(psem, -12, 12);
+                sp.pitchFin = clampf(pfin, -100.0f, 100.0f);
+                sp.pitchCrs = clampf(pcrs, -100.0f, 100.0f);
             }
             else if(tok == "msmpf")
             {

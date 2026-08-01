@@ -103,8 +103,13 @@ struct DecodedWav
     uint32_t sampleRate = 0;
 };
 
-bool decodeWavMono(const std::string &path, DecodedWav &decoded)
+// Decodes every channel separately. decodeWavMono folds the result; the sampler
+// keeps them. One parser either way — a WAV header parser is not something to
+// have two of.
+bool decodeWavChannels(const std::string &path, std::vector<std::vector<float>> &chans,
+                       uint32_t &sampleRateOut)
 {
+    chans.clear();
     std::ifstream in(path, std::ios::binary);
     if(!in)
         return false;
@@ -152,11 +157,11 @@ bool decodeWavMono(const std::string &path, DecodedWav &decoded)
     const uint32_t sampleFrames = dataSize / std::max(1u, frameBytes);
     if(sampleFrames < 2)
         return false;
-    decoded.mono.assign((size_t)sampleFrames, 0.0f);
-    decoded.sampleRate = sampleRate;
+
+    chans.assign((size_t)channels, std::vector<float>((size_t)sampleFrames, 0.0f));
+    sampleRateOut = sampleRate;
     for(uint32_t s = 0; s < sampleFrames; ++s)
     {
-        float sum = 0.0f;
         for(uint16_t ch = 0; ch < channels; ++ch)
         {
             const size_t p = size_t(dataOffset) + size_t(s) * frameBytes + size_t(ch) * bytesPerSample;
@@ -173,9 +178,27 @@ bool decodeWavMono(const std::string &path, DecodedWav &decoded)
                 std::memcpy(&value, data.data() + p, sizeof(float));
             else
                 return false;
-            sum += value;
+            chans[(size_t)ch][(size_t)s] = value;
         }
-        decoded.mono[(size_t)s] = sum / float(channels);
+    }
+    return true;
+}
+
+bool decodeWavMono(const std::string &path, DecodedWav &decoded)
+{
+    std::vector<std::vector<float>> chans;
+    uint32_t sr = 0;
+    if(!decodeWavChannels(path, chans, sr) || chans.empty())
+        return false;
+    const size_t n = chans[0].size();
+    decoded.mono.assign(n, 0.0f);
+    decoded.sampleRate = sr;
+    for(size_t s = 0; s < n; ++s)
+    {
+        float sum = 0.0f;
+        for(const auto &c : chans)
+            sum += c[s];
+        decoded.mono[s] = sum / float(chans.size());
     }
     return true;
 }
@@ -688,6 +711,22 @@ const char *sampleNoiseModeName(SampleNoiseMode m)
         case SampleNoiseMode::Capture: return "Capture";
     }
     return "Noise";
+}
+
+bool loadSampleFile(const std::string &path, std::vector<float> &left, std::vector<float> &right,
+                    uint32_t &srcRate)
+{
+    std::vector<std::vector<float>> chans;
+    if(!decodeWavChannels(path, chans, srcRate) || chans.empty())
+        return false;
+    left = std::move(chans[0]);
+    // >2 channels: keep the first two. Folding the rest in would place content
+    // the file puts elsewhere into the stereo pair.
+    if(chans.size() >= 2)
+        right = std::move(chans[1]);
+    else
+        right.clear();
+    return !left.empty();
 }
 
 bool loadImpulseResponseMono(const std::string &path, std::vector<float> &out, uint32_t &srcRate)

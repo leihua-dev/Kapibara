@@ -36,7 +36,7 @@ Track types and their generators:
 | Partial Bank | independent additive bank up to 64 partials with frame morph | `dsp/GeneratorBank` |
 | Meta Oscillator | multi-frame wavetable, up to 512 × 2048-sample frames | `dsp/WavetableCore` |
 | Basic Oscillator | rack of 3 units (sine/triangle/saw/pulse/sub each), summed, with Ring/AM/Sync/FM/PM between units | `dsp/BasicOscDsp` |
-| Sample / Noise | STREAM source: WAV sampler (root note, key-track, slices, loop, reverse) or coloured noise | `dsp/SampleNoiseDsp` |
+| Sample / Noise | STREAM source: stereo WAV sampler (root note, OCT/SEM/FIN/CRS, key-track, slices, loop, reverse) or six noise types | `dsp/SampleNoiseDsp` |
 
 Each track owns: generator params, gain, pan, send, mute/solo, output mode
 (Audio / ModOnly / AudioAndMod), unison params (Basic Oscillator excepted — the
@@ -45,8 +45,10 @@ is not offered), per-voice filter chain
 (≤4 nodes), source-mod entries (≤3), strip insert chain, and `ampEnvIndex`
 (0–3) referencing one shared Amp ADSR.
 
-Meta Oscillator pitch is edited as OCT/SEM/FIN/CRS components merged into a
-frequency ratio; warp modes are None / Bend / Squeeze / Skew.
+Meta Oscillator, Partial Bank and the sampler share one OCT/SEM/FIN/CRS pitch
+module (`trackGroupPitch` / `applyTrackGroupPitch` resolve where each type keeps
+the offset); Basic Oscillator has one per rack unit instead. Meta warp modes are
+None / Bend / Squeeze / Skew. Meta pitch merges into a frequency ratio;
 
 ## Amp Envelopes
 
