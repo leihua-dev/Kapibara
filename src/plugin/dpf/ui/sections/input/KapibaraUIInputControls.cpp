@@ -316,6 +316,10 @@ bool KapibaraUI::handleControlPress(float x, float y)
                     return setDragKnob(DragTarget::FxInsertKnob, fxKnobNorm((*chain)[(size_t)h.insertIdx], h.knob));
                 }
             }
+        if(pitchWheelRect_.w > 0.0f && pitchWheelRect_.contains(x, y))
+            return setDragAbs(DragTarget::PitchWheel);
+        if(modWheelRect_.w > 0.0f && modWheelRect_.contains(x, y))
+            return setDragAbs(DragTarget::ModWheelUi);
         if(chaosRateRect_.contains(x, y))   return setDragKnob(DragTarget::ChaosRate,   chaos_.frequencyHz / 60.0f);
         if(chaosAmountRect_.contains(x, y)) return setDragKnob(DragTarget::ChaosAmount, chaos_.amount);
         if(shapePhaseRect_.contains(x, y))  return setDragKnob(DragTarget::ShapePhase,  shape_.phase0);

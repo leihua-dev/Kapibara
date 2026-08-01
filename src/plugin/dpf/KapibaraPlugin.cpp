@@ -470,6 +470,16 @@ void KapibaraPlugin::previewNoteOff(int midiNote)
     core_.noteOff(std::clamp(midiNote, 0, 127));
 }
 
+void KapibaraPlugin::setPitchBendSemis(float semis)
+{
+    core_.setPitchBend(semis);
+}
+
+void KapibaraPlugin::setModWheelValue(float value)
+{
+    core_.setModWheel(value);
+}
+
 void KapibaraPlugin::panic()
 {
     core_.allNotesOff();

@@ -109,6 +109,26 @@ bool KapibaraUI::applyModFxLayoutDragValue(float x, float y)
                 break;
             case DragTarget::RuleBandLo: rule.bandLo = clampi(int(knobNorm() * synth::kMaxPartials), 0, rule.bandHi - 1); pushRuleOnly(); break;
             case DragTarget::RuleBandHi: rule.bandHi = clampi(int(knobNorm() * synth::kMaxPartials), rule.bandLo + 1, synth::kMaxPartials); pushRuleOnly(); break;
+            case DragTarget::PitchWheel:
+            case DragTarget::ModWheelUi:
+            {
+                // Absolute position inside the wheel's travel: 1 at the top.
+                const Rect &w = dragTarget_ == DragTarget::PitchWheel ? pitchWheelRect_ : modWheelRect_;
+                const float trackTop = w.y + 8.0f;
+                const float trackH = std::max(1.0f, w.h - 22.0f - 12.0f);
+                const float pos = clampf(1.0f - (y - trackTop) / trackH, 0.0f, 1.0f);
+                if(dragTarget_ == DragTarget::PitchWheel)
+                {
+                    pitchWheelValue_ = pos * 2.0f - 1.0f;
+                    if(auto *p = plugin()) p->setPitchBendSemis(pitchWheelValue_ * 2.0f);
+                }
+                else
+                {
+                    modWheelValue_ = pos;
+                    if(auto *p = plugin()) p->setModWheelValue(modWheelValue_);
+                }
+                break;
+            }
             case DragTarget::ChaosRate: chaos_.frequencyHz = knobNorm() * 60.0f; pushChaosOnly(); break;
             case DragTarget::ChaosAmount: chaos_.amount = knobNorm(); pushChaosOnly(); break;
             case DragTarget::ShapePhase: shape_.phase0 = knobNorm(); pushShapeOnly(); break;

@@ -275,11 +275,13 @@ bool KapibaraUI::handleBottomLayoutPress(float x, float y)
                     selectedAmpEnv_ = int(src) - int(synth::ModSource::Adsr1);
                     matrixTab_ = 2;
                 }
-                else if(src == synth::ModSource::Chaos || src == synth::ModSource::Shape)
+                else if(src == synth::ModSource::Chaos)
                 {
-                    // These two have their own editor; they used to land on the
-                    // MOD curve editor, which edits something else entirely.
-                    matrixTab_ = 3;
+                    matrixTab_ = 3;   // own page; used to land on the MOD curve editor
+                }
+                else if(src == synth::ModSource::Shape)
+                {
+                    matrixTab_ = 4;
                 }
                 else
                 {

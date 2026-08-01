@@ -105,7 +105,8 @@ void KapibaraUI::drawMatrixDashboard(const Rect &r)
         shapePhaseRect_ = {}; shapeRhoRect_ = {}; shapeUpRect_ = {}; shapeDownRect_ = {};
 
         if(matrixTab_ == 2)      drawMatrixAmpEnv(body);
-        else if(matrixTab_ == 3) drawMatrixChaosShape(body);
+        else if(matrixTab_ == 3) drawMatrixChaos(body);
+        else if(matrixTab_ == 4) drawMatrixShape(body);
         else                     drawMatrixModulators(body);
     }
 
@@ -169,15 +170,10 @@ void KapibaraUI::drawMatrixAmpEnv(const Rect &r)
 // CHAOS + SHAPE. Both are matrix sources with no editor until now: the params,
 // the sync calls and all six drag targets already existed, nothing ever drew
 // them. Reached from the CHAOS / SHAPE chips in the strip above.
-void KapibaraUI::drawMatrixChaosShape(const Rect &r)
+void KapibaraUI::drawMatrixChaos(const Rect &r)
 {
-        chaosEnableRect_ = {}; chaosTypeRect_ = {}; chaosRateRect_ = {}; chaosAmountRect_ = {};
-        shapeTypeRect_ = {}; shapeAxisRect_ = {}; shapePhaseRect_ = {};
-        shapeRhoRect_ = {}; shapeUpRect_ = {}; shapeDownRect_ = {};
-
-        const float colW = (r.w - 16.0f) * 0.5f;
+        const float colW = r.w;
         const Rect left { r.x, r.y, colW, r.h };
-        const Rect right { r.x + colW + 16.0f, r.y, colW, r.h };
 
         // ---- CHAOS: a noise source, so plot it over TIME -------------------
         drawGroupLabel(left.x, left.y, "CHAOS");
@@ -241,9 +237,16 @@ void KapibaraUI::drawMatrixChaosShape(const Rect &r)
             resetScissor();
         }
 
+    }
+
+void KapibaraUI::drawMatrixShape(const Rect &r)
+{
+        const float colW = r.w;
+        const Rect right { r.x, r.y, colW, r.h };
+
         // ---- SHAPE: a spectral distribution, so plot it over the AXIS ------
         drawGroupLabel(right.x, right.y, "SHAPE");
-        y = right.y + 16.0f;
+        float y = right.y + 16.0f;
         static const char *kShapeNames[5] = { "ASYM", "SINE", "SQUARE", "TRI", "S&H" };
         shapeTypeRect_ = { right.x, y, 80.0f, 20.0f };
         drawButton(shapeTypeRect_, kShapeNames[clampi(int(shape_.shape), 0, 4)], true);

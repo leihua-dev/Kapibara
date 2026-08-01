@@ -1,4 +1,9 @@
     bool shiftDown_ = false;
+    // Performance wheels beside the keyboard. Bend springs back to centre on
+    // release; the mod wheel stays where it is put.
+    Rect pitchWheelRect_ {}, modWheelRect_ {};
+    float pitchWheelValue_ = 0.0f;   // -1..+1
+    float modWheelValue_ = 0.0f;     // 0..1
     // Host-session state push throttle (see pushHostState).
     uint64_t lastHostStateMs_ = 0;
     bool hostStateDirty_ = false;

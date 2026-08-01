@@ -78,6 +78,12 @@ bool KapibaraUI::onMouse(const MouseEvent &ev)
                 repaint();
                 return true;
             }
+            if(dragTarget_ == DragTarget::PitchWheel)
+            {
+                // Sprung, like the hardware control it stands for.
+                pitchWheelValue_ = 0.0f;
+                if(auto *p = plugin()) p->setPitchBendSemis(0.0f);
+            }
             releaseMouseKey();
             if(metaEditorDirty_)
             {

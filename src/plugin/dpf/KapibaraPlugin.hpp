@@ -46,6 +46,9 @@ class KapibaraPlugin final : public Plugin
     void previewNoteOn(int midiNote, float velocity);
     void previewNoteOff(int midiNote);
     void panic();
+    // On-screen performance wheels (the MIDI path uses the same core setters).
+    void setPitchBendSemis(float semis);
+    void setModWheelValue(float value);
     std::vector<std::string> presetNames() const;
     std::vector<WavetablePresetEntry> wavetablePresetEntries() const;
     std::string wavetableUserDir() const;
