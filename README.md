@@ -116,5 +116,42 @@ runs as findings, not as noise.
 - Wavetables use the Kapibara `.kwt` harmonic format (binary `KWT2`; older
   ASCII `KAPIBARA_WT` files remain loadable). WAV import is also supported.
   See `presets/wavetables/README.md`.
-- Sample / Noise tracks: Noise mode is active; File and Capture modes are UI
-  placeholders in this version.
+- Sample / Noise tracks: Noise mode (six noise types) and File mode (the WAV
+  sampler) are both active. Capture mode is still a UI placeholder.
+
+## Licence
+
+Kapibara's source is licensed under the **GNU General Public License v3.0** —
+see `LICENSE`.
+
+Content is a separate work and is **not** covered by that licence: preset files
+(`.mfpreset`), wavetables (`.kwt` and imported WAVs) and samples carry their own
+terms. Distributing a preset or wavetable pack — including a paid one — does not
+oblige anyone to release it under the GPL.
+
+`third_party/DPF` is ISC-licensed (upstream DISTRHO), which is GPL-compatible.
+The patches in `third_party/dpf-patches/` are derivative of DPF and carry DPF's
+licence, not this project's.
+
+Every plugin format Kapibara builds is permissively licensed, so **no format
+forces a licence choice on this project** (see `third_party/DPF/LICENSING.md`):
+JACK standalone MIT (RtAudio/RtMidi), LV2 ISC, VST3 ISC, CLAP MIT. VST3 is worth
+calling out — DPF does not use Steinberg's SDK but its own `travesty` API
+definitions, so there is no Steinberg licensing agreement and no GPL
+obligation coming from the format. GPLv3 here is a deliberate choice, and a
+proprietary build later is not blocked by the framework.
+
+### Attribution
+
+DPF requires attribution regardless of format. Any distributed build must
+credit:
+
+- **DPF** — Copyright 2012-2025 Filipe Coelho (falkTX)
+- **RtAudio / RtMidi** (JACK standalone) — Copyright 2001-2021 Gary P. Scavone
+- **LV2** — Copyright 2006-2020 Steve Harris, David Robillard; 2000-2002
+  Richard W. E. Furse, Paul Barton-Davis, Stefan Westerfeld
+- **CLAP** — Copyright 2014-2022 Alexandre Bique
+
+Contributions are accepted under GPLv3 with an additional relicensing grant, so
+that a commercially licensed build stays possible — see `CONTRIBUTING.md`. This
+has to be settled before the first merged patch, not after.
