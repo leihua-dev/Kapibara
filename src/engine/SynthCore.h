@@ -68,6 +68,17 @@ class SynthCore
     // Channel-wide performance controls. Bend is in semitones; wheel/pressure are
     // 0..1 and reach the matrix as ModSource::ModWheel / Pressure.
     void setPitchBend(float semitones);
+    // Tempo for tempo-synced modulators. The host value is written from the
+    // audio thread each block (0 = no transport); the UI fallback is what a
+    // standalone with no transport runs at. Host wins when it is valid.
+    void setHostTempoBpm(float bpm) { hostBpm_.store(bpm, std::memory_order_relaxed); }
+    void setUiTempoBpm(float bpm) { uiBpm_.store(bpm, std::memory_order_relaxed); }
+    float hostTempoBpm() const { return hostBpm_.load(std::memory_order_relaxed); }
+    float effectiveTempoBpm() const
+    {
+        const float host = hostBpm_.load(std::memory_order_relaxed);
+        return host > 0.0f ? host : uiBpm_.load(std::memory_order_relaxed);
+    }
     void setModWheel(float value);
     void setSustainPedal(bool down);
     void setAftertouch(float value);
@@ -241,6 +252,8 @@ class SynthCore
     // Performance state. Written by the MIDI queue on the audio thread, read by
     // the render loop — plain members, no cross-thread hand-off needed.
     float pitchBendSemis_ = 0.0f;
+    std::atomic<float> hostBpm_ { 0.0f };        // audio writes, UI reads
+    std::atomic<float> uiBpm_ { kFallbackBpm };  // UI thread writes, audio reads
     float modWheel_ = 0.0f;
     float aftertouch_ = 0.0f;
     bool sustainDown_ = false;

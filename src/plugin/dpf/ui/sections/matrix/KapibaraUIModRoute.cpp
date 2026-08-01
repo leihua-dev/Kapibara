@@ -52,7 +52,10 @@ void KapibaraUI::finishModRouteDrag(float x, float y)
         const auto target = modRouteTargetAt(x, y);
         if(!target.valid)
             return;
-        const bool isEffectDest = synth::insertModParamForDest(target.destination) >= 0;
+        // Slot-scoped destinations: two rules that differ only by slot are two
+        // different routes, so the slot has to take part in the match or the
+        // second drop silently retargets the first rule.
+        const bool slotScoped = synth::destSlotCount(target.destination) > 0;
         int ruleIndex = -1, freeIndex = -1;
         for(int i = 0; i < synth::kMaxMatrixRules; ++i)
         {
@@ -61,7 +64,7 @@ void KapibaraUI::finishModRouteDrag(float x, float y)
             // would resurrect whatever stale config it still carries.
             if(rule.enabled && rule.source == modRouteSource_ && rule.dest == target.destination
                && rule.targetTrackId == target.trackId
-               && (!isEffectDest || rule.targetSlot == target.slot))
+               && (!slotScoped || rule.targetSlot == target.slot))
             {
                 ruleIndex = i;
                 break;

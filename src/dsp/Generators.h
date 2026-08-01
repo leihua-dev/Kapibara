@@ -15,7 +15,8 @@
 namespace synth
 {
 
-constexpr int kMaxPerVoiceFilters = 4;
+// kMaxPerVoiceFilters lives in SpectralFrame.h with the other caps: the mod
+// matrix addresses the filter bank by slot and cannot include this header.
 constexpr int kMaxStripInserts = 8;
 
 enum class FreqShape : uint8_t

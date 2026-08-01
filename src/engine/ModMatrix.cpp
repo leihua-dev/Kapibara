@@ -179,7 +179,7 @@ void ModMatrix::advanceControl(int samples)
     {
         const auto &p = slotParams_[(size_t)i];
         if(!p.enabled) { slotValue_[(size_t)i] = 0.0f; continue; }
-        const float inc = std::max(0.0f, p.rateHz) * float(samples) / float(sampleRate_);
+        const float inc = modSlotRateHz(p, tempoBpm_) * float(samples) / float(sampleRate_);
         float ph = slotPhase_[(size_t)i] + inc;
         if(p.loop) ph -= std::floor(ph);
         else       ph = std::min(ph, 1.0f);
@@ -430,6 +430,22 @@ void ModMatrix::evaluateForVoice(MatrixVoiceOutput &out,
             continue;
         if(insertModParamForDest(rule.dest) >= 0)
             continue;
+        // Slot-scoped banks (per-voice filters, shared amp envelopes). Global
+        // banks, so unlike OscModDepth they need no target track — only a slot.
+        if(const int pvp = pvFilterParamForDest(rule.dest); pvp >= 0)
+        {
+            if(rule.targetSlot >= 0 && rule.targetSlot < kMaxPerVoiceFilters)
+                out.dPvFilter[(size_t)(rule.targetSlot * 4 + pvp)] +=
+                    rule.depth * applyTransfer(rule, sourceValue(rule.source, 0));
+            continue;
+        }
+        if(const int aep = ampEnvParamForDest(rule.dest); aep >= 0)
+        {
+            if(rule.targetSlot >= 0 && rule.targetSlot < kMaxAmpEnvs)
+                out.dAmpEnv[(size_t)(rule.targetSlot * 4 + aep)] +=
+                    rule.depth * applyTransfer(rule, sourceValue(rule.source, 0));
+            continue;
+        }
         if(rule.dest == ModDestination::OscModDepth)
         {
             // Track-scoped, not per-partial: the rack's own cross-unit modulation

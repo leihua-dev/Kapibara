@@ -144,11 +144,13 @@ void KapibaraUI::writeModernState(std::ostream &out, bool structureOnly)
         {
             const auto &m = modSlots_[(size_t)i];
             out << "mslot " << i << ' ' << int(m.enabled) << ' ' << int(m.loop) << ' '
-                << m.rateHz << ' ' << clampi(m.pointCount, 2, synth::kMaxMatrixEnvPoints) << "\n";
+                << m.rateHz << ' ' << clampi(m.pointCount, 2, synth::kMaxMatrixEnvPoints)
+                << ' ' << int(m.tempoSync) << ' ' << int(m.syncDiv) << "\n";
             for(int k = 0; k < clampi(m.pointCount, 2, synth::kMaxMatrixEnvPoints); ++k)
                 out << "mslotp " << i << ' ' << k << ' ' << m.points[(size_t)k].x << ' '
                     << m.points[(size_t)k].y << ' ' << m.points[(size_t)k].curve << "\n";
         }
+        out << "mtempo " << uiTempoBpm_ << "\n";
         out << "mchaos " << int(chaos_.enabled) << ' ' << int(chaos_.type) << ' '
             << chaos_.frequencyHz << ' ' << chaos_.amount << "\n";
         out << "mshape " << int(shape_.shape) << ' ' << shape_.phase0 << ' ' << shape_.rho << ' '
@@ -381,7 +383,22 @@ void KapibaraUI::readModernState(std::istream &in)
                 m.loop = loop != 0;
                 m.rateHz = clampf(rate, 0.0f, 100.0f);
                 m.pointCount = clampi(pc, 2, synth::kMaxMatrixEnvPoints);
+                // Tail fields, appended after the format shipped. A failed
+                // extraction writes 0 into its target, so each is re-defaulted
+                // individually rather than trusting one combined read.
+                int sync = 0, div = synth::kSyncDivDefault;
+                if(!(ss >> sync)) sync = 0;
+                if(!(ss >> div)) div = synth::kSyncDivDefault;
+                m.tempoSync = sync != 0;
+                m.syncDiv = uint8_t(synth::clampSyncDiv(div));
                 hasSlots = true;
+            }
+            else if(tok == "mtempo")
+            {
+                float bpm;
+                if(!(ss >> bpm)) continue;
+                uiTempoBpm_ = clampf(bpm, 20.0f, 300.0f);
+                if(auto *pl = plugin()) pl->setUiTempoBpm(uiTempoBpm_);
             }
             else if(tok == "mslotp")
             {

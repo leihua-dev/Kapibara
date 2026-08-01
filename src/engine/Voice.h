@@ -41,6 +41,7 @@ class Voice
     bool isReleasing() const { return releasing_; }
     int getNoteNumber() const { return noteNumber_; }
     void setPitchBendRatio(float r) { pitchBendRatio_ = r; }
+    void setTempoBpm(float bpm) { tempoBpm_ = bpm; }
     uint64_t getStartTick() const { return startTick_; }
     float sourceTimeSeconds() const { return float(double(ageSamples_) / sampleRate_); }
 
@@ -163,6 +164,7 @@ class Voice
     // Channel pitch bend, refreshed every control block so a held note follows
     // the wheel instead of being frozen at note-on.
     float pitchBendRatio_ = 1.0f;
+    float tempoBpm_ = 0.0f;
     uint64_t startTick_ = 0;
     uint64_t ageSamples_ = 0;
     uint32_t rngSeed_ = 1u;
@@ -281,6 +283,10 @@ class Voice
     // Control-rate offset applied to each track's osc-mod depth, so the matrix
     // (an LFO, an envelope) can sweep a modulation that is otherwise source-local.
     std::array<float, kMaxSourceTracks> oscModDepthMod_ {};
+    // Matrix offsets for the global per-voice filter bank: [slot * 4 + param],
+    // param order cutoff/reso/drive/mix (see pvFilterParamForDest).
+    std::array<float, kMaxPerVoiceFilters * 4> pvFilterMod_ {};
+    SourceFilterParams modulatedPvFilter(const SourceFilterParams &f, int slot) const;
     std::array<float, kMaxVoiceRenderBlockSamples> oscPmScratch_ {};  // FM/PM phase offset
     // FM integrates the modulator, so the accumulator must persist across render
     // blocks — restarting it per block restarts the phase ramp and buzzes.

@@ -413,6 +413,7 @@ void Voice::updateControl(const StaticSpectralFrame &frame,
     // Matrix offset for each rack's own cross-unit modulation depth — the one
     // bridge between the router and a modulation that is otherwise source-local.
     oscModDepthMod_ = matrixOut.dOscMod;
+    pvFilterMod_ = matrixOut.dPvFilter;
     sourceParams_ = {};
     for(int t = 0; t < renderTrackCount_; ++t)
         sourceParams_[(size_t)t] = trackRuntime_[(size_t)t].strip;
@@ -427,7 +428,21 @@ void Voice::updateControl(const StaticSpectralFrame &frame,
     for(int i = 0; i < kMaxAmpEnvs; ++i)
     {
         auto &state = sharedAmpEnvState_[(size_t)i];
-        const auto &params = sharedAmpEnvParams_[(size_t)i];
+        auto &params = sharedAmpEnvParams_[(size_t)i];
+        // Matrix offsets for this envelope. The stage times scale (a ratio is
+        // what "faster attack" means), sustain offsets. Guarded because an
+        // unmodulated envelope is the common case and pow is not free.
+        const float *m = &matrixOut.dAmpEnv[(size_t)(i * 4)];
+        const auto scaleTime = [](float t, float mod) {
+            return mod == 0.0f ? t
+                               : std::clamp(t * std::pow(2.0f, std::clamp(mod, -4.0f, 4.0f)),
+                                            0.0f, 30.0f);
+        };
+        params.attack = scaleTime(params.attack, m[0]);
+        params.decay = scaleTime(params.decay, m[1]);
+        if(m[2] != 0.0f)
+            params.sustain = std::clamp(params.sustain + m[2], 0.0f, 1.0f);
+        params.release = scaleTime(params.release, m[3]);
         state.attackSamples = std::max(1, int(std::max(0.0f, params.attack) * fs));
         state.decaySamples = std::max(1, int(std::max(0.0f, params.decay) * fs));
         state.releaseSamples = std::max(1, int(std::max(0.0f, params.release) * fs));
@@ -438,7 +453,7 @@ void Voice::updateControl(const StaticSpectralFrame &frame,
     {
         const auto &p = slotParams_[(size_t)i];
         if(!p.enabled) { slotLevel_[(size_t)i] = 0.0f; continue; }
-        const float inc = std::max(0.0f, p.rateHz) * float(blockSize) / fs;
+        const float inc = modSlotRateHz(p, tempoBpm_) * float(blockSize) / fs;
         float ph = slotPhase_[(size_t)i] + inc;
         if(p.loop) ph -= std::floor(ph);
         else       ph = std::min(ph, 1.0f);
@@ -939,7 +954,8 @@ void Voice::evaluateGraphNode(const RouteNodeRef &node, int numSamples, int sour
             for(int s = 0; s < numSamples; ++s) { fl[s] += L[s]; fr[s] += R[s]; }
         }
         if(slot < g.perVoiceFilterCount)
-            processSourceFilterParams(fl, fr, numSamples, g.perVoiceFilters[(size_t)slot],
+            processSourceFilterParams(fl, fr, numSamples,
+                                      modulatedPvFilter(g.perVoiceFilters[(size_t)slot], slot),
                                       filterNodeStates_[(size_t)slot]);
     }
     else if(node.kind == 2)
@@ -1679,6 +1695,26 @@ void Voice::processSourceFilterParams(float *left, float *right, int numSamples,
     }
 }
 
+// One per-voice filter with its matrix offsets folded in. Cutoff moves in
+// octaves so a fixed depth means the same musical interval anywhere on the dial;
+// the rest are plain offsets on their own 0..1-style ranges.
+SourceFilterParams Voice::modulatedPvFilter(const SourceFilterParams &f, int slot) const
+{
+    if(slot < 0 || slot >= kMaxPerVoiceFilters)
+        return f;
+    const float *m = &pvFilterMod_[(size_t)(slot * 4)];
+    if(m[0] == 0.0f && m[1] == 0.0f && m[2] == 0.0f && m[3] == 0.0f)
+        return f;
+    SourceFilterParams o = f;
+    if(m[0] != 0.0f)
+        o.cutoffHz = std::clamp(f.cutoffHz * std::pow(2.0f, std::clamp(m[0], -10.0f, 10.0f)),
+                                20.0f, 20000.0f);
+    o.resonance = std::clamp(f.resonance + m[1], 0.0f, 1.0f);
+    o.drive = std::clamp(f.drive + m[2] * 8.0f, 0.1f, 8.0f);
+    o.mix = std::clamp(f.mix + m[3], 0.0f, 1.0f);
+    return o;
+}
+
 void Voice::processPerVoiceFilters(float *left, float *right, int numSamples,
                                    const RenderTrackRuntime &runtime, SourceFilterRuntime *states,
                                    bool applyGainPanFlag)
@@ -1690,7 +1726,9 @@ void Voice::processPerVoiceFilters(float *left, float *right, int numSamples,
         const int filterIdx = int(runtime.perVoiceFilterOrder[(size_t)i]);
         if(filterIdx < 0 || filterIdx >= runtime.perVoiceFilterCount || filterIdx >= kMaxPerVoiceFilters)
             continue;
-        processSourceFilterParams(left, right, numSamples, runtime.perVoiceFilters[(size_t)filterIdx], states[filterIdx]);
+        processSourceFilterParams(left, right, numSamples,
+                                  modulatedPvFilter(runtime.perVoiceFilters[(size_t)filterIdx], filterIdx),
+                                  states[filterIdx]);
     }
     if(applyGainPanFlag)
         applyGainPan(left, right, numSamples, runtime.strip);

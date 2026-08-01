@@ -1682,6 +1682,11 @@ void SynthCore::renderBlock(float *left, float *right, int numSamples)
                                  snap->chaosParams, snap->shapeSourceParams);
                 matrix.setMaskGroups(snap->maskGroups);
                 effects.setParams(snap->effectsParams);
+                matrix.setTempoBpm(effectiveTempoBpm());
+                // The wheel and channel pressure reach the core but nothing was
+                // handing them to the matrix, so every rule sourced from
+                // ModWheel/Pressure evaluated to a constant zero.
+                matrix.setPerformance(modWheel_, aftertouch_);
                 matrix.advanceControl(kSeedControlBlockSize);
             }
 
@@ -1748,6 +1753,7 @@ void SynthCore::renderBlock(float *left, float *right, int numSamples)
                 const auto frame = clampedFrame(sampleTimeline(*snap->timeline, v.sourceTimeSeconds()));
                 v.setWavetableRenderState(snap->wavetable);
                 v.setPitchBendRatio(std::pow(2.0f, pitchBendSemis_ / 12.0f));
+                v.setTempoBpm(effectiveTempoBpm());
                 MatrixVoiceOutput mtx;
                 const auto voiceAmpEnv = v.ampEnvLevels();
                 matrix.evaluateForVoice(mtx, frame,

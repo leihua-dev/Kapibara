@@ -21,6 +21,8 @@
 // no way to hand its state to the DAW, so reopening a session comes back empty.
 #define DISTRHO_PLUGIN_WANT_STATE 1
 #define DISTRHO_PLUGIN_WANT_FULL_STATE 1
+// Host transport, for tempo-synced modulator slots.
+#define DISTRHO_PLUGIN_WANT_TIMEPOS 1
 
 #define DISTRHO_UI_FILE_BROWSER 1
 #define DISTRHO_UI_USER_RESIZABLE 1

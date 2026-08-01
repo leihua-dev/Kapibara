@@ -17,6 +17,18 @@ bool KapibaraUI::applyModFxLayoutDragValue(float x, float y)
         switch(dragTarget_)
         {
             case DragTarget::ModEnvRate: curCurveRate() = std::max(0.05f, knobNorm() * 20.0f); pushCurCurve(); break;
+            case DragTarget::ModSyncDiv:
+            {
+                auto &slot = modSlots_[(size_t)clampi(selectedMatrixModSlot_, 0, synth::kMaxModSlots - 1)];
+                slot.syncDiv = uint8_t(synth::clampSyncDiv(
+                    int(knobNorm() * float(synth::kSyncDivCount - 1) + 0.5f)));
+                pushCurCurve();
+                break;
+            }
+            case DragTarget::UiTempo:
+                uiTempoBpm_ = 20.0f + knobNorm() * 280.0f;
+                if(auto *p = plugin()) p->setUiTempoBpm(uiTempoBpm_);
+                break;
             case DragTarget::AmpAdsrSeg:
             {
                 auto &ae = ampEnvs_[(size_t)selectedAmpEnv_];

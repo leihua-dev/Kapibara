@@ -49,6 +49,10 @@ class KapibaraPlugin final : public Plugin
     // On-screen performance wheels (the MIDI path uses the same core setters).
     void setPitchBendSemis(float semis);
     void setModWheelValue(float value);
+    // Tempo used by synced modulators when the host reports none.
+    void setUiTempoBpm(float bpm) { core_.setUiTempoBpm(bpm); }
+    float effectiveTempoBpm() const { return core_.effectiveTempoBpm(); }
+    bool hostProvidesTempo() const { return core_.hostTempoBpm() > 0.0f; }
     std::vector<std::string> presetNames() const;
     std::vector<WavetablePresetEntry> wavetablePresetEntries() const;
     std::string wavetableUserDir() const;

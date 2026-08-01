@@ -129,6 +129,7 @@ void KapibaraUI::drawMatrixModulators(const Rect &r)
 
         bool &loopRef = curCurveLoop();
         float &rateRef = curCurveRate();
+        auto &slot = modSlots_[(size_t)clampi(selectedMatrixModSlot_, 0, synth::kMaxModSlots - 1)];
         modModeRect_ = { r.x + r.w - 132.0f, r.y, 132.0f, 20.0f };
         drawButton(modModeRect_, loopRef ? "Mode: LOOP" : "Mode: ENV", loopRef);
 
@@ -137,8 +138,52 @@ void KapibaraUI::drawMatrixModulators(const Rect &r)
         matrixEnvCurveRect_ = { r.x, r.y + 24.0f, r.w, std::max(60.0f, curveBottom - (r.y + 24.0f)) };
         drawMatrixEnvCurve(matrixEnvCurveRect_, curCurvePoints(), curCurveCount(),
                            loopRef ? DesignTokens::accentCyan() : DesignTokens::accentGreen());
-        modEnvRateRect_ = { r.x, r.y + r.h - knobH, (r.w - 8.0f) / 2.0f, 48.0f };
-        drawKnob(modEnvRateRect_, "Rate", rateRef / 20.0f, rateRef);
+
+        // Rate: free-running Hz, or a note division against the transport. The
+        // knob keeps editing rateHz while synced (it is what TIME returns to),
+        // so the readout has to show the division instead of lying about Hz.
+        const float rowY = r.y + r.h - knobH;
+        const float rateW = (r.w - 8.0f) / 2.0f;
+        modEnvRateRect_ = { r.x, rowY, rateW, 48.0f };
+        const float effBpm = plugin() != nullptr ? plugin()->effectiveTempoBpm() : synth::kFallbackBpm;
+        if(slot.tempoSync)
+        {
+            const auto &div = synth::kSyncDivs[synth::clampSyncDiv(int(slot.syncDiv))];
+            drawKnob(modEnvRateRect_, "Rate",
+                     float(synth::clampSyncDiv(int(slot.syncDiv))) / float(synth::kSyncDivCount - 1),
+                     synth::modSlotRateHz(slot, effBpm));
+            useUiFont();
+            uiFontSize(9.0f);
+            textAlign(ALIGN_CENTER | ALIGN_TOP);
+            fillColor(DesignTokens::accentGreen());
+            text(modEnvRateRect_.x + modEnvRateRect_.w * 0.5f, modEnvRateRect_.y + 2.0f, div.name, nullptr);
+        }
+        else
+        {
+            drawKnob(modEnvRateRect_, "Rate", rateRef / 20.0f, rateRef);
+        }
+
+        const float bx = r.x + rateW + 8.0f;
+        modSyncToggleRect_ = { bx, rowY, 62.0f, 18.0f };
+        drawButton(modSyncToggleRect_, slot.tempoSync ? "BPM" : "TIME", slot.tempoSync);
+        // Division stepper, only while it means something.
+        modSyncDivDownRect_ = {};
+        modSyncDivUpRect_ = {};
+        if(slot.tempoSync)
+        {
+            modSyncDivDownRect_ = { bx + 66.0f, rowY, 20.0f, 18.0f };
+            modSyncDivUpRect_ = { bx + 88.0f, rowY, 20.0f, 18.0f };
+            drawButton(modSyncDivDownRect_, "<", false);
+            drawButton(modSyncDivUpRect_, ">", false);
+        }
+        // Tempo readout. Draggable when the host gives us nothing, so a
+        // standalone can still be synced to something meaningful.
+        const bool fromHost = plugin() != nullptr && plugin()->hostProvidesTempo();
+        modBpmRect_ = { bx, rowY + 22.0f, 108.0f, 18.0f };
+        std::snprintf(scratch_, sizeof scratch_, "%.1f BPM %s", double(effBpm), fromHost ? "HOST" : "UI");
+        drawLabelBox(modBpmRect_, scratch_);
+        if(fromHost)
+            modBpmRect_ = {};   // host-driven: not draggable, and says so
     }
 
 void KapibaraUI::drawMatrixAmpEnv(const Rect &r)
@@ -475,7 +520,14 @@ void KapibaraUI::drawMatrixRoutes(const Rect &r)
             const float l2 = card.y + 23.0f;
             const Rect tgt { card.x + 24.0f, l2, 96.0f, 15.0f };
             char tlbl[40];
-            if(ru.targetTrackId == 0)
+            // Global-bank destinations address a slot, not a track: showing
+            // "@GLOBAL" there would hide which filter / envelope is being moved.
+            const bool bankDest = synth::destIsGlobalBank(ru.dest);
+            if(bankDest)
+                std::snprintf(tlbl, sizeof(tlbl), "@%s%d",
+                              synth::pvFilterParamForDest(ru.dest) >= 0 ? "F" : "AE",
+                              clampi(ru.targetSlot, 0, synth::destSlotCount(ru.dest) - 1) + 1);
+            else if(ru.targetTrackId == 0)
                 std::snprintf(tlbl, sizeof(tlbl), "@GLOBAL");
             else
             {
@@ -568,6 +620,16 @@ bool KapibaraUI::handleMatrixRoutesPress(float x, float y)
                     break;
                 case MatrixCardHit::Target:
                 {
+                    if(synth::destIsGlobalBank(ru.dest))
+                    {
+                        // Cycle the bank slot; the track is meaningless here and
+                        // must stay 0 so two selections cannot become two rules.
+                        const int n = synth::destSlotCount(ru.dest);
+                        ru.targetSlot = n > 0 ? (clampi(ru.targetSlot, 0, n - 1) + 1) % n : 0;
+                        ru.targetTrackId = 0;
+                        pushRule(h.rule);
+                        break;
+                    }
                     // @GLOBAL -> track 1 -> ... -> track n -> @GLOBAL
                     const int n = int(generator_.tracks.size());
                     int ti = ru.targetTrackId == 0 ? -1 : trackIndexOfId(ru.targetTrackId);

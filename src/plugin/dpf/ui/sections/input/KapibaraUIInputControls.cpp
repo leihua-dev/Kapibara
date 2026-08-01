@@ -266,7 +266,36 @@ bool KapibaraUI::handleControlPress(float x, float y)
             pushCurCurve();
             return true;
         }
-        if(modEnvRateRect_.contains(x, y)) return setDragKnob(DragTarget::ModEnvRate, clampf(curCurveRate() / 20.0f, 0.0f, 1.0f));
+        {
+            auto &slot = modSlots_[(size_t)clampi(selectedMatrixModSlot_, 0, synth::kMaxModSlots - 1)];
+            if(modSyncToggleRect_.w > 0.0f && modSyncToggleRect_.contains(x, y))
+            {
+                slot.tempoSync = !slot.tempoSync;
+                pushCurCurve();
+                return true;
+            }
+            // Divisions are listed slow -> fast, so ">" is faster.
+            if(modSyncDivUpRect_.w > 0.0f && modSyncDivUpRect_.contains(x, y))
+            {
+                slot.syncDiv = uint8_t(synth::clampSyncDiv(int(slot.syncDiv) + 1));
+                pushCurCurve();
+                return true;
+            }
+            if(modSyncDivDownRect_.w > 0.0f && modSyncDivDownRect_.contains(x, y))
+            {
+                slot.syncDiv = uint8_t(synth::clampSyncDiv(int(slot.syncDiv) - 1));
+                pushCurCurve();
+                return true;
+            }
+            if(modBpmRect_.w > 0.0f && modBpmRect_.contains(x, y))
+                return setDragKnob(DragTarget::UiTempo, clampf((uiTempoBpm_ - 20.0f) / 280.0f, 0.0f, 1.0f));
+            if(modEnvRateRect_.contains(x, y))
+                return slot.tempoSync
+                           ? setDragKnob(DragTarget::ModSyncDiv,
+                                         float(synth::clampSyncDiv(int(slot.syncDiv)))
+                                             / float(synth::kSyncDivCount - 1))
+                           : setDragKnob(DragTarget::ModEnvRate, clampf(curCurveRate() / 20.0f, 0.0f, 1.0f));
+        }
         if(matrixEnvCurveRect_.contains(x, y))
         {
             auto *pts = curCurvePoints();

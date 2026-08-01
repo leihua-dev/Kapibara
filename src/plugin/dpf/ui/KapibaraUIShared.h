@@ -64,7 +64,12 @@ constexpr synth::ModDestination kCardDestPool[] = {
     synth::ModDestination::PitchOct, synth::ModDestination::PitchSem, synth::ModDestination::PitchFine,
     synth::ModDestination::PitchCrs,
     // Source-local cross-unit modulation depth on a Basic Oscillator rack.
-    synth::ModDestination::OscModDepth
+    synth::ModDestination::OscModDepth,
+    // Slot-scoped banks. The card picker sets the slot via the rule's target.
+    synth::ModDestination::PvCutoff, synth::ModDestination::PvReso,
+    synth::ModDestination::PvDrive, synth::ModDestination::PvMix,
+    synth::ModDestination::AmpAttack, synth::ModDestination::AmpDecay,
+    synth::ModDestination::AmpSustain, synth::ModDestination::AmpRelease
 };
 
 struct StripGroup
@@ -182,7 +187,8 @@ enum class DragTarget
     LayoutVSplit, LayoutRackSplit, LayoutStripSplit,
     StripScroll, ModEntryDepth,
     FxInsertKnob,
-    DisperserStageFreq, DisperserStageQ
+    DisperserStageFreq, DisperserStageQ,
+    ModSyncDiv, UiTempo
 };
 
 enum class MetaEditorDomain
@@ -377,6 +383,14 @@ inline const char *destName(synth::ModDestination d)
         case synth::ModDestination::InsertP2: return "Fx P3";
         case synth::ModDestination::InsertP3: return "Fx P4";
         case synth::ModDestination::OscModDepth: return "Osc Mod";
+        case synth::ModDestination::PvCutoff: return "Flt Cut";
+        case synth::ModDestination::PvReso: return "Flt Res";
+        case synth::ModDestination::PvDrive: return "Flt Drv";
+        case synth::ModDestination::PvMix: return "Flt Mix";
+        case synth::ModDestination::AmpAttack: return "Env A";
+        case synth::ModDestination::AmpDecay: return "Env D";
+        case synth::ModDestination::AmpSustain: return "Env S";
+        case synth::ModDestination::AmpRelease: return "Env R";
     }
     return "Dest";
 }

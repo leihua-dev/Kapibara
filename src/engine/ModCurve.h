@@ -57,6 +57,35 @@ inline float pointCurveEval(const MatrixEnvPoint *points, int pointCount, float 
 }
 
 // -----------------------------------------------------------------------------
+// Tempo sync
+// A division is how many beats ONE cycle of the curve spans, so 1/4 completes
+// once per beat and 1/1 once per bar. Ordered slow -> fast, which is the order
+// the UI steps through.
+// -----------------------------------------------------------------------------
+struct SyncDivision
+{
+    const char *name;
+    float beats;
+};
+
+inline constexpr SyncDivision kSyncDivs[] = {
+    { "8/1", 32.0f },     { "4/1", 16.0f },     { "2/1", 8.0f },
+    { "1/1", 4.0f },      { "1/2.", 3.0f },     { "1/2", 2.0f },
+    { "1/2T", 4.0f / 3 }, { "1/4.", 1.5f },     { "1/4", 1.0f },
+    { "1/4T", 2.0f / 3 }, { "1/8.", 0.75f },    { "1/8", 0.5f },
+    { "1/8T", 1.0f / 3 }, { "1/16.", 0.375f },  { "1/16", 0.25f },
+    { "1/16T", 1.0f / 6 },{ "1/32", 0.125f },   { "1/64", 0.0625f }
+};
+inline constexpr int kSyncDivCount = int(sizeof(kSyncDivs) / sizeof(kSyncDivs[0]));
+inline constexpr int kSyncDivDefault = 8; // 1/4 — one cycle per beat
+inline constexpr float kFallbackBpm = 120.0f;
+
+inline int clampSyncDiv(int d)
+{
+    return d < 0 ? 0 : (d >= kSyncDivCount ? kSyncDivCount - 1 : d);
+}
+
+// -----------------------------------------------------------------------------
 // Unified modulator slot
 // loop=true  → continuous phase (LFO behavior, retriggers on note-on)
 // loop=false → one-shot from note-on, holds at end
@@ -67,6 +96,12 @@ struct ModSlotParams
     bool enabled = false;
     bool loop = true;
     float rateHz = 1.0f;
+    // Tempo sync. rateHz is kept untouched while synced, so switching back to
+    // TIME returns to the free rate the user last dialled in. Appended to the
+    // struct and defaulted off, so a preset saved before sync existed loads
+    // free-running at exactly the rate it stored.
+    bool tempoSync = false;
+    uint8_t syncDiv = uint8_t(kSyncDivDefault);
     int pointCount = 4;
     std::array<MatrixEnvPoint, kMaxMatrixEnvPoints> points {
         MatrixEnvPoint { 0.0f, 0.5f, 0.0f },
@@ -75,6 +110,18 @@ struct ModSlotParams
         MatrixEnvPoint { 1.0f, 0.5f, 0.0f }
     };
 };
+
+// The rate a slot actually runs at. Single source of truth: the global matrix
+// phase, every voice's phase and the UI readout all go through it, so a synced
+// modulator cannot drift between them.
+inline float modSlotRateHz(const ModSlotParams &p, float bpm)
+{
+    if(!p.tempoSync)
+        return p.rateHz > 0.0f ? p.rateHz : 0.0f;
+    const float beats = kSyncDivs[clampSyncDiv(int(p.syncDiv))].beats;
+    const float hz = (bpm > 0.0f ? bpm : kFallbackBpm) / 60.0f / beats;
+    return hz > 0.0f ? hz : 0.0f;
+}
 
 // -----------------------------------------------------------------------------
 // Chaos source

@@ -37,6 +37,9 @@
     int selectedMatrixModSlot_ = 0;  // unified matrix LFO1-4 (0-3) / ENV1-4 (4-7) selection
     int envDragSeg_ = -1;            // segment whose curvature is being Ctrl-dragged
     Rect modModeRect_ {}, modEnvRateRect_ {};
+    // Tempo sync row of the selected modulator slot.
+    Rect modSyncToggleRect_ {}, modSyncDivDownRect_ {}, modSyncDivUpRect_ {}, modBpmRect_ {};
+    float uiTempoBpm_ = synth::kFallbackBpm;   // used when the host reports none
     Rect ampAdsrRect_ {};
     float ampAdsrXA_ = 0.0f, ampAdsrXD_ = 0.0f, ampAdsrXS_ = 0.0f, ampAdsrXR_ = 0.0f;
     int ampAdsrDragSeg_ = -1;  // 0=attack 1=decay 2=release

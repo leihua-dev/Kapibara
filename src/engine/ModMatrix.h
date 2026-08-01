@@ -58,10 +58,49 @@ enum class ModDestination : uint8_t
     InsertP3,
     // Depth of a Basic Oscillator rack's own cross-unit modulation. Scoped to a
     // track, not a partial — the rule's targetTrackId picks the rack.
-    OscModDepth
+    OscModDepth,
+    // Per-voice filter bank. The bank is global (every track's runtime carries
+    // the same four filters), so these key on the rule's targetSlot alone.
+    // APPEND ONLY: the enum value is what presets store.
+    PvCutoff,
+    PvReso,
+    PvDrive,
+    PvMix,
+    // Shared amp envelopes, keyed by targetSlot (0..kMaxAmpEnvs-1). The three
+    // time stages are scaled, sustain is offset.
+    AmpAttack,
+    AmpDecay,
+    AmpSustain,
+    AmpRelease
 };
 
-constexpr int kModDestinationCount = int(ModDestination::OscModDepth) + 1;
+constexpr int kModDestinationCount = int(ModDestination::AmpRelease) + 1;
+
+// Destinations that are neither per-partial nor per-insert: they address one
+// slot of a global bank, so a rule needs no target track for them.
+inline int pvFilterParamForDest(ModDestination d)
+{
+    switch(d)
+    {
+        case ModDestination::PvCutoff: return 0;
+        case ModDestination::PvReso: return 1;
+        case ModDestination::PvDrive: return 2;
+        case ModDestination::PvMix: return 3;
+        default: return -1;
+    }
+}
+
+inline int ampEnvParamForDest(ModDestination d)
+{
+    switch(d)
+    {
+        case ModDestination::AmpAttack: return 0;
+        case ModDestination::AmpDecay: return 1;
+        case ModDestination::AmpSustain: return 2;
+        case ModDestination::AmpRelease: return 3;
+        default: return -1;
+    }
+}
 
 constexpr int kMaxModInserts = 8;
 constexpr int kInsertModParams = 4;
@@ -77,6 +116,25 @@ inline int insertModParamForDest(ModDestination d)
         case ModDestination::InsertP3: return 3;
         default: return -1;
     }
+}
+
+// How many slots a destination addresses, or 0 if it is not slot-scoped. Two
+// rules that differ only by slot are DIFFERENT routes, so anything matching or
+// de-duplicating rules has to consult this.
+inline int destSlotCount(ModDestination d)
+{
+    if(insertModParamForDest(d) >= 0) return kMaxModInserts;
+    if(pvFilterParamForDest(d) >= 0) return kMaxPerVoiceFilters;
+    if(ampEnvParamForDest(d) >= 0) return kMaxAmpEnvs;
+    return 0;
+}
+
+// True when the slot addresses a GLOBAL bank, so the rule's target track is
+// meaningless and must stay 0 — otherwise the same bank slot picks up one rule
+// per selected track and the depths stack.
+inline bool destIsGlobalBank(ModDestination d)
+{
+    return pvFilterParamForDest(d) >= 0 || ampEnvParamForDest(d) >= 0;
 }
 
 enum class WeightMode : uint8_t
@@ -206,6 +264,10 @@ struct MatrixVoiceOutput
     std::array<float, kMaxPartials> dWarp {};
     // Per-track, not per-partial: see ModDestination::OscModDepth.
     std::array<float, kMaxSourceTracks> dOscMod {};
+    // Per-slot banks: [slot * 4 + param]. See pvFilterParamForDest /
+    // ampEnvParamForDest for the param order.
+    std::array<float, kMaxPerVoiceFilters * 4> dPvFilter {};
+    std::array<float, kMaxAmpEnvs * 4> dAmpEnv {};
 };
 
 inline void initMatrixOutput(MatrixVoiceOutput &o)
@@ -217,6 +279,8 @@ inline void initMatrixOutput(MatrixVoiceOutput &o)
     o.dMorph.fill(0.0f);
     o.dWarp.fill(0.0f);
     o.dOscMod.fill(0.0f);
+    o.dPvFilter.fill(0.0f);
+    o.dAmpEnv.fill(0.0f);
 }
 
 // -----------------------------------------------------------------------------
@@ -255,6 +319,9 @@ class ModMatrix
     void setMaskWaveBank(const MaskWaveBank *bank) { waveBank_ = bank; }
 
     void advanceControl(int samples);
+    // Host tempo for tempo-synced modulator slots. 0 = no transport;
+    // modSlotRateHz falls back to kFallbackBpm so a synced slot still runs.
+    void setTempoBpm(float bpm) { tempoBpm_ = bpm; }
 
     void evaluateForVoice(MatrixVoiceOutput &out,
                           const StaticSpectralFrame &frame,
@@ -392,6 +459,7 @@ class ModMatrix
     float crackleState_ = 0.371f;
     int chaosCounter_ = 0;
     double sampleRate_ = 48000.0;
+    float tempoBpm_ = 0.0f;
 };
 
 // Backward-compat alias so callers that still say MatrixEngine compile unchanged.

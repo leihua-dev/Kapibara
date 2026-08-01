@@ -134,8 +134,12 @@ void KapibaraUI::editMatrixEnvCurve(float x, float y)
         }
         else
         {
-            const float lo = pts[selectedEnvPoint_ - 1].x + 0.01f;
-            const float hi = pts[selectedEnvPoint_ + 1].x - 0.01f;
+            // Neighbours may be reached exactly: a zero-width segment is a
+            // vertical step, which is the only way to draw an instant jump.
+            // pointCurveEval takes the first segment whose x >= the phase, so
+            // stacked points read as a step, not a divide by zero.
+            const float lo = pts[selectedEnvPoint_ - 1].x;
+            const float hi = pts[selectedEnvPoint_ + 1].x;
             pt.x = clampf(nx, lo, hi);
             pt.y = ny;
         }

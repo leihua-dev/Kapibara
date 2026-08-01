@@ -174,6 +174,14 @@ void KapibaraPlugin::run(const float **inputs, float **outputs, uint32_t frames,
     for(uint32_t i = 0; i < midiEventCount; ++i)
         handleMidi(midiEvents[i]);
 
+    // Host transport. Hosts that report no valid BBT (and the standalone with no
+    // JACK transport) leave this at 0, which makes the core fall back to the
+    // tempo set in the UI rather than stalling every synced modulator.
+    const TimePosition &tp = getTimePosition();
+    core_.setHostTempoBpm(tp.bbt.valid && tp.bbt.beatsPerMinute > 0.0
+                              ? float(tp.bbt.beatsPerMinute)
+                              : 0.0f);
+
     (void)inputs;
     render(outputs, frames);
 }
