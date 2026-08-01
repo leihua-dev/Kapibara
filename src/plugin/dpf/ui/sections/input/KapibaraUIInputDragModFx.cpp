@@ -151,6 +151,10 @@ bool KapibaraUI::applyModFxLayoutDragValue(float x, float y)
                     commitChainChange(fxDragHit_.trackId, fxDragHit_.mergeIdx);
                 }
                 break;
+            case DragTarget::DisperserStageFreq:
+            case DragTarget::DisperserStageQ:
+                applyDisperserDrag(x, y);
+                break;
             case DragTarget::ModEntryDepth:
                 if(auto *t = currentTrack(); t != nullptr && selectedModSlot_ >= 0 && selectedModSlot_ < synth::kMaxTrackMods
                    && modEntryActive(t->mods[(size_t)selectedModSlot_]))

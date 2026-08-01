@@ -50,6 +50,9 @@ void KapibaraUI::drawRouteFxEditor(const Rect &region, std::vector<InsertEffect>
 void KapibaraUI::drawInsertPanel(const Rect &p, InsertEffect &e, int trackId, int mergeIdx, int insertIdx)
 {
         const bool byp = e.bypass;
+        // Only the focused panel below can own these; a rack panel drawn after
+        // it must not leave live rects behind.
+        clearDisperserRects();
         drawPanel(p, rgba(byp ? 0x10141aff : 0x10171bff), rgba(0x3b5560ff));
         // header
         fontSize(8.5f); fillColor(rgba(byp ? 0x6a7884ff : 0xc8d6dcff)); textAlign(ALIGN_LEFT | ALIGN_TOP);
@@ -100,6 +103,15 @@ void KapibaraUI::drawInsertPanel(const Rect &p, InsertEffect &e, int trackId, in
         // Response/transfer graph below the knobs (filter / eq / dist / comp).
         const float graphTop = knobsY + knobH + 6.0f + extraH;
         const float graphBot = p.y + p.h - 5.0f;
+        // Focused allpass: the whole pane is free, so the stage distribution
+        // gets drawn as an editable lane instead of a thumbnail response.
+        if(fxPanelFocused_ && e.kind == InsertFilter && synth::isAllpassAlgo(e.filter.algo)
+           && graphBot - graphTop > 150.0f)
+        {
+            drawDisperserEditor({ p.x + 5.0f, graphTop + 8.0f, p.w - 10.0f, graphBot - graphTop - 8.0f },
+                                e, trackId, mergeIdx, insertIdx);
+            return;
+        }
         if(fxHasGraph(e.kind) && graphBot - graphTop > 22.0f)
             drawInsertGraph({ p.x + 5.0f, graphTop, p.w - 10.0f, graphBot - graphTop }, e);
     }
@@ -266,6 +278,14 @@ void KapibaraUI::drawInsertGraph(const Rect &g, const InsertEffect &e)
         const int steps = std::max(8, int(g.w));
         const double sr = 48000.0;
 
+        if(e.kind == InsertFilter && synth::isAllpassAlgo(e.filter.algo))
+        {
+            // An allpass is flat by construction — drawing its magnitude would
+            // be a straight line saying nothing. Group delay is the dispersion.
+            resetScissor();
+            drawDisperserStageGraph(g, e.filter, -1);
+            return;
+        }
         if(e.kind == InsertFilter || e.kind == InsertEq)
         {
             // Log-frequency magnitude response, +/-24 dB window.

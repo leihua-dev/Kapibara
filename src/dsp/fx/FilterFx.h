@@ -25,17 +25,6 @@ struct FilterFxState
     }
 };
 
-// Unit-domain bend, same family as the modulation curves: c>0 pushes the
-// progression late, c<0 early, 0 is linear.
-inline float apBend01(float x, float c)
-{
-    c = c < -1.0f ? -1.0f : (c > 1.0f ? 1.0f : c);
-    if(std::abs(c) < 1.0e-4f)
-        return x;
-    return c >= 0.0f ? std::pow(x, 1.0f + c * 4.0f)
-                     : 1.0f - std::pow(1.0f - x, 1.0f - c * 4.0f);
-}
-
 // modOff: additive modulation offsets {cutoff(oct), reso, drive, mix}.
 inline void processFilter(float *L, float *R, int n, double sampleRate,
                           FilterSlotParams fs, FilterFxState &st, const float modOff[4])
@@ -64,10 +53,10 @@ inline void processFilter(float *L, float *R, int n, double sampleRate,
         const float nyq = float(sampleRate * 0.45);
         for(int k = 0; k < sections; ++k)
         {
-            const float t = sections > 1 ? float(k) / float(sections - 1) : 0.0f;
-            const float xb = apBend01(t, fs.apCurve) - 0.5f;
-            const float f = std::max(20.0f, std::min(nyq, fs.cutoffHz * std::pow(2.0f, fs.apSpread * 4.0f * xb)));
-            const float q = std::max(0.05f, std::min(10.0f, fs.resonance * (1.0f + fs.apQSpread * 1.5f * xb)));
+            float oct = 0.0f, qMul = 1.0f;
+            disperserStage(fs, sections, k, oct, qMul);
+            const float f = std::max(20.0f, std::min(nyq, fs.cutoffHz * std::pow(2.0f, oct)));
+            const float q = std::max(0.05f, std::min(10.0f, fs.resonance * qMul));
             const float w0 = 6.28318530717958647692f * f / float(sampleRate);
             const float cw = std::cos(w0);
             const float alpha = std::sin(w0) / (2.0f * q);

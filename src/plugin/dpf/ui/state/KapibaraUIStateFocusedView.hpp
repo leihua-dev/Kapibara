@@ -2,6 +2,15 @@
     uint32_t focusedNodeId_ = 0; // 0 = normal 3-panel top
     Rect focusedCloseRect_ {};
     bool fxPanelHideDelete_ = false; // hide the insert delete "x" (focus detail)
+    bool fxPanelFocused_ = false;    // insert panel has the whole focus pane to itself
+    // Disperser stage editor (focused allpass filter). Cleared at the top of every
+    // insert panel so a rack panel drawn afterwards can never leave them live.
+    Rect disperserFreqLaneRect_ {};
+    Rect disperserQLaneRect_ {};
+    std::array<Rect, 4> disperserShapeRects_ {}; // FLAT / MACRO / RANDOM / SMOOTH
+    int disperserLaneStages_ = 0;
+    int disperserSelStage_ = -1;
+    FxKnobHit disperserTarget_ {};   // which insert the lanes edit (knob field unused)
     int focusPage_ = 0;             // 0 = detail, 1 = structure (output router), 2 = osc-mod diagram (sources only)
     std::array<Rect, 3> focusPageTabRects_ {};
     Rect structAddOutRect_ {};

@@ -58,6 +58,7 @@ void KapibaraUI::drawFocusedNodeDetail(const Rect &r)
         pvChainKnobRects_.fill({}); pvChainAddRect_ = {}; pvChainCount_ = 0;
         fxKnobHits_.clear(); fxBypassHits_.clear(); fxDeleteHits_.clear(); fxModeHits_.clear();
         fxRackPanelRects_.clear();
+        clearDisperserRects();
 
         const uint32_t id = focusedNodeId_;
         const Rect content { r.x + 10.0f, r.y + 30.0f, r.w - 20.0f, r.h - 40.0f };
@@ -113,7 +114,9 @@ void KapibaraUI::drawFocusedNodeDetail(const Rect &r)
                 fxKnobHits_.clear(); fxBypassHits_.clear(); fxDeleteHits_.clear(); fxModeHits_.clear();
                 routeFxChainTrackId_ = -1; routeFxChainMerge_ = -1;
                 fxPanelHideDelete_ = true;
+                fxPanelFocused_ = true;
                 drawInsertPanel(content, (*chain)[(size_t)idx], int(tid), -1, idx);
+                fxPanelFocused_ = false;
                 fxPanelHideDelete_ = false;
             }
         }
@@ -184,6 +187,10 @@ bool KapibaraUI::handleFocusedDetailPress(float x, float y)
             return true;
         }
         const uint32_t id = focusedNodeId_;
+        // Disperser stage lanes: they exist only while this pane draws them, and
+        // claiming the press here keeps it away from the generic control chain.
+        if((id & 0xf0000000u) == 0x20000000u && handleDisperserEditorPress(x, y))
+            return true;
         if((id & 0xf0000000u) == 0x30000000u)
         {
             static const DragTarget tg[4] = { DragTarget::Attack, DragTarget::Decay,

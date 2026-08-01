@@ -66,7 +66,32 @@ struct FilterSlotParams
     float apSpread = 0.0f;   // -1..+1: section frequency spread, in octaves
     float apQSpread = 0.0f;  // -1..+1: section Q spread
     float apCurve = 0.0f;    // -1..+1: bend of the progression across sections
+    // Hand-drawn distribution, one entry per section. The three macros above are
+    // generators: they decide the shape until a section is dragged, at which
+    // point these arrays become the truth and the macros are no longer read.
+    // apCustom is what tells the two apart, so an old preset (whose blob tail
+    // decodes to zero) still plays exactly the macro shape it was saved with,
+    // and the arrays' zero-init never has to mean anything.
+    uint8_t apCustom = 0;
+    std::array<float, kMaxDisperserStages> apOct {};   // octaves off the cutoff
+    std::array<float, kMaxDisperserStages> apQMul {};  // x the resonance knob
 };
+
+// Unit-domain bend, same family as the modulation curves: c>0 pushes the
+// progression late, c<0 early, 0 is linear.
+inline float apBend01(float x, float c)
+{
+    x = x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x);
+    c = c < -1.0f ? -1.0f : (c > 1.0f ? 1.0f : c);
+    if(std::abs(c) < 1.0e-4f)
+        return x;
+    return c >= 0.0f ? std::pow(x, 1.0f + c * 4.0f)
+                     : 1.0f - std::pow(1.0f - x, 1.0f - c * 4.0f);
+}
+
+constexpr float kDisperserMaxOct = 4.0f;
+constexpr float kDisperserMinQMul = 0.1f;
+constexpr float kDisperserMaxQMul = 8.0f;
 
 inline int disperserSections(const FilterSlotParams &fs)
 {
@@ -83,6 +108,114 @@ inline int disperserSections(const FilterSlotParams &fs)
 inline bool isAllpassAlgo(InsertFilterAlgo a)
 {
     return a == InsertFilterAlgo::AP2 || a == InsertFilterAlgo::AP4 || a == InsertFilterAlgo::AP8;
+}
+
+// Where one section sits: octaves off the cutoff, and its Q as a multiple of
+// the resonance knob. The audio thread, the group-delay graph and the stage
+// editor all go through here, so the drawn distribution is the played one.
+inline void disperserStage(const FilterSlotParams &fs, int sections, int k,
+                           float &octOut, float &qMulOut)
+{
+    if(fs.apCustom != 0)
+    {
+        const int i = k < 0 ? 0 : (k >= kMaxDisperserStages ? kMaxDisperserStages - 1 : k);
+        octOut  = fs.apOct[(size_t)i];
+        qMulOut = fs.apQMul[(size_t)i];
+    }
+    else
+    {
+        const float t  = sections > 1 ? float(k) / float(sections - 1) : 0.0f;
+        const float xb = apBend01(t, fs.apCurve) - 0.5f;
+        octOut  = fs.apSpread * 4.0f * xb;
+        qMulOut = 1.0f + fs.apQSpread * 1.5f * xb;
+    }
+    octOut  = octOut < -kDisperserMaxOct ? -kDisperserMaxOct
+                                         : (octOut > kDisperserMaxOct ? kDisperserMaxOct : octOut);
+    qMulOut = qMulOut < kDisperserMinQMul ? kDisperserMinQMul
+                                          : (qMulOut > kDisperserMaxQMul ? kDisperserMaxQMul : qMulOut);
+}
+
+// Freeze the macro shape into the arrays so it can be hand-edited from exactly
+// where it sounded. Sections the count doesn't reach yet continue the ramp
+// linearly, so raising STAGES extends the sweep instead of piling new sections
+// on top of the last one.
+inline void disperserMaterialize(FilterSlotParams &fs)
+{
+    if(fs.apCustom != 0)
+        return;
+    const int n = disperserSections(fs);
+    float lastO = 0.0f, lastQ = 1.0f, stepO = 0.0f, stepQ = 0.0f;
+    for(int k = 0; k < n; ++k)
+    {
+        float o, q;
+        disperserStage(fs, n, k, o, q);
+        if(k == n - 1 && n > 1)
+        {
+            float po, pq;
+            disperserStage(fs, n, k - 1, po, pq);
+            stepO = o - po;
+            stepQ = q - pq;
+        }
+        fs.apOct[(size_t)k]  = o;
+        fs.apQMul[(size_t)k] = q;
+        lastO = o;
+        lastQ = q;
+    }
+    for(int k = n; k < kMaxDisperserStages; ++k)
+    {
+        lastO += stepO;
+        lastQ += stepQ;
+        fs.apOct[(size_t)k]  = lastO < -kDisperserMaxOct ? -kDisperserMaxOct
+                                                         : (lastO > kDisperserMaxOct ? kDisperserMaxOct : lastO);
+        fs.apQMul[(size_t)k] = lastQ < kDisperserMinQMul ? kDisperserMinQMul
+                                                         : (lastQ > kDisperserMaxQMul ? kDisperserMaxQMul : lastQ);
+    }
+    fs.apCustom = 1;
+}
+
+// Group delay of the whole cascade, in ms. An allpass has flat magnitude, so
+// this curve IS the effect: it is what the editor's graph plots.
+inline float disperserGroupDelayMs(const FilterSlotParams &fs, float freqHz, double sampleRate)
+{
+    const int sections = disperserSections(fs);
+    const float w = 6.28318530717958647692f * freqHz / float(sampleRate);
+    const float nyq = float(sampleRate * 0.45);
+    float total = 0.0f;
+    for(int k = 0; k < sections; ++k)
+    {
+        float oct = 0.0f, qMul = 1.0f;
+        disperserStage(fs, sections, k, oct, qMul);
+        const float f = std::max(20.0f, std::min(nyq, fs.cutoffHz * std::pow(2.0f, oct)));
+        const float q = std::max(0.05f, std::min(10.0f, fs.resonance * qMul));
+        const float w0 = 6.28318530717958647692f * f / float(sampleRate);
+        const float alpha = std::sin(w0) / (2.0f * q);
+        const float a0 = 1.0f + alpha;
+        const float a1 = (-2.0f * std::cos(w0)) / a0;
+        const float a2 = (1.0f - alpha) / a0;
+        // Poles r*e^(+-j0). An allpass' group delay is the sum of the Poisson
+        // kernel over its poles — exact, and far steadier than differencing a
+        // wrapped phase response.
+        const float r = std::sqrt(std::max(0.0f, a2));
+        if(r < 1.0e-5f || r >= 1.0f)
+            continue;
+        const float ct = std::max(-1.0f, std::min(1.0f, -a1 / (2.0f * r)));
+        const float th = std::acos(ct);
+        const float num = 1.0f - r * r;
+        const float d1 = 1.0f - 2.0f * r * std::cos(w - th) + r * r;
+        const float d2 = 1.0f - 2.0f * r * std::cos(w + th) + r * r;
+        total += num / std::max(1.0e-6f, d1) + num / std::max(1.0e-6f, d2);
+    }
+    return total / float(sampleRate) * 1000.0f;
+}
+
+// Section frequency in Hz, clamped away from DC and Nyquist.
+inline float disperserStageHz(const FilterSlotParams &fs, int sections, int k, double sampleRate)
+{
+    float oct = 0.0f, qm = 1.0f;
+    disperserStage(fs, sections, k, oct, qm);
+    const float nyq = float(sampleRate * 0.45);
+    const float f = fs.cutoffHz * std::pow(2.0f, oct);
+    return f < 20.0f ? 20.0f : (f > nyq ? nyq : f);
 }
 
 struct DistSlotParams

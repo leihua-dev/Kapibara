@@ -170,6 +170,13 @@ class KapibaraUI final : public KapibaraUIDrawing
     void drawInsertGraph(const Rect &g, const InsertEffect &e);
     bool handleRouteFxClick(float x, float y);
 
+    // fx/KapibaraUIDisperserEditor
+    void drawDisperserStageGraph(const Rect &g, const synth::FilterSlotParams &fs, int selStage);
+    void drawDisperserEditor(const Rect &r, InsertEffect &e, int trackId, int mergeIdx, int insertIdx);
+    bool handleDisperserEditorPress(float x, float y);
+    void applyDisperserDrag(float x, float y);
+    void clearDisperserRects();
+
     // KapibaraUIModEditor
     bool modSourceCausesCycle(int targetIdx, int srcIdx) const;
     static bool trackHasAnyMod(const synth::SourceTrackParams &t);

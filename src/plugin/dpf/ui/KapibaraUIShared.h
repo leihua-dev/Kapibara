@@ -181,7 +181,8 @@ enum class DragTarget
     MetaFrameScroll,
     LayoutVSplit, LayoutRackSplit, LayoutStripSplit,
     StripScroll, ModEntryDepth,
-    FxInsertKnob
+    FxInsertKnob,
+    DisperserStageFreq, DisperserStageQ
 };
 
 enum class MetaEditorDomain
@@ -443,9 +444,13 @@ inline const char *fxKnobName(int kind, int i)
     static const char *R[4] = { "Size", "Decay", "Mix", "Damp" };
     static const char *V[4] = { "Mix", "Gain", "PreDly", "-" };
     static const char *M[4] = { "Low/Mid", "Mid/High", "-", "-" };
+    if(kind == InsertFilter)
+        return F[i < 0 ? 0 : (i > 7 ? 7 : i)];
+    // Everything else has four; callers only ask for 4..7 on the filter, but
+    // that is a caller contract and this table must not be read past its end.
+    i = i < 0 ? 0 : (i > 3 ? 3 : i);
     switch(kind)
     {
-        case InsertFilter: return F[i];
         case InsertDist: return D[i];
         case InsertEq: return E[i];
         case InsertComp: return C[i];
@@ -612,11 +617,13 @@ inline void fxKnobSetNorm(InsertEffect &e, int i, float n)
                 case 1: f.resonance = 0.05f + n * 9.95f; break;
                 case 2: f.drive = 1.0f + n * 15.0f; break;
                 case 3: f.mix = n; break;
-                // Disperser row (allpass algos only).
+                // Disperser row (allpass algos only). Spread/Pinch/Curve are
+                // generators: turning one re-draws the whole distribution from
+                // the macros, discarding hand edits the way a shape preset does.
                 case 4: f.apStages = uint8_t(1 + int(n * float(synth::kMaxDisperserStages - 1) + 0.5f)); break;
-                case 5: f.apSpread = n * 2.0f - 1.0f; break;
-                case 6: f.apQSpread = n * 2.0f - 1.0f; break;
-                default: f.apCurve = n * 2.0f - 1.0f; break;
+                case 5: f.apSpread  = n * 2.0f - 1.0f; f.apCustom = 0; synth::disperserMaterialize(f); break;
+                case 6: f.apQSpread = n * 2.0f - 1.0f; f.apCustom = 0; synth::disperserMaterialize(f); break;
+                default: f.apCurve  = n * 2.0f - 1.0f; f.apCustom = 0; synth::disperserMaterialize(f); break;
             }
             break;
         }
