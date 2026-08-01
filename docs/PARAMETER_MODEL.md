@@ -107,6 +107,24 @@ Strip insert kinds (`dsp/InsertEffects.h`, DSP in `dsp/fx/`): filter,
 distortion, EQ, compressor, delay, reverb, convolution reverb, multiband.
 Four macro parameters per insert (P0–P3) are matrix-modulatable.
 
+The filter's allpass algos (AP2/AP4/AP8) are a **disperser**: a cascade of up
+to `kMaxDisperserStages` second-order allpass sections, each with its own
+frequency and Q. Magnitude stays flat and only phase moves, so a transient is
+smeared into a descending chirp. Four extra controls appear for these algos and
+only these algos:
+
+- **Stages** — 1..32 sections. Total delay scales with the count.
+- **Spread** — walks the section frequencies across ±2 octaves around Cutoff.
+  This is what makes it a disperser rather than a plain phase shift: with
+  Spread at 0 every section is identical and the behaviour reduces exactly to
+  the historic cascade.
+- **Pinch** — the same idea applied to section Q.
+- **Curve** — bends the progression across the cascade (same bend family as the
+  modulation curves), which decides *which* bands lag.
+
+`apStages = 0` means "use the count the algo implies" (AP2/AP4/AP8 → 1/2/4), so
+presets written before these controls existed sound exactly as they did.
+
 Source mods (`SourceModEntry`): a track can be modulated by another track via
 AM, RingMod, FM, PM, or hard sync, with a depth control, rendered per voice.
 

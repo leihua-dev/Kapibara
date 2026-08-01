@@ -433,7 +433,9 @@ inline synth::MultibandSlotParams &ensureMultibandParams(InsertEffect &e)
 
 inline const char *fxKnobName(int kind, int i)
 {
-    static const char *F[4] = { "Cutoff", "Q", "Drive", "Mix" };
+    // Filter knobs 4..7 exist only for the allpass (disperser) algos.
+    static const char *F[8] = { "Cutoff", "Q", "Drive", "Mix",
+                                "Stages", "Spread", "Pinch", "Curve" };
     static const char *D[4] = { "Drive", "Bias", "Mix", "Out" };
     static const char *E[4] = { "Low", "Mid", "High", "MidHz" };
     static const char *C[4] = { "Thr", "Ratio", "Atk", "Makeup" };
@@ -466,7 +468,12 @@ inline float fxKnobNorm(const InsertEffect &e, int i)
                 case 0: return std::log10(std::max(20.0f, f.cutoffHz) / 20.0f) / std::log10(1000.0f);
                 case 1: return clampf((f.resonance - 0.05f) / 9.95f, 0.0f, 1.0f);
                 case 2: return clampf((f.drive - 1.0f) / 15.0f, 0.0f, 1.0f);
-                default: return f.mix;
+                case 3: return f.mix;
+                case 4: return clampf(float(std::max<int>(1, synth::disperserSections(f)) - 1)
+                                          / float(synth::kMaxDisperserStages - 1), 0.0f, 1.0f);
+                case 5: return clampf(f.apSpread * 0.5f + 0.5f, 0.0f, 1.0f);
+                case 6: return clampf(f.apQSpread * 0.5f + 0.5f, 0.0f, 1.0f);
+                default: return clampf(f.apCurve * 0.5f + 0.5f, 0.0f, 1.0f);
             }
         }
         case InsertDist: {
@@ -549,7 +556,13 @@ inline float fxKnobDisp(const InsertEffect &e, int i)
     {
         case InsertFilter: {
             const auto &f = e.filter;
-            switch(i) { case 0: return f.cutoffHz; case 1: return f.resonance; case 2: return f.drive; default: return f.mix; }
+            switch(i) {
+                case 0: return f.cutoffHz; case 1: return f.resonance;
+                case 2: return f.drive;    case 3: return f.mix;
+                case 4: return float(synth::disperserSections(f));
+                case 5: return f.apSpread; case 6: return f.apQSpread;
+                default: return f.apCurve;
+            }
         }
         case InsertDist: {
             const auto &d = e.dist;
@@ -594,7 +607,17 @@ inline void fxKnobSetNorm(InsertEffect &e, int i, float n)
     {
         case InsertFilter: {
             auto &f = e.filter;
-            switch(i) { case 0: f.cutoffHz = 20.0f * std::pow(1000.0f, n); break; case 1: f.resonance = 0.05f + n * 9.95f; break; case 2: f.drive = 1.0f + n * 15.0f; break; default: f.mix = n; break; }
+            switch(i) {
+                case 0: f.cutoffHz = 20.0f * std::pow(1000.0f, n); break;
+                case 1: f.resonance = 0.05f + n * 9.95f; break;
+                case 2: f.drive = 1.0f + n * 15.0f; break;
+                case 3: f.mix = n; break;
+                // Disperser row (allpass algos only).
+                case 4: f.apStages = uint8_t(1 + int(n * float(synth::kMaxDisperserStages - 1) + 0.5f)); break;
+                case 5: f.apSpread = n * 2.0f - 1.0f; break;
+                case 6: f.apQSpread = n * 2.0f - 1.0f; break;
+                default: f.apCurve = n * 2.0f - 1.0f; break;
+            }
             break;
         }
         case InsertDist: {

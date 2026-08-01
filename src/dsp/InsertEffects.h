@@ -44,6 +44,12 @@ enum class InsertDistAlgo : uint8_t
     SoftClip = 0, HardClip, Tube, Diode, FoldBack, SineFold, BitCrush, Tanh
 };
 
+// Disperser-style allpass cascade. The AP algos used to be a cascade of at most
+// four IDENTICAL sections, which is a plain phase shift; smearing a transient
+// into a descending "pew" needs many sections AND a different frequency per
+// section, so the group delay varies across the spectrum.
+constexpr int kMaxDisperserStages = 32;
+
 struct FilterSlotParams
 {
     bool enabled = false;
@@ -53,7 +59,31 @@ struct FilterSlotParams
     float gainDb = 0.0f;   // retained for Peak/Shelf coefficient math (not user-exposed)
     float drive = 1.0f;    // 1..16 input saturation into the filter
     float mix = 1.0f;
+    // Allpass-only. Appending these is safe for old presets: the hex blob reader
+    // stops at the end of the stored string and leaves the tail at its defaults,
+    // and apStages = 0 keeps the historic AP2/AP4/AP8 section counts exactly.
+    uint8_t apStages = 0;    // 0 = derive from the algo (AP2/AP4/AP8 -> 1/2/4)
+    float apSpread = 0.0f;   // -1..+1: section frequency spread, in octaves
+    float apQSpread = 0.0f;  // -1..+1: section Q spread
+    float apCurve = 0.0f;    // -1..+1: bend of the progression across sections
 };
+
+inline int disperserSections(const FilterSlotParams &fs)
+{
+    if(fs.apStages != 0)
+        return fs.apStages < kMaxDisperserStages ? int(fs.apStages) : kMaxDisperserStages;
+    switch(fs.algo)
+    {
+        case InsertFilterAlgo::AP4: return 2;
+        case InsertFilterAlgo::AP8: return 4;
+        default: return 1;
+    }
+}
+
+inline bool isAllpassAlgo(InsertFilterAlgo a)
+{
+    return a == InsertFilterAlgo::AP2 || a == InsertFilterAlgo::AP4 || a == InsertFilterAlgo::AP8;
+}
 
 struct DistSlotParams
 {

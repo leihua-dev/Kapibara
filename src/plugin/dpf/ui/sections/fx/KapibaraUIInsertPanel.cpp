@@ -82,8 +82,23 @@ void KapibaraUI::drawInsertPanel(const Rect &p, InsertEffect &e, int trackId, in
             drawKnob(kr, fxKnobName(e.kind, i), fxKnobNorm(e, i), fxKnobDisp(e, i));
             fxKnobHits_.push_back(FxKnobHit { kr, trackId, mergeIdx, insertIdx, i });
         }
+        // Disperser row: the allpass algos have four more controls, and only
+        // they do — drawing them for a lowpass would be four dead knobs.
+        float extraH = 0.0f;
+        if(e.kind == InsertFilter && synth::isAllpassAlgo(e.filter.algo))
+        {
+            const float row2Y = knobsY + knobH + 4.0f;
+            for(int i = 4; i < 8; ++i)
+            {
+                const Rect kr { p.x + 4.0f + float(i - 4) * (kw + 1.0f), row2Y, kw, knobH };
+                drawKnob(kr, fxKnobName(e.kind, i), fxKnobNorm(e, i), fxKnobDisp(e, i));
+                fxKnobHits_.push_back(FxKnobHit { kr, trackId, mergeIdx, insertIdx, i });
+            }
+            extraH = knobH + 4.0f;
+        }
+
         // Response/transfer graph below the knobs (filter / eq / dist / comp).
-        const float graphTop = knobsY + knobH + 6.0f;
+        const float graphTop = knobsY + knobH + 6.0f + extraH;
         const float graphBot = p.y + p.h - 5.0f;
         if(fxHasGraph(e.kind) && graphBot - graphTop > 22.0f)
             drawInsertGraph({ p.x + 5.0f, graphTop, p.w - 10.0f, graphBot - graphTop }, e);
