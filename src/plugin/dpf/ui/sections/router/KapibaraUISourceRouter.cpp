@@ -81,10 +81,26 @@ void KapibaraUI::drawSourceRouter(const Rect &r)
             const Rect outP { row.x + row.w - 5.0f, row.y + row.h * 0.5f - 5.0f, 10.0f, 10.0f };
             sourceRouterOutputRects_[(size_t)i] = outP;
             routePortHits_.push_back(RoutePortHit { outP, synth::GridPortRef { sourceRouterNodeId(track.id), 0 }, true });
+            // Lit only when this source actually reaches MASTER. Whether a
+            // source is audible was previously invisible — the port dot looked
+            // identical wired or not, so "it is playing but nothing is
+            // connected to it" had no way to show itself.
             beginPath();
             ellipse(outP.x + outP.w * 0.5f, outP.y + outP.h * 0.5f, 5.0f, 5.0f);
-            fillColor(selected ? DesignTokens::accentGreen() : rgba(0x70d77aaa));
+            fillColor(track.connectedToMaster
+                          ? (selected ? DesignTokens::accentGreen() : rgba(0x70d77aaa))
+                          : rgba(0x3a4750ff));
             fill();
+            if(!track.connectedToMaster)
+            {
+                // Hollow ring: unmistakably "no path to MASTER" rather than a
+                // slightly darker green.
+                beginPath();
+                ellipse(outP.x + outP.w * 0.5f, outP.y + outP.h * 0.5f, 5.0f, 5.0f);
+                strokeColor(DesignTokens::textSecondary().withAlpha(0.75f));
+                strokeWidth(1.2f);
+                stroke();
+            }
         }
 
         // --- OSC MOD wires: arcs along the column's left margin from modulator row

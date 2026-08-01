@@ -1459,6 +1459,15 @@ void SynthCore::renderStripBuses(float *left, float *right, int numSamples,
             for(int t = 0; t < rc; ++t)
                 if(snap->trackRuntime[(size_t)t].trackId == id)
                 {
+                    // A merge group only SUMS its members' buses — it is not a
+                    // route to MASTER and owns no node in the wire graph. So
+                    // membership must not make an unwired source audible: the
+                    // same gate the ungrouped path applies belongs here too.
+                    // Without it, dropping a source into a group overrode the
+                    // router entirely and the source played with nothing
+                    // connected to it.
+                    if(!snap->trackRuntime[(size_t)t].connectedToMaster)
+                        continue;
                     grouped[(size_t)t] = true;
                     for(int s = 0; s < numSamples; ++s)
                     {
