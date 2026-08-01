@@ -270,6 +270,7 @@ class KapibaraUI final : public KapibaraUIDrawing
     void drawMatrixDashboard(const Rect &r);
     void drawMatrixModulators(const Rect &r);
     void drawMatrixAmpEnv(const Rect &r);
+    void drawMatrixChaosShape(const Rect &r);
     void drawGridAxisPicker();
     void enableModSource(synth::ModSource src);
     void drawMatrixRoutes(const Rect &r);

@@ -320,8 +320,8 @@ bool KapibaraUI::handleControlPress(float x, float y)
         if(chaosAmountRect_.contains(x, y)) return setDragKnob(DragTarget::ChaosAmount, chaos_.amount);
         if(shapePhaseRect_.contains(x, y))  return setDragKnob(DragTarget::ShapePhase,  shape_.phase0);
         if(shapeRhoRect_.contains(x, y))    return setDragKnob(DragTarget::ShapeRho,    shape_.rho);
-        if(shapeUpRect_.contains(x, y))     return setDragKnob(DragTarget::ShapeUp,     shape_.pUp / 8.0f);
-        if(shapeDownRect_.contains(x, y))   return setDragKnob(DragTarget::ShapeDown,   shape_.pDown / 8.0f);
+        if(shapeUpRect_.contains(x, y))     return setDragKnob(DragTarget::ShapeUp,     (shape_.pUp - 0.1f) / 7.9f);
+        if(shapeDownRect_.contains(x, y))   return setDragKnob(DragTarget::ShapeDown,   (shape_.pDown - 0.1f) / 7.9f);
         if(eqLowRect_.contains(x, y))    return setDragKnob(DragTarget::EqLow,       (effects_.eq.lowGainDb  + 24.0f) / 48.0f);
         if(eqMidRect_.contains(x, y))    return setDragKnob(DragTarget::EqMid,       (effects_.eq.midGainDb  + 24.0f) / 48.0f);
         if(eqHighRect_.contains(x, y))   return setDragKnob(DragTarget::EqHigh,      (effects_.eq.highGainDb + 24.0f) / 48.0f);

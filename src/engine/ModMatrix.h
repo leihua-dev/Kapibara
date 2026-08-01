@@ -277,10 +277,13 @@ class ModMatrix
     static float applyTransfer(const MatrixRule &r, float m);
     // Unit-domain bend used by transfer curves and the mask-group fan progression.
     static float bend01(float x, float c);
+    // The Shape source's value at spectral position x. Public/static for the same
+    // reason as applyTransfer: the UI plots it, and a lookalike drawn from its own
+    // formula would drift from what is evaluated.
+    static float shapeOutput(const ShapeSourceParams &p, float x);
 
   private:
     static float weightFn(const MatrixRule &r, int i, const StaticSpectralFrame &frame);
-    static float shapeOutput(const ShapeSourceParams &p, float x);
 
     // Spatial-mask lookup table: each slot's curve is baked to a small LUT when
     // its points change (dirty-checked in setParams — which runs per control

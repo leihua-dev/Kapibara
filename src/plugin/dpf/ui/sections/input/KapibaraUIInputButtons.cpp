@@ -145,6 +145,33 @@ bool KapibaraUI::handleButtonClick(float x, float y)
                 return true;
             }
         }
+        // CHAOS / SHAPE editor buttons. The knobs were already wired to drag
+        // targets; these four toggles had no handler because nothing drew them.
+        if(chaosEnableRect_.w > 0.0f && chaosEnableRect_.contains(x, y))
+        {
+            chaos_.enabled = !chaos_.enabled;
+            pushChaosOnly();
+            return true;
+        }
+        if(chaosTypeRect_.w > 0.0f && chaosTypeRect_.contains(x, y))
+        {
+            chaos_.type = static_cast<synth::ChaosNoiseType>((int(chaos_.type) + 1) % 3);
+            chaos_.enabled = true;   // picking a type means wanting to hear it
+            pushChaosOnly();
+            return true;
+        }
+        if(shapeTypeRect_.w > 0.0f && shapeTypeRect_.contains(x, y))
+        {
+            shape_.shape = static_cast<synth::LfoShape>((int(shape_.shape) + 1) % 5);
+            pushShapeOnly();
+            return true;
+        }
+        if(shapeAxisRect_.w > 0.0f && shapeAxisRect_.contains(x, y))
+        {
+            shape_.useSpectralX = !shape_.useSpectralX;
+            pushShapeOnly();
+            return true;
+        }
         if(auto *track = currentTrack())
         {
             if(ampEnvSelectRect_.contains(x, y))

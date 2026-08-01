@@ -31,4 +31,5 @@
     std::vector<std::array<float, kMaskPreviewLut + 1>> maskPreviewLut_;
     Rect matrixToolbarRect_ {};    // toolbar MATRIX entry button
     Rect matrixViewCloseRect_ {};  // close X of the top-row matrix view
-    Rect chaosEnableRect_ {}, chaosRateRect_ {}, chaosAmountRect_ {}, shapeAxisRect_ {}, shapePhaseRect_ {}, shapeRhoRect_ {}, shapeUpRect_ {}, shapeDownRect_ {};
+    Rect chaosEnableRect_ {}, chaosTypeRect_ {}, chaosRateRect_ {}, chaosAmountRect_ {};
+    Rect shapeTypeRect_ {}, shapeAxisRect_ {}, shapePhaseRect_ {}, shapeRhoRect_ {}, shapeUpRect_ {}, shapeDownRect_ {};

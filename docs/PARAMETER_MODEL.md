@@ -75,6 +75,13 @@ Defined in `engine/ModCurve.h` (sources) and `engine/ModMatrix.h` (rules):
   amount.
 - **Shape source** — spectral-domain static modulator
   (asymmetric/sine/square/triangle/S&H over partial index or spectral x).
+
+Chaos and Shape are edited in the bottom Modulators panel, reached by the CHAOS
+/ SHAPE chips in the strip above it. Chaos plots over time (it is a noise
+source); Shape plots over its axis (it is a distribution across simultaneous
+partials) and the plot calls `ModMatrix::shapeOutput` directly, so it cannot
+drift from what is evaluated. Rho/Up/Down only shape the Asymmetric curve and
+are not drawn for the others.
 - **16 routing rules** — source × weight × depth → destination, optionally
   scoped by stable source-track ID (`targetTrackId`) and insert slot
   (`targetSlot`).

@@ -100,12 +100,13 @@ void KapibaraUI::drawMatrixDashboard(const Rect &r)
         ruleEnableRect_ = {}; ruleSourceRect_ = {}; ruleDestRect_ = {}; ruleWeightRect_ = {};
         ruleDepthRect_ = {}; ruleBandLoRect_ = {}; ruleBandHiRect_ = {};
         for(auto &rc : ruleSelectRects_) rc = {};
-        chaosEnableRect_ = {}; shapeAxisRect_ = {};
+        chaosEnableRect_ = {}; chaosTypeRect_ = {}; shapeTypeRect_ = {}; shapeAxisRect_ = {};
         chaosRateRect_ = {}; chaosAmountRect_ = {};
         shapePhaseRect_ = {}; shapeRhoRect_ = {}; shapeUpRect_ = {}; shapeDownRect_ = {};
 
-        if(matrixTab_ == 2) drawMatrixAmpEnv(body);
-        else                drawMatrixModulators(body);
+        if(matrixTab_ == 2)      drawMatrixAmpEnv(body);
+        else if(matrixTab_ == 3) drawMatrixChaosShape(body);
+        else                     drawMatrixModulators(body);
     }
 
 void KapibaraUI::drawMatrixModulators(const Rect &r)
@@ -165,6 +166,144 @@ void KapibaraUI::drawMatrixAmpEnv(const Rect &r)
 
 // Small transfer-bend widget: a groove box with the bend curve; drag vertically
 // to adjust concavity (0 = straight diagonal).
+// CHAOS + SHAPE. Both are matrix sources with no editor until now: the params,
+// the sync calls and all six drag targets already existed, nothing ever drew
+// them. Reached from the CHAOS / SHAPE chips in the strip above.
+void KapibaraUI::drawMatrixChaosShape(const Rect &r)
+{
+        chaosEnableRect_ = {}; chaosTypeRect_ = {}; chaosRateRect_ = {}; chaosAmountRect_ = {};
+        shapeTypeRect_ = {}; shapeAxisRect_ = {}; shapePhaseRect_ = {};
+        shapeRhoRect_ = {}; shapeUpRect_ = {}; shapeDownRect_ = {};
+
+        const float colW = (r.w - 16.0f) * 0.5f;
+        const Rect left { r.x, r.y, colW, r.h };
+        const Rect right { r.x + colW + 16.0f, r.y, colW, r.h };
+
+        // ---- CHAOS: a noise source, so plot it over TIME -------------------
+        drawGroupLabel(left.x, left.y, "CHAOS");
+        float y = left.y + 16.0f;
+        chaosEnableRect_ = { left.x, y, 52.0f, 20.0f };
+        drawButton(chaosEnableRect_, "ON", chaos_.enabled);
+        static const char *kChaosNames[3] = { "WHITE", "SMOOTH", "CRACKLE" };
+        chaosTypeRect_ = { left.x + 58.0f, y, 92.0f, 20.0f };
+        drawButton(chaosTypeRect_, kChaosNames[clampi(int(chaos_.type), 0, 2)], true);
+        y += 26.0f;
+        const float kw = std::min(78.0f, (colW - 12.0f) * 0.5f);
+        chaosRateRect_ = { left.x, y, kw, 46.0f };
+        chaosAmountRect_ = { left.x + kw + 12.0f, y, kw, 46.0f };
+        drawKnob(chaosRateRect_, "Rate", chaos_.frequencyHz / 60.0f, chaos_.frequencyHz);
+        drawKnob(chaosAmountRect_, "Amount", chaos_.amount, chaos_.amount);
+        y += 52.0f;
+
+        const float plotH = (left.y + left.h) - y;
+        if(plotH >= 40.0f)
+        {
+            const Rect plot { left.x, y, colW, plotH };
+            drawPlotBackground(plot, 8, 4);
+            scissor(plot.x + 2.0f, plot.y + 2.0f, plot.w - 4.0f, plot.h - 4.0f);
+            const float mid = plot.y + plot.h * 0.5f;
+            // Run the engine's own chaos recurrence offline over the plot width.
+            // A hand-drawn lookalike would stop matching the moment the DSP moved.
+            const int n = clampi(int(plot.w), 64, 512);
+            const int interval = std::max(1, int(float(n) / std::max(0.5f, chaos_.frequencyHz * 0.25f)));
+            float value = 0.0f, target = 0.0f, crackle = 0.371f;
+            int counter = 0;
+            uint32_t seed = 1u;
+            beginPath();
+            for(int i = 0; i < n; ++i)
+            {
+                if(++counter >= interval)
+                {
+                    counter = 0;
+                    seed = seed * 1664525u + 1013904223u;
+                    const float u = float(seed >> 8) * (1.0f / 16777216.0f);
+                    target = 2.0f * u - 1.0f;
+                    if(chaos_.type == synth::ChaosNoiseType::White)
+                        value = target;
+                    else if(chaos_.type == synth::ChaosNoiseType::Crackle)
+                    {
+                        crackle = crackle * 1.997f + 0.217f + 0.07f * target;
+                        crackle -= std::floor(crackle);
+                        value = (crackle > 0.72f ? 1.0f : -0.35f) * std::abs(target);
+                    }
+                }
+                if(chaos_.type == synth::ChaosNoiseType::Smooth)
+                    value += 0.18f * (target - value);
+                const float v = clampf(value * chaos_.amount, -1.0f, 1.0f);
+                const float px = plot.x + (float(i) + 0.5f) * plot.w / float(n);
+                const float py = mid - v * plot.h * 0.42f;
+                if(i == 0) moveTo(px, py); else lineTo(px, py);
+            }
+            strokeColor(chaos_.enabled ? DesignTokens::accentCyan()
+                                       : DesignTokens::textSecondary().withAlpha(0.35f));
+            strokeWidth(1.3f);
+            stroke();
+            resetScissor();
+        }
+
+        // ---- SHAPE: a spectral distribution, so plot it over the AXIS ------
+        drawGroupLabel(right.x, right.y, "SHAPE");
+        y = right.y + 16.0f;
+        static const char *kShapeNames[5] = { "ASYM", "SINE", "SQUARE", "TRI", "S&H" };
+        shapeTypeRect_ = { right.x, y, 80.0f, 20.0f };
+        drawButton(shapeTypeRect_, kShapeNames[clampi(int(shape_.shape), 0, 4)], true);
+        shapeAxisRect_ = { right.x + 86.0f, y, 108.0f, 20.0f };
+        drawButton(shapeAxisRect_, shape_.useSpectralX ? "AXIS: SPECTRAL" : "AXIS: INDEX",
+                   shape_.useSpectralX);
+        y += 26.0f;
+        // Rho/Up/Down only shape the Asymmetric curve; the others ignore them, so
+        // they are not drawn (and their rects stay zeroed, so they take no clicks).
+        const bool asym = shape_.shape == synth::LfoShape::Asymmetric;
+        const int knobs = asym ? 4 : 1;
+        const float sw = std::min(78.0f, (colW - float(knobs - 1) * 8.0f) / float(knobs));
+        float kx = right.x;
+        shapePhaseRect_ = { kx, y, sw, 46.0f };
+        drawKnob(shapePhaseRect_, "Phase", shape_.phase0, shape_.phase0);
+        kx += sw + 8.0f;
+        if(asym)
+        {
+            shapeRhoRect_ = { kx, y, sw, 46.0f };
+            drawKnob(shapeRhoRect_, "Rho", shape_.rho, shape_.rho);
+            kx += sw + 8.0f;
+            shapeUpRect_ = { kx, y, sw, 46.0f };
+            drawKnob(shapeUpRect_, "Up", (shape_.pUp - 0.1f) / 7.9f, shape_.pUp);
+            kx += sw + 8.0f;
+            shapeDownRect_ = { kx, y, sw, 46.0f };
+            drawKnob(shapeDownRect_, "Down", (shape_.pDown - 0.1f) / 7.9f, shape_.pDown);
+        }
+        y += 52.0f;
+
+        const float sPlotH = (right.y + right.h) - y;
+        if(sPlotH >= 40.0f)
+        {
+            const Rect plot { right.x, y, colW, sPlotH };
+            drawPlotBackground(plot, 8, 4);
+            scissor(plot.x + 2.0f, plot.y + 2.0f, plot.w - 4.0f, plot.h - 4.0f);
+            const float mid = plot.y + plot.h * 0.5f;
+            const int n = clampi(int(plot.w), 64, 512);
+            beginPath();
+            for(int i = 0; i <= n; ++i)
+            {
+                const float t = float(i) / float(n);
+                // The engine's own evaluator, not a copy of its formula.
+                const float v = synth::ModMatrix::shapeOutput(shape_, t);
+                const float px = plot.x + t * plot.w;
+                const float py = mid - v * plot.h * 0.42f;
+                if(i == 0) moveTo(px, py); else lineTo(px, py);
+            }
+            strokeColor(DesignTokens::accentGreen());
+            strokeWidth(1.5f);
+            stroke();
+            resetScissor();
+            useUiFont();
+            uiFontSize(7.5f);
+            textAlign(ALIGN_LEFT | ALIGN_BOTTOM);
+            fillColor(DesignTokens::textSecondary().withAlpha(0.6f));
+            text(plot.x + 4.0f, plot.y + plot.h - 3.0f,
+                 shape_.useSpectralX ? "across spectral x" : "across partial index", nullptr);
+        }
+    }
+
 void KapibaraUI::drawXferCurve(const Rect &r, float curve)
 {
         drawPanel(r, DesignTokens::groove(), DesignTokens::border());
