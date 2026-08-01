@@ -5,6 +5,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 
 START_NAMESPACE_DISTRHO
 
@@ -94,6 +95,36 @@ void KapibaraPlugin::initAudioPort(bool input, uint32_t index, AudioPort &port)
     port.groupId = kPortGroupStereo;
 }
 
+void KapibaraPlugin::initState(uint32_t index, State &state)
+{
+    if(index != 0)
+        return;
+    state.key = "patch";
+    state.label = "Patch";
+    state.hints = kStateIsBase64Blob;   // arbitrary text, not a host-editable value
+}
+
+String KapibaraPlugin::getState(const char *key) const
+{
+    if(key == nullptr || std::strcmp(key, "patch") != 0)
+        return String();
+    // Engine half written straight out, UI half appended — the same layout the
+    // .mfpreset files use, so one reader serves both paths.
+    std::ostringstream out;
+    const_cast<KapibaraPlugin *>(this)->writePresetTo(out);
+    out << uiStateBlob_;
+    return String(out.str().c_str());
+}
+
+void KapibaraPlugin::setState(const char *key, const char *value)
+{
+    if(key == nullptr || value == nullptr || std::strcmp(key, "patch") != 0)
+        return;
+    uiStateBlob_ = value;   // the UI reads its half back out of here
+    std::istringstream in(value);
+    readPresetFrom(in, "session");
+}
+
 void KapibaraPlugin::activate()
 {
     prepareCore(getSampleRate());
@@ -171,8 +202,32 @@ void KapibaraPlugin::handleMidi(const MidiEvent &event)
         return;
     }
 
-    if(status == 0xb0u && event.size > 2 && (note == 120u || note == 123u))
-        core_.allNotesOff();
+    if(status == 0xe0u && event.size > 2)
+    {
+        // 14-bit, centre 8192. Fixed +/-2 semitones, the near-universal default.
+        const int raw = int(note) | (int(velocity) << 7);
+        core_.setPitchBend((float(raw - 8192) / 8192.0f) * 2.0f);
+        return;
+    }
+
+    if(status == 0xd0u && event.size > 1)
+    {
+        core_.setAftertouch(float(note) / 127.0f);   // channel pressure
+        return;
+    }
+
+    if(status == 0xb0u && event.size > 2)
+    {
+        if(note == 120u || note == 123u)
+        {
+            core_.allNotesOff();
+            return;
+        }
+        if(note == 1u)
+            core_.setModWheel(float(velocity) / 127.0f);
+        else if(note == 64u)
+            core_.setSustainPedal(velocity >= 64u);
+    }
 }
 
 void KapibaraPlugin::updateGlobalGain(float value)
@@ -483,17 +538,8 @@ std::string KapibaraPlugin::presetFilePath(const char *name) const
     return presetPathForName(name).string();
 }
 
-bool KapibaraPlugin::saveUserPreset(const char *name)
+void KapibaraPlugin::writePresetTo(std::ostream &out)
 {
-    std::error_code ec;
-    std::filesystem::create_directories(kPresetDirectory, ec);
-    const std::string presetName = cleanPresetName(name);
-    std::ofstream out(presetPathForName(presetName.c_str()), std::ios::trunc);
-    if(!out)
-    {
-        presetStatus_ = "Save failed";
-        return false;
-    }
 
     const auto gen = core_.getGeneratorParams();
     const auto adsr = core_.getGlobalAdsr();
@@ -550,24 +596,26 @@ bool KapibaraPlugin::saveUserPreset(const char *name)
         }
     }
 
+}
+
+bool KapibaraPlugin::saveUserPreset(const char *name)
+{
+    std::error_code ec;
+    std::filesystem::create_directories(kPresetDirectory, ec);
+    const std::string presetName = cleanPresetName(name);
+    std::ofstream out(presetPathForName(presetName.c_str()), std::ios::trunc);
+    if(!out)
+    {
+        presetStatus_ = "Save failed";
+        return false;
+    }
+    writePresetTo(out);
     presetStatus_ = "Saved " + presetName;
     return true;
 }
 
-bool KapibaraPlugin::loadUserPreset(const char *name)
+bool KapibaraPlugin::readPresetFrom(std::istream &in, const std::string &presetName)
 {
-    const std::string presetName = cleanPresetName(name);
-    std::ifstream in(presetPathForName(presetName.c_str()));
-    if(!in && name == nullptr)
-        in.open(kUserPresetPath);
-    if(!in && name == nullptr)
-        in.open(kLegacyUserPresetPath);
-    if(!in)
-    {
-        presetStatus_ = "Load failed";
-        return false;
-    }
-
     std::string tag;
     int version = 0;
     int harmonicCount = 16;
@@ -701,8 +749,16 @@ bool KapibaraPlugin::loadUserPreset(const char *name)
         }
         else
         {
-            presetStatus_ = "Bad preset";
-            return false;
+            // Unknown token: skip the rest of the line and keep going. This used
+            // to abort the whole load — and since the UI appends its own
+            // "modern" section to the SAME file, every preset written by the
+            // current UI hit that abort on the "modern" line and silently lost
+            // the legacy half (gain, ADSR, generator, partials) it had already
+            // been about to apply. Forward compatibility, not just tolerance:
+            // an older build must survive tokens a newer one writes.
+            in.clear();
+            std::string skip;
+            std::getline(in, skip);
         }
     }
 
@@ -712,6 +768,22 @@ bool KapibaraPlugin::loadUserPreset(const char *name)
     core_.setGeneratorParams(gen);
     presetStatus_ = "Loaded " + presetName;
     return true;
+}
+
+bool KapibaraPlugin::loadUserPreset(const char *name)
+{
+    const std::string presetName = cleanPresetName(name);
+    std::ifstream in(presetPathForName(presetName.c_str()));
+    if(!in && name == nullptr)
+        in.open(kUserPresetPath);
+    if(!in && name == nullptr)
+        in.open(kLegacyUserPresetPath);
+    if(!in)
+    {
+        presetStatus_ = "Load failed";
+        return false;
+    }
+    return readPresetFrom(in, presetName);
 }
 
 bool KapibaraPlugin::deleteUserPreset(const char *name)

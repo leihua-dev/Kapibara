@@ -54,7 +54,8 @@ constexpr synth::ModSource kCardSourcePool[] = {
     synth::ModSource::Env1, synth::ModSource::Env2, synth::ModSource::Env3, synth::ModSource::Env4,
     synth::ModSource::Velocity, synth::ModSource::KeyTrack, synth::ModSource::Random, synth::ModSource::Chaos,
     synth::ModSource::Shape, synth::ModSource::Adsr1, synth::ModSource::Adsr2, synth::ModSource::Adsr3,
-    synth::ModSource::Adsr4, synth::ModSource::Unit
+    synth::ModSource::Adsr4, synth::ModSource::Unit,
+    synth::ModSource::ModWheel, synth::ModSource::Pressure
 };
 constexpr synth::ModDestination kCardDestPool[] = {
     synth::ModDestination::Amp, synth::ModDestination::Freq, synth::ModDestination::Phase,
@@ -344,6 +345,8 @@ inline const char *sourceName(synth::ModSource s)
         case synth::ModSource::Adsr3: return "AE3";
         case synth::ModSource::Adsr4: return "AE4";
         case synth::ModSource::Unit: return "ONE";
+        case synth::ModSource::ModWheel: return "MOD WHL";
+        case synth::ModSource::Pressure: return "PRESS";
     }
     return "Source";
 }

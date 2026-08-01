@@ -778,6 +778,26 @@ bool SynthCore::popEvent(MidiEvent &out)
     return true;
 }
 
+void SynthCore::setPitchBend(float semitones)
+{
+    MidiEvent e; e.type = 3; e.velocity = semitones; pushEvent(e);
+}
+
+void SynthCore::setModWheel(float value)
+{
+    MidiEvent e; e.type = 4; e.velocity = std::clamp(value, 0.0f, 1.0f); pushEvent(e);
+}
+
+void SynthCore::setSustainPedal(bool down)
+{
+    MidiEvent e; e.type = 5; e.velocity = down ? 1.0f : 0.0f; pushEvent(e);
+}
+
+void SynthCore::setAftertouch(float value)
+{
+    MidiEvent e; e.type = 6; e.velocity = std::clamp(value, 0.0f, 1.0f); pushEvent(e);
+}
+
 void SynthCore::noteOn(int midiNote, float velocity)
 {
     pushEvent({ 0, midiNote, velocity });
@@ -1584,9 +1604,14 @@ void SynthCore::renderBlock(float *left, float *right, int numSamples)
         }
         else if(e.type == 1)
         {
-            for(auto &v : voices)
+            for(size_t i = 0; i < voices.size(); ++i)
             {
-                if(!v.isIdle() && v.getNoteNumber() == e.note && !v.isReleasing())
+                auto &v = voices[i];
+                if(v.isIdle() || v.getNoteNumber() != e.note || v.isReleasing())
+                    continue;
+                if(sustainDown_)
+                    sustainHeld_[i] = true;   // hold until the pedal comes up
+                else
                     v.noteOff();
             }
         }
@@ -1594,6 +1619,36 @@ void SynthCore::renderBlock(float *left, float *right, int numSamples)
         {
             for(auto &v : voices)
                 v.steal();
+            sustainDown_ = false;
+            sustainHeld_.fill(false);
+        }
+        else if(e.type == 3)
+        {
+            pitchBendSemis_ = e.velocity;
+        }
+        else if(e.type == 4)
+        {
+            modWheel_ = e.velocity;
+        }
+        else if(e.type == 5)
+        {
+            const bool down = e.velocity >= 0.5f;
+            if(sustainDown_ && !down)
+            {
+                // Pedal up: everything that was released while it was held now
+                // actually releases.
+                for(size_t i = 0; i < voices.size(); ++i)
+                    if(sustainHeld_[i])
+                    {
+                        voices[i].noteOff();
+                        sustainHeld_[i] = false;
+                    }
+            }
+            sustainDown_ = down;
+        }
+        else if(e.type == 6)
+        {
+            aftertouch_ = e.velocity;
         }
     }
 
@@ -1683,6 +1738,7 @@ void SynthCore::renderBlock(float *left, float *right, int numSamples)
                     continue;
                 const auto frame = clampedFrame(sampleTimeline(*snap->timeline, v.sourceTimeSeconds()));
                 v.setWavetableRenderState(snap->wavetable);
+                v.setPitchBendRatio(std::pow(2.0f, pitchBendSemis_ / 12.0f));
                 MatrixVoiceOutput mtx;
                 const auto voiceAmpEnv = v.ampEnvLevels();
                 matrix.evaluateForVoice(mtx, frame,

@@ -22,6 +22,13 @@ External DPF MIDI events are handled in `KapibaraPlugin::run()` and
 forwarded to the same lock-free MIDI queue inside `SynthCore`. Panic calls
 `SynthCore::allNotesOff()`.
 
+Beyond note on/off the queue carries pitch bend (14-bit, ±2 semitones, applied
+as a per-control-block ratio so held notes follow the wheel rather than being
+frozen at note-on), sustain pedal (CC64 — notes released while it is down are
+held and released together when it comes up), mod wheel (CC1) and channel
+pressure. The last two reach the matrix as `ModSource::ModWheel` and
+`ModSource::Pressure`.
+
 Every note-on freezes the current master envelope plus each Source Track Amp
 Envelope onto the newly allocated voice. Later UI changes publish a new
 `RenderSnapshot`; currently held voices pick up track ranges and strip state

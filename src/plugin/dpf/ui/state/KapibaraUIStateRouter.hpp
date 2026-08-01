@@ -1,4 +1,7 @@
     bool shiftDown_ = false;
+    // Host-session state push throttle (see pushHostState).
+    uint64_t lastHostStateMs_ = 0;
+    bool hostStateDirty_ = false;
     std::array<bool, synth::kMaxSourceTracks> selectedStrips_ {};
     float stripScrollF_ = 0.0f;   // fractional column scroll for smooth panning
     Rect stripScrollbarRect_ {};

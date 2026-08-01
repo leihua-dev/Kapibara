@@ -477,8 +477,8 @@ void Voice::updateControl(const StaticSpectralFrame &frame,
         // f_i^final = f0 * nu_i * M_i^freq  (RelativeRatio) or nu_i * M_i^freq (AbsoluteHz)
         const float sourceFrequency = wave != nullptr && wave->usesMetaWavetable ? wave->ratio : frame.nu[i];
         float f = (frame.freqMode == FreqMode::RelativeRatio)
-                      ? voiceF0_ * sourceFrequency
-                      : frame.nu[i];
+                      ? voiceF0_ * pitchBendRatio_ * sourceFrequency
+                      : frame.nu[i] * pitchBendRatio_;
         f *= matrixOut.mFreq[i];
         if(f < 0.0f)
             f = 0.0f;

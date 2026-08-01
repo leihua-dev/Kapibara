@@ -348,6 +348,8 @@ void ModMatrix::evaluateForVoice(MatrixVoiceOutput &out,
                 return shapeOutput(shapeParams_, axis);
             }
             case ModSource::Unit: return 1.0f;
+            case ModSource::ModWheel: return modWheel_;
+            case ModSource::Pressure: return pressure_;
             case ModSource::None: return 0.0f;
             default: return 0.0f;
         }
@@ -554,6 +556,8 @@ float ModMatrix::globalModSource(ModSource s, float adsrRep,
         case ModSource::Chaos: return chaosValue_;
         case ModSource::Shape: return shapeOutput(shapeParams_, 0.5f);
         case ModSource::Unit:  return 1.0f;
+        case ModSource::ModWheel: return modWheel_;
+        case ModSource::Pressure: return pressure_;
         default:               return 0.0f;
     }
 }

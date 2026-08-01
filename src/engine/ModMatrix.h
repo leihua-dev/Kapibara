@@ -30,7 +30,10 @@ enum class ModSource : uint8_t
     Adsr1 = 16, Adsr2, Adsr3, Adsr4,
     // Constant 1.0 — combined with a rule's spatial mask it yields a pure static
     // distribution (e.g. a drawn per-partial pitch-offset profile).
-    Unit = 20
+    Unit = 20,
+    // Channel performance controls, 0..1.
+    ModWheel = 21,
+    Pressure = 22
 };
 
 enum class ModDestination : uint8_t
@@ -232,6 +235,9 @@ class ModMatrix
 
     void setModSlotParams(int idx, const ModSlotParams &p);
     ModSlotParams getModSlotParams(int idx) const;
+    // Channel performance values, refreshed per control block from the engine.
+    void setPerformance(float modWheel, float pressure)
+    { modWheel_ = modWheel; pressure_ = pressure; }
     void setChaosParams(const ChaosParams &p);
     ChaosParams getChaosParams() const;
     void setShapeSourceParams(const ShapeSourceParams &p);
@@ -376,6 +382,8 @@ class ModMatrix
     std::array<float, kMaxMaskGroups> xbCurve_ {};
     ChaosParams chaosParams_ {};
     ShapeSourceParams shapeParams_ {};
+    float modWheel_ = 0.0f;
+    float pressure_ = 0.0f;
     float chaosValue_ = 0.0f;
     float chaosTarget_ = 0.0f;
     float crackleState_ = 0.371f;

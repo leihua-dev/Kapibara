@@ -65,6 +65,12 @@ class SynthCore
     void renderBlock(float *left, float *right, int numSamples);
 
     void noteOn(int midiNote, float velocity);
+    // Channel-wide performance controls. Bend is in semitones; wheel/pressure are
+    // 0..1 and reach the matrix as ModSource::ModWheel / Pressure.
+    void setPitchBend(float semitones);
+    void setModWheel(float value);
+    void setSustainPedal(bool down);
+    void setAftertouch(float value);
     void noteOff(int midiNote);
     void allNotesOff();
 
@@ -232,6 +238,14 @@ class SynthCore
     std::vector<UndoSnapshot> undoStack {};
     std::shared_ptr<const RenderSnapshot> renderSnapshot;
 
+    // Performance state. Written by the MIDI queue on the audio thread, read by
+    // the render loop — plain members, no cross-thread hand-off needed.
+    float pitchBendSemis_ = 0.0f;
+    float modWheel_ = 0.0f;
+    float aftertouch_ = 0.0f;
+    bool sustainDown_ = false;
+    std::array<bool, kMaxVoices> sustainHeld_ {};   // released while the pedal was down
+
     std::array<std::atomic<float>, kMaxSourceTracks> liveTrackMorph_ {};
     std::array<std::atomic<float>, kMaxSourceTracks> trackLevel_ {};
 
@@ -255,6 +269,8 @@ class SynthCore
     void renderStripBuses(float *left, float *right, int numSamples,
                           const std::shared_ptr<const RenderSnapshot> &snap);
 
+    // type: 0 note-on, 1 note-off, 2 all-notes-off, 3 pitch bend,
+    //       4 mod wheel, 5 sustain pedal, 6 channel aftertouch
     struct MidiEvent
     {
         uint8_t type = 0;

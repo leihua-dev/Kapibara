@@ -138,6 +138,15 @@ New `.kwt` files are saved as binary `KWT2`: frame/bin counts followed by packed
 
 ## Persistence
 
+State travels two ways over the same bytes. `getState`/`setState` (DPF
+`WANT_STATE` + `WANT_FULL_STATE`) carry the patch in the host session: the
+plugin writes the engine half with `writePresetTo` and appends the UI half,
+which the UI keeps current by pushing `modernStateString()` on a throttle.
+`.mfpreset` files use the identical layout, so one writer and one reader serve
+both. Unknown tokens are skipped rather than aborting the load — an older build
+has to survive tokens a newer one writes, and the UI appends its own section to
+the same file.
+
 The plugin saves the legacy text preset; the UI appends a `modern` section
 (`ui/sections/presets/KapibaraUIPresetState.cpp`) with the multi-track
 structure: track params/names, per-voice filters, inserts, source mods, route
@@ -151,7 +160,10 @@ Lines grow by appending optional fields at the END, each read with its own
 fail state, so a pre-initialized default is silently destroyed and every later
 field on the line fails too. `mgrp`'s tail is, in order: `enabled`,
 `waveSource`, `waveTrackId`, `rateHz`. Basic Oscillator racks add `mbosc`
-(one line per unit) and `mbmod` (the cross-unit modulation).
+(one line per unit) and `mbmod` (the cross-unit modulation); Sample/Noise adds
+`msmp` + `msmpf`. The 8 MOD slots (`mslot`/`mslotp`), Chaos (`mchaos`) and Shape
+(`mshape`) are in the modern section too — they were persisted nowhere at all
+before, so every rule and mask group came back referencing a default curve.
 
 A mask group whose base is a wavetable stores only the *track id* of the table
 owner. Since per-track frames are not written to the modern section, such a

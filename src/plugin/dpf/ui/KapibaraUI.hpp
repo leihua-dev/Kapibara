@@ -426,7 +426,14 @@ class KapibaraUI final : public KapibaraUIDrawing
     void beginSynthPresetRename();
     void beginWavetablePresetRename();
     void commitPresetNameEdit();
-    void saveModernState(const std::string &path); // append tracks + routing + structure
+    void saveModernState(const std::string &path);
+    // Same bytes as the file section, as a string — the host session state and
+    // the .mfpreset modern block are one format with two transports.
+    void writeModernState(std::ostream &out);
+    void readModernState(std::istream &in);
+    std::string modernStateString();
+    void pushHostState(bool force = false);
+    void stateChanged(const char *key, const char *value) override; // append tracks + routing + structure
     void loadModernState(const std::string &path); // parse + apply modern state
 
     // osc/partialbank/KapibaraUIPartialBankHelpers

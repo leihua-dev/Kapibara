@@ -43,6 +43,18 @@ void KapibaraUI::saveModernState(const std::string &path)
 {
         std::ofstream out(path, std::ios::app);
         if(!out) return;
+        writeModernState(out);
+    }
+
+std::string KapibaraUI::modernStateString()
+{
+        std::ostringstream out;
+        writeModernState(out);
+        return out.str();
+    }
+
+void KapibaraUI::writeModernState(std::ostream &out)
+{
         out << "modern 1\n";
         for(size_t ti = 0; ti < generator_.tracks.size(); ++ti)
         {
@@ -113,6 +125,22 @@ void KapibaraUI::saveModernState(const std::string &path)
         // on save/load). The unconditional marker lets the loader distinguish "this
         // preset intentionally has zero routes" (clear everything) from "old preset
         // without a rules section" (preserve current rules).
+        // The 8 MOD slots, Chaos and Shape were persisted NOWHERE — not here and
+        // not in the legacy half — so every rule and mask group came back
+        // referencing a default curve at a default rate.
+        for(int i = 0; i < synth::kMaxModSlots; ++i)
+        {
+            const auto &m = modSlots_[(size_t)i];
+            out << "mslot " << i << ' ' << int(m.enabled) << ' ' << int(m.loop) << ' '
+                << m.rateHz << ' ' << clampi(m.pointCount, 2, synth::kMaxMatrixEnvPoints) << "\n";
+            for(int k = 0; k < clampi(m.pointCount, 2, synth::kMaxMatrixEnvPoints); ++k)
+                out << "mslotp " << i << ' ' << k << ' ' << m.points[(size_t)k].x << ' '
+                    << m.points[(size_t)k].y << ' ' << m.points[(size_t)k].curve << "\n";
+        }
+        out << "mchaos " << int(chaos_.enabled) << ' ' << int(chaos_.type) << ' '
+            << chaos_.frequencyHz << ' ' << chaos_.amount << "\n";
+        out << "mshape " << int(shape_.shape) << ' ' << shape_.phase0 << ' ' << shape_.rho << ' '
+            << shape_.pUp << ' ' << shape_.pDown << ' ' << int(shape_.useSpectralX) << "\n";
         out << "mrules 1\n";
         for(int ri = 0; ri < synth::kMaxMatrixRules; ++ri)
         {
@@ -166,6 +194,11 @@ void KapibaraUI::loadModernState(const std::string &path)
 {
         std::ifstream in(path);
         if(!in) return;
+        readModernState(in);
+    }
+
+void KapibaraUI::readModernState(std::istream &in)
+{
         bool hasModern = false;
         std::vector<synth::SourceTrackParams> tracks;
         std::vector<synth::GridWire> wires;
@@ -177,6 +210,10 @@ void KapibaraUI::loadModernState(const std::string &path)
         std::array<synth::MatrixRule, synth::kMaxMatrixRules> parsedRules {};
         std::array<synth::MaskGroup, synth::kMaxMaskGroups> parsedGroups {};
         bool hasRules = false;
+        std::array<synth::ModSlotParams, synth::kMaxModSlots> parsedSlots {};
+        synth::ChaosParams parsedChaos {};
+        synth::ShapeSourceParams parsedShape {};
+        bool hasSlots = false;
         const auto ensureTrack = [&](int ti) { if(ti >= 0 && ti >= int(tracks.size())) tracks.resize((size_t)ti + 1); };
         std::string line;
         while(std::getline(in, line))
@@ -316,6 +353,52 @@ void KapibaraUI::loadModernState(const std::string &path)
                 m.depth = depth;
                 m.sourceKind = uint8_t(kind);
                 m.sourceNode = uint8_t(node);
+            }
+            else if(tok == "mslot")
+            {
+                int i, en, loop, pc; float rate;
+                if(!(ss >> i >> en >> loop >> rate >> pc)) continue;
+                if(i < 0 || i >= synth::kMaxModSlots) continue;
+                auto &m = parsedSlots[(size_t)i];
+                m.enabled = en != 0;
+                m.loop = loop != 0;
+                m.rateHz = clampf(rate, 0.0f, 100.0f);
+                m.pointCount = clampi(pc, 2, synth::kMaxMatrixEnvPoints);
+                hasSlots = true;
+            }
+            else if(tok == "mslotp")
+            {
+                int i, k; float px, py, pc;
+                if(!(ss >> i >> k >> px >> py >> pc)) continue;
+                if(i < 0 || i >= synth::kMaxModSlots
+                   || k < 0 || k >= synth::kMaxMatrixEnvPoints) continue;
+                auto &pt = parsedSlots[(size_t)i].points[(size_t)k];
+                pt.x = clampf(px, 0.0f, 1.0f);
+                pt.y = clampf(py, 0.0f, 1.0f);
+                pt.curve = clampf(pc, -1.0f, 1.0f);
+                hasSlots = true;
+            }
+            else if(tok == "mchaos")
+            {
+                int en, type; float f, amt;
+                if(!(ss >> en >> type >> f >> amt)) continue;
+                parsedChaos.enabled = en != 0;
+                parsedChaos.type = synth::ChaosNoiseType(clampi(type, 0, 2));
+                parsedChaos.frequencyHz = clampf(f, 0.01f, 100.0f);
+                parsedChaos.amount = clampf(amt, 0.0f, 1.0f);
+                hasSlots = true;
+            }
+            else if(tok == "mshape")
+            {
+                int shp, spec; float ph, rho, up, dn;
+                if(!(ss >> shp >> ph >> rho >> up >> dn >> spec)) continue;
+                parsedShape.shape = synth::LfoShape(clampi(shp, 0, 4));
+                parsedShape.phase0 = clampf(ph, 0.0f, 1.0f);
+                parsedShape.rho = clampf(rho, 0.0f, 1.0f);
+                parsedShape.pUp = clampf(up, 0.1f, 8.0f);
+                parsedShape.pDown = clampf(dn, 0.1f, 8.0f);
+                parsedShape.useSpectralX = spec != 0;
+                hasSlots = true;
             }
             else if(tok == "mrules")
             {
@@ -478,6 +561,19 @@ void KapibaraUI::loadModernState(const std::string &path)
             rules_ = parsedRules;
             maskGroups_ = parsedGroups;
         }
+        if(hasSlots)
+        {
+            modSlots_ = parsedSlots;
+            chaos_ = parsedChaos;
+            shape_ = parsedShape;
+            if(auto *p = plugin())
+            {
+                for(int i = 0; i < synth::kMaxModSlots; ++i)
+                    p->updateModSlot(i, modSlots_[(size_t)i]);
+                p->updateChaos(chaos_);
+                p->updateShapeSource(shape_);
+            }
+        }
         // Recomputes each track's routing fields (filter/insert order, connectedToMaster)
         // from the restored wires, then pushes all tracks + the compiled route to the engine.
         rebuildSelectedPerVoiceRouteFromWires();
@@ -575,5 +671,38 @@ void KapibaraUI::commitPresetNameEdit()
         }
     }
 
+
+// Host session state. The engine half comes from the plugin; this pushes the UI
+// half (tracks, wires, matrix, mask groups, MOD slots) so getState can hand the
+// DAW a complete patch. Throttled: it serializes the whole patch, and every
+// knob drag would otherwise do it per motion event.
+void KapibaraUI::pushHostState(bool force)
+{
+        auto *p = plugin();
+        if(p == nullptr)
+            return;
+        const uint64_t now = uiNowMs();
+        if(!force && now - lastHostStateMs_ < 400u)
+        {
+            hostStateDirty_ = true;
+            return;
+        }
+        lastHostStateMs_ = now;
+        hostStateDirty_ = false;
+        setState("patch", modernStateString().c_str());
+    }
+
+// The host restored a session (or another instance's state). The plugin has
+// already applied the engine half in its own setState; this picks up the UI half
+// out of the same blob.
+void KapibaraUI::stateChanged(const char *key, const char *value)
+{
+        if(key == nullptr || value == nullptr || std::strcmp(key, "patch") != 0)
+            return;
+        pullFromPlugin();
+        std::istringstream in(value);
+        readModernState(in);
+        repaint();
+    }
 
 END_NAMESPACE_DISTRHO

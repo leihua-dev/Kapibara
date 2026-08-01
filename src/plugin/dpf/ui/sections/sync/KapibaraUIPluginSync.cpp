@@ -92,6 +92,7 @@ void KapibaraUI::pushSource()
 
 void KapibaraUI::pushCurrentTrack()
 {
+        hostStateDirty_ = true;
         auto *track = currentTrack();
         if(track == nullptr)
             return;
@@ -124,6 +125,7 @@ void KapibaraUI::commitPerVoiceFilterEdit(synth::SourceTrackParams *editedTrack)
 
 void KapibaraUI::pushAllTracks()
 {
+        hostStateDirty_ = true;
         if(auto *p = plugin())
             p->updateSourceTracks(generator_.tracks);
     }
@@ -218,6 +220,7 @@ void KapibaraUI::deleteSelectedTrack()
 
 void KapibaraUI::pushGroups()
 {
+        hostStateDirty_ = true;
         std::vector<synth::SourceGroupDef> defs;
         defs.reserve(stripGroups_.size());
         for(const auto &g : stripGroups_)
@@ -298,7 +301,8 @@ void KapibaraUI::pushMatrix()
     }
 
 void KapibaraUI::pushCurModSlot()
-{ if(auto *p = plugin()) p->updateModSlot(selectedMatrixModSlot_, modSlots_[(size_t)selectedMatrixModSlot_]); }
+{
+        hostStateDirty_ = true; if(auto *p = plugin()) p->updateModSlot(selectedMatrixModSlot_, modSlots_[(size_t)selectedMatrixModSlot_]); }
 
 void KapibaraUI::pushRuleOnly()
 { if(auto *p = plugin()) p->updateMatrixRule(selectedRule_, rules_[(size_t)selectedRule_]); }
@@ -306,21 +310,25 @@ void KapibaraUI::pushRuleOnly()
 // Push a specific rule index — card flows must never push via selectedRule_.
 void KapibaraUI::pushRule(int idx)
 {
+        hostStateDirty_ = true;
         if(auto *p = plugin(); p != nullptr && idx >= 0 && idx < synth::kMaxMatrixRules)
             p->updateMatrixRule(idx, rules_[(size_t)idx]);
     }
 
 void KapibaraUI::pushGroup(int idx)
 {
+        hostStateDirty_ = true;
         if(auto *p = plugin(); p != nullptr && idx >= 0 && idx < synth::kMaxMaskGroups)
             p->updateMaskGroup(idx, maskGroups_[(size_t)idx]);
     }
 
 void KapibaraUI::pushChaosOnly()
-{ if(auto *p = plugin()) p->updateChaos(chaos_); }
+{
+        hostStateDirty_ = true; if(auto *p = plugin()) p->updateChaos(chaos_); }
 
 void KapibaraUI::pushShapeOnly()
-{ if(auto *p = plugin()) p->updateShapeSource(shape_); }
+{
+        hostStateDirty_ = true; if(auto *p = plugin()) p->updateShapeSource(shape_); }
 
 void KapibaraUI::pushAmpEnv()
 {

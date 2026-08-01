@@ -17,6 +17,10 @@
 #define DISTRHO_PLUGIN_WANT_MIDI_INPUT 1
 #define DISTRHO_PLUGIN_WANT_MIDI_OUTPUT 0
 #define DISTRHO_PLUGIN_WANT_DIRECT_ACCESS 1
+// Without these the patch does not travel with the host project: the plugin has
+// no way to hand its state to the DAW, so reopening a session comes back empty.
+#define DISTRHO_PLUGIN_WANT_STATE 1
+#define DISTRHO_PLUGIN_WANT_FULL_STATE 1
 
 #define DISTRHO_UI_FILE_BROWSER 1
 #define DISTRHO_UI_USER_RESIZABLE 1

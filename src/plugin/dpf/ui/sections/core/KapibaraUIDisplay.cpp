@@ -69,6 +69,10 @@ void KapibaraUI::uiIdle()
 {
         animPhase_ += 0.12f;
         if(animPhase_ > 1.0e6f) animPhase_ = 0.0f;
+        // Flush a throttled host-state push. Doing this on the idle tick rather
+        // than per edit keeps whole-patch serialization off the drag path.
+        if(hostStateDirty_)
+            pushHostState();
         repaint();
     }
 

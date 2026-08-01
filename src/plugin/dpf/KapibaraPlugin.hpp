@@ -5,6 +5,7 @@
 #include "../../engine/SynthCore.h"
 
 #include <atomic>
+#include <iosfwd>
 #include <string>
 #include <vector>
 
@@ -48,6 +49,10 @@ class KapibaraPlugin final : public Plugin
     std::vector<std::string> presetNames() const;
     std::vector<WavetablePresetEntry> wavetablePresetEntries() const;
     std::string wavetableUserDir() const;
+    // Stream forms: the file presets and the host session state are the same
+    // bytes, so they share one writer and one reader.
+    void writePresetTo(std::ostream &out);
+    bool readPresetFrom(std::istream &in, const std::string &presetName);
     bool saveUserPreset(const char *name = nullptr);
     bool loadUserPreset(const char *name = nullptr);
     bool deleteUserPreset(const char *name = nullptr);
@@ -89,6 +94,12 @@ class KapibaraPlugin final : public Plugin
     uint32_t getVersion() const override;
 
     void initAudioPort(bool input, uint32_t index, AudioPort &port) override;
+    // Host session state. The UI owns the routing/graph half of a patch, so it
+    // pushes its serialized block here and the plugin concatenates it with the
+    // engine half — see uiStateBlob_.
+    void initState(uint32_t index, State &state) override;
+    String getState(const char *key) const override;
+    void setState(const char *key, const char *value) override;
     void activate() override;
     void deactivate() override;
     void sampleRateChanged(double newSampleRate) override;
@@ -105,6 +116,9 @@ class KapibaraPlugin final : public Plugin
     std::atomic<double> sampleRate_ { 48000.0 };
     std::atomic<bool> prepared_ { false };
     mutable std::string presetStatus_ { "Select preset" };
+    // Serialized UI-side patch section (tracks, wires, matrix, mask groups...).
+    // The UI keeps this current; the plugin stores and relays it.
+    std::string uiStateBlob_;
 
     DISTRHO_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(KapibaraPlugin)
 };

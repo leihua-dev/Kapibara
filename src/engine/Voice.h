@@ -40,6 +40,7 @@ class Voice
     }
     bool isReleasing() const { return releasing_; }
     int getNoteNumber() const { return noteNumber_; }
+    void setPitchBendRatio(float r) { pitchBendRatio_ = r; }
     uint64_t getStartTick() const { return startTick_; }
     float sourceTimeSeconds() const { return float(double(ageSamples_) / sampleRate_); }
 
@@ -159,6 +160,9 @@ class Voice
     float velocity_ = 0.0f;
     float keyTrack01_ = 0.5f;
     float voiceF0_ = 440.0f;
+    // Channel pitch bend, refreshed every control block so a held note follows
+    // the wheel instead of being frozen at note-on.
+    float pitchBendRatio_ = 1.0f;
     uint64_t startTick_ = 0;
     uint64_t ageSamples_ = 0;
     uint32_t rngSeed_ = 1u;
