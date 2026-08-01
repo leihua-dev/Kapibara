@@ -14,6 +14,22 @@ void KapibaraUI::drawSourceRouter(const Rect &r)
 {
         drawSectionTitle(r.x + 12.0f, r.y + 10.0f, "SOURCE");
 
+        // Architecture bar: the rack + wiring saved apart from the sound, so a
+        // layout ("2 osc -> filter", an FM stack, a layered rack) can be recalled
+        // without disturbing the patch's modulation.
+        {
+            const float barY = r.y + 8.0f;
+            const float saveW = 34.0f;
+            routerPresetSaveRect_ = { r.x + r.w - 12.0f - saveW, barY, saveW, 16.0f };
+            const float barX = r.x + 74.0f;
+            routerPresetBarRect_ = { barX, barY, std::max(40.0f, routerPresetSaveRect_.x - 4.0f - barX), 16.0f };
+            const bool naming = presetNameEditing_ && presetNameEditTarget_ == PresetNameEditTarget::Router;
+            drawDropdown(routerPresetBarRect_,
+                         naming ? (presetNameBuffer_ + "_").c_str() : routerPresetLabel_.c_str(),
+                         routerPresetMenuOpen_ || naming);
+            drawButton(routerPresetSaveRect_, "SAVE", false);
+        }
+
         removeTrackRect_ = {};
         const bool sourceLimitReached = generator_.tracks.size() >= size_t(synth::kMaxSourceTracks);
         addTrackRect_ = {};

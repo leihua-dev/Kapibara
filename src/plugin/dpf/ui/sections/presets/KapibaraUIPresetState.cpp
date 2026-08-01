@@ -53,7 +53,12 @@ std::string KapibaraUI::modernStateString()
         return out.str();
     }
 
-void KapibaraUI::writeModernState(std::ostream &out)
+// structureOnly = a ROUTER preset: the rack and its wiring, without the sound
+// design. Everything a synth's architecture is (which sources exist, how they
+// are wired, what sits in each chain) and nothing that is a particular patch
+// (MOD curves, matrix rules, mask groups). Loading one rebuilds the layout and
+// leaves the modulation alone.
+void KapibaraUI::writeModernState(std::ostream &out, bool structureOnly)
 {
         out << "modern 1\n";
         for(size_t ti = 0; ti < generator_.tracks.size(); ++ti)
@@ -125,6 +130,13 @@ void KapibaraUI::writeModernState(std::ostream &out)
         // on save/load). The unconditional marker lets the loader distinguish "this
         // preset intentionally has zero routes" (clear everything) from "old preset
         // without a rules section" (preserve current rules).
+        if(structureOnly)
+        {
+            // Node positions / port counts / util nodes / structure wires close
+            // out the layout; matrix and MOD state is deliberately not written.
+            writeModernStructureTail(out);
+            return;
+        }
         // The 8 MOD slots, Chaos and Shape were persisted NOWHERE — not here and
         // not in the legacy half — so every rule and mask group came back
         // referencing a default curve at a default rate.
@@ -175,6 +187,11 @@ void KapibaraUI::writeModernState(std::ostream &out)
                     << t.targetTrackId << ' ' << t.depth << "\n";
             }
         }
+        writeModernStructureTail(out);
+    }
+
+void KapibaraUI::writeModernStructureTail(std::ostream &out)
+{
         for(const auto &kv : nodeOutPortCount_)
             out << "moutp " << kv.first << ' ' << kv.second << "\n";
         for(const auto &kv : structUtilCount_)
@@ -668,6 +685,10 @@ void KapibaraUI::commitPresetNameEdit()
         else if(target == PresetNameEditTarget::Wavetable)
         {
             saveOrRenameWavetablePreset(clean);
+        }
+        else if(target == PresetNameEditTarget::Router)
+        {
+            saveRouterPreset(clean);
         }
     }
 

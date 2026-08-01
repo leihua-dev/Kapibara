@@ -18,6 +18,13 @@
     int oscModTypeMenuTrackId_ = -1, oscModTypeMenuSlot_ = -1;
     std::array<Rect, 6> oscModTypeMenuRects_ {};  // 5 modes + remove
     // Basic Oscillator rack cross-unit modulation mode picker.
+    // Router (architecture) preset menu, from the SOURCE column.
+    bool routerPresetMenuOpen_ = false;
+    float routerPresetMenuX_ = 0.0f, routerPresetMenuY_ = 0.0f;
+    std::vector<std::string> routerPresetNames_;
+    std::vector<Rect> routerPresetItemRects_;
+    Rect routerPresetSaveRect_ {}, routerPresetBarRect_ {};
+    std::string routerPresetLabel_ { "ARCH" };
     bool basicModMenuOpen_ = false;
     float basicModMenuX_ = 0.0f, basicModMenuY_ = 0.0f;
     uint32_t basicModMenuTrackId_ = 0;

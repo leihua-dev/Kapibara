@@ -194,7 +194,8 @@ enum class PresetNameEditTarget
 {
     None,
     Synth,
-    Wavetable
+    Wavetable,
+    Router
 };
 
 struct Kwt2Header

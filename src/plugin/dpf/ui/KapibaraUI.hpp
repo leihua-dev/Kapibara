@@ -430,7 +430,17 @@ class KapibaraUI final : public KapibaraUIDrawing
     void saveModernState(const std::string &path);
     // Same bytes as the file section, as a string — the host session state and
     // the .mfpreset modern block are one format with two transports.
-    void writeModernState(std::ostream &out);
+    void writeModernState(std::ostream &out, bool structureOnly = false);
+    void writeModernStructureTail(std::ostream &out);
+    // Router presets: the rack + wiring only. Loading one reuses
+    // readModernState, which preserves matrix/MOD state when a file omits it.
+    std::string routerPresetDir() const;
+    std::vector<std::string> routerPresetNames() const;
+    bool saveRouterPreset(const std::string &name);
+    bool loadRouterPreset(const std::string &name);
+    void refreshRouterPresets();
+    void drawRouterPresetMenu();
+    bool handleRouterPresetMenuClick(float x, float y);
     void readModernState(std::istream &in);
     std::string modernStateString();
     void pushHostState(bool force = false);

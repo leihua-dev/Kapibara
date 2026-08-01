@@ -295,6 +295,12 @@ bool KapibaraUI::onMouse(const MouseEvent &ev)
             return true;
         }
 
+        if(handleRouterPresetMenuClick(x, y))
+        {
+            repaint();
+            return true;
+        }
+
         if(handleWavetableImportMenuClick(x, y))
         {
             repaint();

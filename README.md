@@ -108,6 +108,25 @@ runs as findings, not as noise.
 5. Play from the bottom keyboard or external MIDI routed to the JACK
    standalone. Use Panic to clear held voices.
 
+## Router (Architecture) Presets
+
+The SOURCE column carries its own preset bar: the source rack and its wiring
+saved apart from the sound, so a layout — two oscillators into a filter, an FM
+stack, a layered rack — can be recalled without disturbing the patch's
+modulation. Files are `presets/routers/*.krt`.
+
+They use a strict subset of the modern preset format: tracks, per-voice chains,
+inserts, source mods, wires, node positions and merge groups, and **none** of
+`mslot` / `mchaos` / `mshape` / `mrule` / `mgrp`. Loading goes through the same
+reader as a full preset, which applies matrix rules and MOD curves only when the
+file actually contains them — so swapping architecture leaves the modulation
+alone by construction rather than by a special case.
+
+Caveat worth knowing: a router preset carries each track's parameters, but
+oscillator *frame data* is not in the modern section, so meta-oscillator
+wavetables come back at their defaults (same limitation as a full preset —
+tables travel as `.kwt` files).
+
 ## Presets And Wavetables
 
 - Presets are saved by the plugin in the legacy text format; the UI appends a

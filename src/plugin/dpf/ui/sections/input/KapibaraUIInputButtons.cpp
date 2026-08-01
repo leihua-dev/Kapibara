@@ -4,6 +4,24 @@ START_NAMESPACE_DISTRHO
 
 bool KapibaraUI::handleButtonClick(float x, float y)
 {
+        // Architecture (router) preset bar in the SOURCE column.
+        if(routerPresetBarRect_.w > 0.0f && routerPresetBarRect_.contains(x, y))
+        {
+            if(!routerPresetMenuOpen_)
+                refreshRouterPresets();
+            routerPresetMenuOpen_ = !routerPresetMenuOpen_;
+            routerPresetMenuX_ = routerPresetBarRect_.x;
+            routerPresetMenuY_ = routerPresetBarRect_.y + routerPresetBarRect_.h + 2.0f;
+            return true;
+        }
+        if(routerPresetSaveRect_.w > 0.0f && routerPresetSaveRect_.contains(x, y))
+        {
+            presetNameEditing_ = true;
+            presetNameEditTarget_ = PresetNameEditTarget::Router;
+            presetNameBuffer_ = routerPresetLabel_ == "ARCH" ? std::string() : routerPresetLabel_;
+            skipNextPresetCharacterInput_ = false;
+            return true;
+        }
         if(addTrackRect_.contains(x, y))
         {
             if(generator_.tracks.size() >= size_t(synth::kMaxSourceTracks))
