@@ -72,7 +72,7 @@ void KapibaraUI::drawNoiseTrackEditor(const Rect &r, synth::SourceTrackParams &t
         samplerLoopRect_ = {}; samplerSliceRect_ = {}; samplerRevRect_ = {};
         samplerWaveRect_ = {}; samplerStartRect_ = {}; samplerEndRect_ = {};
         samplerLoopStartRect_ = {}; samplerLoopEndRect_ = {}; samplerGainRect_ = {};
-        noiseTypeRect_ = {};
+        noiseTypeRect_ = {}; samplerAiRect_ = {};
 
         auto &sp = track.sampler;
         constexpr float rowH = 22.0f;
@@ -85,16 +85,30 @@ void KapibaraUI::drawNoiseTrackEditor(const Rect &r, synth::SourceTrackParams &t
         drawButton(noiseModeRect_, synth::sampleNoiseModeName(track.sampleNoiseMode), sampling);
         if(sampling)
         {
-            samplerLoadRect_ = { r.x + 102.0f, y, 74.0f, rowH };
+            samplerLoadRect_ = { r.x + 102.0f, y, 60.0f, rowH };
             drawButton(samplerLoadRect_, "LOAD", false);
+            const bool busy = aiJob_ && aiJob_->state.load(std::memory_order_acquire) == 1;
+            samplerAiRect_ = { r.x + 166.0f, y, 44.0f, rowH };
+            drawButton(samplerAiRect_, busy ? "..." : "AI", aiPromptEditing_ || busy);
             useUiFont();
             uiFontSize(8.5f);
             textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-            fillColor(sp.sample ? DesignTokens::textPrimary() : DesignTokens::textSecondary());
-            const float tx = r.x + 182.0f;
+            const float tx = r.x + 216.0f;
             scissor(tx, y, std::max(0.0f, r.x + r.w - tx), rowH);
-            text(tx, y + rowH * 0.5f,
-                 sp.sample ? sp.sampleName.c_str() : "(no sample - LOAD a WAV)", nullptr);
+            if(aiPromptEditing_)
+            {
+                // Typing a prompt: show it live, Enter generates, Esc cancels.
+                fillColor(DesignTokens::accentGreen());
+                text(tx, y + rowH * 0.5f,
+                     (aiPromptBuffer_.empty() ? std::string("prompt: ") : "prompt: " + aiPromptBuffer_)
+                         .append("_").c_str(), nullptr);
+            }
+            else
+            {
+                fillColor(sp.sample ? DesignTokens::textPrimary() : DesignTokens::textSecondary());
+                text(tx, y + rowH * 0.5f,
+                     sp.sample ? sp.sampleName.c_str() : "(no sample - LOAD a WAV, or AI)", nullptr);
+            }
             resetScissor();
         }
         y += rowH + 6.0f;

@@ -342,6 +342,12 @@ bool KapibaraUI::handleButtonClick(float x, float y)
                     openSamplerFileBrowser();
                     return true;
                 }
+                if(samplerAiRect_.w > 0.0f && samplerAiRect_.contains(x, y))
+                {
+                    // First click opens the prompt line; Enter runs it.
+                    aiPromptEditing_ = !aiPromptEditing_;
+                    return true;
+                }
                 if(samplerKeyTrackRect_.w > 0.0f && samplerKeyTrackRect_.contains(x, y))
                 { sp.keyTrack = !sp.keyTrack; pushCurrentTrack(); return true; }
                 if(samplerRevRect_.w > 0.0f && samplerRevRect_.contains(x, y))

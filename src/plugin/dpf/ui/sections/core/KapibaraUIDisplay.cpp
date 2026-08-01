@@ -74,6 +74,7 @@ void KapibaraUI::uiIdle()
         // than per edit keeps whole-patch serialization off the drag path.
         if(hostStateDirty_)
             pushHostState();
+        pollAiSampleGeneration();
         repaint();
     }
 

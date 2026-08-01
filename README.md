@@ -108,6 +108,38 @@ runs as findings, not as noise.
 5. Play from the bottom keyboard or external MIDI routed to the JACK
    standalone. Use Panic to clear held voices.
 
+## AI Sample Generation
+
+The sampler's `AI` button generates a sample from a text prompt. The plugin
+contains **no model**: bundling an inference runtime would drag a large native
+dependency across four plugin formats and three platforms, and model weights
+carry their own licence, which has no business inside a GPL tree. It shells out
+to a generator you configure and then loads the WAV it produced through exactly
+the path a manual LOAD uses.
+
+Configure `presets/ai-generate.cmd` (written with instructions on first use):
+
+```
+kapibara-generate --prompt-file {prompt_file} --out {out} --seconds {seconds}
+```
+
+`{prompt_file}` is a UTF-8 file containing the prompt, `{out}` is the `.wav` the
+generator must write. **The prompt is never interpolated into the command** —
+only paths the plugin generated are substituted — so no prompt can become shell
+syntax. Generation runs off the UI thread and the result is loaded when it
+lands.
+
+A local [Stable Audio Open Small](https://huggingface.co/stabilityai/stable-audio-open-small)
+wrapper is a reasonable generator to point this at: ~341M parameters, ONNX,
+CPU-capable, roughly 10 s of audio in ~7 s. Note its weights are under
+Stability's community licence, not this project's — one more reason they stay
+outside the tree.
+
+Expect it to be good at textures, atmospheres, percussion and effects, and weak
+at clean pitched instrument samples. AI-generated audio has no defined pitch, so
+key-tracked playback of a generated texture maps arbitrarily; `FIXED` mode is
+usually what you want for that material.
+
 ## Router (Architecture) Presets
 
 The SOURCE column carries its own preset bar: the source rack and its wiring

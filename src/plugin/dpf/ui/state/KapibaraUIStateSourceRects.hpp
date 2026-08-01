@@ -26,6 +26,19 @@
     Rect samplerStartRect_ {}, samplerEndRect_ {};
     Rect samplerLoopStartRect_ {}, samplerLoopEndRect_ {}, samplerGainRect_ {};
     bool samplerLoadPending_ = false;   // file browser is opening for the sampler
+    // AI sample generation. The job outlives this UI (shared_ptr captured by the
+    // worker) so a window closed mid-generation cannot be written into.
+    Rect samplerAiRect_ {};
+    bool aiPromptEditing_ = false;
+    std::string aiPromptBuffer_;
+    struct AiJob
+    {
+        std::atomic<int> state { 1 };   // 1 running, 2 done, 3 failed
+        std::string outPath;
+        std::string message;
+        uint32_t trackId = 0;
+    };
+    std::shared_ptr<AiJob> aiJob_;
     Rect sourceGainRect_ {}, sourcePanRect_ {}, sourceFilterEnableRect_ {}, sourceFilterTopologyRect_ {};
     Rect sourceFilterCutoffRect_ {}, sourceFilterResRect_ {}, sourceFilterDriveRect_ {}, sourceFilterFeedbackRect_ {};
     Rect sourceFilterMixRect_ {};

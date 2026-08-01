@@ -14,7 +14,10 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <atomic>
+#include <memory>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -259,6 +262,11 @@ class KapibaraUI final : public KapibaraUIDrawing
     bool handleBasicOscModMenuClick(float x, float y);
     void drawNoiseTrackEditor(const Rect &r, synth::SourceTrackParams &track);
     void openSamplerFileBrowser();
+    // Text-prompt sample generation. Runs an external generator off-thread and
+    // loads the WAV it writes through the ordinary sampler load path.
+    std::string aiCommandTemplate();
+    void startAiSampleGeneration(synth::SourceTrackParams &track, const std::string &prompt);
+    void pollAiSampleGeneration();
     bool loadSampleIntoTrack(synth::SourceTrackParams &track, const std::string &path);
     static const char *sampleLoopModeName(synth::SampleLoopMode m);
 

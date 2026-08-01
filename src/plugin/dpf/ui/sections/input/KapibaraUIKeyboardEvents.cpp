@@ -6,6 +6,40 @@ START_NAMESPACE_DISTRHO
 #endif
 bool KapibaraUI::onKeyboard(const KeyboardEvent &ev)
 {
+        if(aiPromptEditing_)
+        {
+            if(!ev.press)
+                return true;
+            if(ev.key == kKeyEnter)
+            {
+                aiPromptEditing_ = false;
+                if(auto *t = currentTrack();
+                   t != nullptr && t->type == synth::SourceTrackType::SampleNoise)
+                    startAiSampleGeneration(*t, aiPromptBuffer_);
+                repaint();
+                return true;
+            }
+            if(ev.key == kKeyEscape)
+            {
+                aiPromptEditing_ = false;
+                repaint();
+                return true;
+            }
+            if(ev.key == kKeyBackspace)
+            {
+                if(!aiPromptBuffer_.empty())
+                    aiPromptBuffer_.pop_back();
+                repaint();
+                return true;
+            }
+            if(ev.key >= 32 && ev.key <= 126 && aiPromptBuffer_.size() < 200)
+            {
+                aiPromptBuffer_.push_back(char(ev.key));
+                repaint();
+                return true;
+            }
+            return true;
+        }
         if(loadPathEditing_)
         {
             if(!ev.press)
