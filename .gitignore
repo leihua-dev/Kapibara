@@ -3,7 +3,11 @@ build/
 out/
 cmake-build-*/
 compile_commands.json
-third_party/
+# third_party/DPF is a submodule (pinned upstream), not ignored — without it a
+# fresh clone cannot build at all. Ignore anything else that lands here.
+third_party/*
+!third_party/DPF
+!third_party/dpf-patches
 *.exe
 *.dll
 *.lib

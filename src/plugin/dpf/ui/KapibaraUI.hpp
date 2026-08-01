@@ -15,7 +15,6 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
-#include <sys/stat.h>
 #include <unordered_map>
 #include <vector>
 

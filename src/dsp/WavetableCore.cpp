@@ -549,7 +549,7 @@ WavetableFrameArray &WavetableFrameStorage::ensure()
 {
     if(!data)
         data = std::make_shared<WavetableFrameArray>();
-    else if(!data.unique())
+    else if(data.use_count() != 1)
         data = std::make_shared<WavetableFrameArray>(*data);
     return *data;
 }
@@ -565,7 +565,7 @@ WavetableFrame &WavetableFrameStorage::operator[](size_t index)
     auto &frame = ensure()[index];
     if(!frame)
         frame = std::make_shared<WavetableFrame>();
-    else if(!frame.unique())
+    else if(frame.use_count() != 1)
         frame = std::make_shared<WavetableFrame>(*frame);
     return *frame;
 }
@@ -1160,7 +1160,7 @@ static bool frameSelected(const bool *sel, int i, int fc)
 static void makeFrameWaveformWritable(WavetableFrame &frame)
 {
     materializeWavetableFrame(frame);
-    if(frame.waveform && !frame.waveform.unique())
+    if(frame.waveform && frame.waveform.use_count() != 1)
         frame.waveform = std::make_shared<std::array<float, kWavetableSize>>(*frame.waveform);
 }
 

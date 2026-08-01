@@ -53,23 +53,47 @@ src/
 ## Build
 
 ```bash
-make -C src/plugin/dpf jack
+git clone --recurse-submodules <repo>
+cd kapibara
+./scripts/setup-deps.sh      # fetches DPF and applies the patches below
+make -C src/plugin/dpf       # standalone + LV2 + VST3 + CLAP
 ```
 
-CMake wrapper (equivalent):
+`setup-deps.sh` is not optional and is not just `submodule update`. Kapibara
+builds against a **patched DPF**: upstream has no `uiClipboardData` hook, and
+pugl's X11 backend does not deliver file drops — the UI needs both. The patches
+live in `third_party/dpf-patches/` and the script applies them idempotently, so
+re-running it on an already-patched tree is a no-op. Without it the build fails
+at `uiClipboardData ... does not override`.
+
+Build one format only:
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release
-```
-
-Run:
-
-```bash
+make -C src/plugin/dpf jack     # or lv2 / vst3 / clap
 ./build/dpf/bin/kapibara
 ```
 
-Requires JACK, OpenGL 3, and the DPF submodule in `third_party/DPF`.
+Outputs land in `build/dpf/bin/`: `kapibara` (JACK standalone),
+`kapibara.lv2/`, `kapibara.vst3/`, `kapibara.clap`.
+
+Requires a C++17 compiler, OpenGL 3, and JACK for the standalone.
+
+### CI
+
+The three-platform build workflow lives at `ci/github-workflow-build.yml`. It is
+not under `.github/workflows/` in this repo because the token used to push here
+lacks GitHub's `workflow` scope; enable it with:
+
+```bash
+mkdir -p .github/workflows
+git mv ci/github-workflow-build.yml .github/workflows/build.yml
+git commit -m "enable CI" && git push
+```
+
+It builds every format on Linux, macOS and Windows (MinGW) on each push, and
+syntax-checks the engine as C++20 separately (it has no DPF dependency). The
+tree has only ever been compiled on Linux — read the first macOS and Windows
+runs as findings, not as noise.
 
 ## Workflow
 

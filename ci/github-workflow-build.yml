@@ -1,0 +1,71 @@
+name: build
+
+# Three platforms, every push. The point is not packaging — it is that a
+# portability regression should fail here rather than in someone's DAW. The
+# tree has only ever been compiled on Linux, so treat the first Windows and
+# macOS runs as findings, not as noise.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch and patch dependencies
+        run: ./scripts/setup-deps.sh
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config \
+            libgl1-mesa-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+            libjack-jackd2-dev
+      - name: Build all formats
+        run: make -C src/plugin/dpf -j"$(nproc)"
+      - name: Show what was produced
+        run: ls -R build/dpf/bin
+      # The engine is plain C++ with no DPF dependency, so it can be checked
+      # against a newer standard than the plugin build uses. This is what would
+      # have caught std::shared_ptr::unique() before a Windows user did.
+      - name: Engine compiles as C++20
+        run: |
+          for f in src/dsp/*.cpp src/engine/*.cpp; do
+            g++ -std=c++20 -fsyntax-only -Isrc "$f" || exit 1
+          done
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch and patch dependencies
+        run: ./scripts/setup-deps.sh
+      - name: Build all formats
+        run: make -C src/plugin/dpf -j"$(sysctl -n hw.ncpu)"
+      - name: Show what was produced
+        run: ls -R build/dpf/bin
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            make
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-pkg-config
+            git
+      - name: Fetch and patch dependencies
+        run: ./scripts/setup-deps.sh
+      - name: Build all formats
+        run: make -C src/plugin/dpf -j2
+      - name: Show what was produced
+        run: ls -R build/dpf/bin

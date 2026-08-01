@@ -1,0 +1,220 @@
+diff --git a/src/x11.c b/src/x11.c
+index 84a6fa3..1d2b618 100644
+--- a/src/x11.c
++++ b/src/x11.c
+@@ -229,6 +229,16 @@ puglInitWorldInternals(const PuglWorldType type, const PuglWorldFlags flags)
+ 
+   impl->atoms.TARGETS       = XInternAtom(display, "TARGETS", 0);
+   impl->atoms.text_uri_list = XInternAtom(display, "text/uri-list", 0);
++  impl->atoms.XdndAware      = XInternAtom(display, "XdndAware", 0);
++  impl->atoms.XdndEnter      = XInternAtom(display, "XdndEnter", 0);
++  impl->atoms.XdndPosition   = XInternAtom(display, "XdndPosition", 0);
++  impl->atoms.XdndStatus     = XInternAtom(display, "XdndStatus", 0);
++  impl->atoms.XdndDrop       = XInternAtom(display, "XdndDrop", 0);
++  impl->atoms.XdndFinished   = XInternAtom(display, "XdndFinished", 0);
++  impl->atoms.XdndLeave      = XInternAtom(display, "XdndLeave", 0);
++  impl->atoms.XdndSelection  = XInternAtom(display, "XdndSelection", 0);
++  impl->atoms.XdndTypeList   = XInternAtom(display, "XdndTypeList", 0);
++  impl->atoms.XdndActionCopy = XInternAtom(display, "XdndActionCopy", 0);
+ 
+   // Open input method
+   XSetLocaleModifiers("");
+@@ -676,6 +686,18 @@ puglRealize(PuglView* const view)
+   Atom protocols[] = {atoms->NET_WM_PING, atoms->WM_DELETE_WINDOW};
+   XSetWMProtocols(display, impl->win, protocols, (parent == root) ? 2 : 1);
+ 
++  // Accept Xdnd file drops. Data is delivered through Pugl's existing
++  // clipboard offer/data events as text/uri-list.
++  const unsigned long xdndVersion = 5;
++  XChangeProperty(display,
++                  impl->win,
++                  atoms->XdndAware,
++                  XA_ATOM,
++                  32,
++                  PropModeReplace,
++                  (const unsigned char*)&xdndVersion,
++                  1);
++
+   // Create input context
+   if (world->impl->xim) {
+     impl->xic = XCreateIC(world->impl->xim,
+@@ -946,7 +968,8 @@ getAtomProperty(PuglView* const view,
+ static PuglX11Clipboard*
+ getX11SelectionClipboard(PuglView* const view, const Atom selection)
+ {
+-  return (selection == view->world->impl->atoms.CLIPBOARD)
++  return (selection == view->world->impl->atoms.CLIPBOARD ||
++          selection == view->world->impl->atoms.XdndSelection)
+            ? &view->impl->clipboard
+            : NULL;
+ }
+@@ -1012,6 +1035,99 @@ setClipboardFormats(PuglView* const         view,
+   return PUGL_SUCCESS;
+ }
+ 
++static void
++sendXdndFinished(PuglView* const view, const bool accepted)
++{
++  PuglX11Clipboard* const board = &view->impl->clipboard;
++  const PuglX11Atoms* const atoms = &view->world->impl->atoms;
++  if (!board->source) {
++    return;
++  }
++  XEvent reply = {ClientMessage};
++  reply.xclient.display = view->world->impl->display;
++  reply.xclient.window = board->source;
++  reply.xclient.message_type = atoms->XdndFinished;
++  reply.xclient.format = 32;
++  reply.xclient.data.l[0] = (long)view->impl->win;
++  reply.xclient.data.l[1] = accepted ? 1L : 0L;
++  reply.xclient.data.l[2] = accepted ? (long)atoms->XdndActionCopy : None;
++  XSendEvent(view->world->impl->display, board->source, False, NoEventMask, &reply);
++}
++
++static bool
++handleXdndClientMessage(PuglView* const view, const XClientMessageEvent* const message)
++{
++  PuglX11Clipboard* const board = &view->impl->clipboard;
++  const PuglX11Atoms* const atoms = &view->world->impl->atoms;
++  Display* const display = view->world->impl->display;
++
++  if (message->message_type == atoms->XdndEnter) {
++    clearX11Clipboard(board);
++    board->selection = atoms->XdndSelection;
++    board->property = XA_PRIMARY;
++    board->source = (Window)message->data.l[0];
++
++    Atom localFormats[3] = {(Atom)message->data.l[2], (Atom)message->data.l[3],
++                            (Atom)message->data.l[4]};
++    Atom* formats = localFormats;
++    unsigned long numFormats = 3;
++    const bool hasTypeList = (message->data.l[1] & 1L) != 0;
++    if (hasTypeList && getAtomProperty(view, board->source, atoms->XdndTypeList,
++                                       &numFormats, &formats)) {
++      formats = localFormats;
++      numFormats = 3;
++    }
++    setClipboardFormats(view, board, numFormats, formats);
++    if (hasTypeList && formats != localFormats) {
++      XFree(formats);
++    }
++    board->acceptedFormatIndex = UINT32_MAX;
++    const PuglDataOfferEvent offer = {PUGL_DATA_OFFER, 0U, puglGetTime(view->world)};
++    PuglEvent event = {{PUGL_NOTHING, 0U}};
++    event.offer = offer;
++    puglDispatchEvent(view, &event);
++    return true;
++  }
++
++  if (message->message_type == atoms->XdndPosition) {
++    XEvent reply = {ClientMessage};
++    reply.xclient.display = display;
++    reply.xclient.window = board->source;
++    reply.xclient.message_type = atoms->XdndStatus;
++    reply.xclient.format = 32;
++    reply.xclient.data.l[0] = (long)view->impl->win;
++    reply.xclient.data.l[1] = board->acceptedFormatIndex < board->numFormats ? 1L : 0L;
++    reply.xclient.data.l[4] = board->acceptedFormatIndex < board->numFormats
++                                ? (long)atoms->XdndActionCopy : None;
++    XSendEvent(display, board->source, False, NoEventMask, &reply);
++    return true;
++  }
++
++  if (message->message_type == atoms->XdndDrop) {
++    if (board->acceptedFormatIndex < board->numFormats) {
++      const Time time = message->data.l[2] ? (Time)message->data.l[2] : CurrentTime;
++      XConvertSelection(display,
++                        atoms->XdndSelection,
++                        board->acceptedFormat,
++                        board->property,
++                        view->impl->win,
++                        time);
++    } else {
++      sendXdndFinished(view, false);
++    }
++    return true;
++  }
++
++  if (message->message_type == atoms->XdndLeave) {
++    clearX11Clipboard(board);
++    board->selection = atoms->CLIPBOARD;
++    board->property = XA_PRIMARY;
++    return true;
++  }
++
++  return false;
++}
++
+ static PuglEvent
+ translateClientMessage(PuglView* const view, XClientMessageEvent message)
+ {
+@@ -1615,7 +1731,8 @@ handleSelectionNotify(const PuglWorld* const       world,
+       XFree(formats);
+     }
+ 
+-  } else if (event->selection == atoms->CLIPBOARD &&
++  } else if ((event->selection == atoms->CLIPBOARD ||
++              event->selection == atoms->XdndSelection) &&
+              event->property == XA_PRIMARY &&
+              board->acceptedFormatIndex < board->numFormats) {
+     // Notification of data from the clipboard
+@@ -1630,7 +1747,15 @@ handleSelectionNotify(const PuglWorld* const       world,
+     }
+   }
+ 
+-  return puglDispatchEvent(view, &puglEvent);
++  const bool isXdnd = event->selection == atoms->XdndSelection;
++  const PuglStatus status = puglDispatchEvent(view, &puglEvent);
++  if (isXdnd && puglEvent.type == PUGL_DATA) {
++    sendXdndFinished(view, status == PUGL_SUCCESS);
++    clearX11Clipboard(board);
++    board->selection = atoms->CLIPBOARD;
++    board->property = XA_PRIMARY;
++  }
++  return status;
+ }
+ 
+ static PuglStatus
+@@ -1781,7 +1906,9 @@ dispatchX11Events(PuglWorld* const world)
+ 
+     // Handle special events
+     PuglInternals* const impl = view->impl;
+-    if (xevent.type == KeyRelease && view->hints[PUGL_IGNORE_KEY_REPEAT]) {
++    if (xevent.type == ClientMessage && handleXdndClientMessage(view, &xevent.xclient)) {
++      continue;
++    } else if (xevent.type == KeyRelease && view->hints[PUGL_IGNORE_KEY_REPEAT]) {
+       XEvent next;
+       if (XCheckTypedWindowEvent(display, impl->win, KeyPress, &next) &&
+           next.type == KeyPress && next.xkey.time == xevent.xkey.time &&
+@@ -2046,6 +2173,10 @@ puglAcceptOffer(PuglView* const                 view,
+   board->acceptedFormatIndex = typeIndex;
+   board->acceptedFormat      = board->formats[typeIndex];
+ 
++  if (board->selection == view->world->impl->atoms.XdndSelection) {
++    return PUGL_SUCCESS;
++  }
++
+   // Request the data in the specified type from the general clipboard
+   XConvertSelection(display,
+                     board->selection,
+diff --git a/src/x11.h b/src/x11.h
+index a52ea28..f1b2b4c 100644
+--- a/src/x11.h
++++ b/src/x11.h
+@@ -45,6 +45,16 @@ typedef struct {
+   Atom NET_WM_WINDOW_TYPE_UTILITY;
+   Atom TARGETS;
+   Atom text_uri_list;
++  Atom XdndAware;
++  Atom XdndEnter;
++  Atom XdndPosition;
++  Atom XdndStatus;
++  Atom XdndDrop;
++  Atom XdndFinished;
++  Atom XdndLeave;
++  Atom XdndSelection;
++  Atom XdndTypeList;
++  Atom XdndActionCopy;
+ } PuglX11Atoms;
+ 
+ typedef struct {

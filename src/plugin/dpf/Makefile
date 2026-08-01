@@ -41,4 +41,7 @@ include $(DPF_PATH)/Makefile.plugins.mk
 BUILD_CXX_FLAGS += -I$(CURDIR)/../..
 BUILD_CXX_FLAGS := $(filter-out -std=gnu++11,$(BUILD_CXX_FLAGS)) -std=gnu++17
 
-all: jack
+# Plugin formats, not just the standalone. DPF builds whichever of these the
+# host toolchain supports; the standalone stays first so a plain `make` still
+# produces something runnable.
+all: jack lv2 vst3 clap
