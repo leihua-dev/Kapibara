@@ -71,6 +71,44 @@ uint32_t KapibaraUI::adoptStripInsert(int fromTrackIdx, int insIdx, synth::Sourc
         return newNode;
     }
 
+// A per-voice filter NODE is global — perVoiceNodeId ignores the track id — while
+// the filter params and the slot count live per track. + COMPONENT provisions
+// every track in one go, so the two normally stay in step; a track that arrived
+// afterwards, or a rack restored from a preset whose tracks disagree, sits at a
+// lower count than the node the board is still drawing. The chain walk used to
+// break there, which is the per-voice twin of the adopted-insert problem: the
+// wire draws, the node hit-tests, and the signal silently never enters it.
+// Provision on demand instead, copying the params from a track that already owns
+// the slot so the filter behaves like the one the user is looking at.
+bool KapibaraUI::ensurePerVoiceFilterSlot(synth::SourceTrackParams &track, int fi)
+{
+        if(fi < 0 || fi >= synth::kMaxPerVoiceFilters)
+            return false;
+        if(fi < track.perVoiceFilterCount)
+            return true;
+        for(int s = track.perVoiceFilterCount; s <= fi; ++s)
+        {
+            const synth::SourceFilterParams *src = nullptr;
+            for(const auto &other : generator_.tracks)
+                if(&other != &track && s < other.perVoiceFilterCount)
+                { src = &other.perVoiceFilters[(size_t)s]; break; }
+            if(src != nullptr)
+            {
+                track.perVoiceFilters[(size_t)s] = *src;
+                continue;
+            }
+            // Nobody owns it yet: same seed addPerVoiceFilterSlot uses, so a
+            // wired-in filter is never the silent 1-pole with no resonance.
+            synth::SourceFilterParams f;
+            f.enabled = true;
+            f.topology = synth::SourceFilterTopology::TwoPoleStateVariable;
+            f.cutoffHz = 1200.0f; f.resonance = 0.2f; f.drive = 1.0f; f.mix = 1.0f;
+            track.perVoiceFilters[(size_t)s] = f;
+        }
+        track.perVoiceFilterCount = fi + 1;
+        return true;
+    }
+
 void KapibaraUI::rebuildSelectedPerVoiceRouteFromWires()
 {
         // Nodes from which MASTER is forward-reachable (reverse closure from
@@ -147,7 +185,7 @@ void KapibaraUI::rebuildSelectedPerVoiceRouteFromWires()
                     const int local = perVoiceLocalId(dest);
                     if(local <= 0) break;
                     const int fi = local - 1;
-                    if(fi >= track.perVoiceFilterCount || fi >= synth::kMaxPerVoiceFilters) break;
+                    if(!ensurePerVoiceFilterSlot(track, fi)) break;
                     if(filterSeen[(size_t)fi]) break;
                     filterSeen[(size_t)fi] = true;
                     filterOrder[(size_t)filterOrderCount++] = uint8_t(fi);

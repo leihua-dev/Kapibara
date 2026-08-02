@@ -4,6 +4,67 @@ START_NAMESPACE_DISTRHO
 
 using namespace routeui;
 
+// A preset with no `modern` section carries no router at all. Inheriting the
+// previous patch's graph left the rack incoherent — wires into components this
+// patch does not have, output ports held by references nothing draws — so the
+// components that DID load could not be wired until some unrelated edit
+// rewrote the leftovers. Reset it and lay down the path the pre-router engine
+// actually ran, so nothing is inherited and nothing comes up silent.
+void KapibaraUI::resetRouterGraphToDefaultChains()
+{
+        routeWires_.clear();
+        routeNodePositions_.clear();
+        nodeOutPortCount_.clear();
+        structUtilCount_.clear();
+        structUtilParams_.clear();
+        structNodePos_.clear();
+        structWires_.clear();
+        stripGroups_.clear();
+        ampEnvRouteNodeSlots_.fill(255);
+        routeWireDraft_ = {};
+        selectedWireIdx_ = -1;
+        selectedSectionValid_ = false;
+        selectedGroupView_ = -1;
+        focusedNodeId_ = 0;
+
+        const auto link = [&](const synth::GridPortRef &from, const synth::GridPortRef &to) {
+            synth::GridWire w;
+            w.from = from;
+            w.to = to;
+            // No points: the visual path is recomputed from live port positions
+            // every frame, the same as wires parsed out of a preset.
+            routeWires_.push_back(std::move(w));
+        };
+        // Per-voice filter nodes are shared by the whole rack and the linear chain
+        // walk only ever leaves one by output port 1, so they cannot fan out to a
+        // separate strip chain per track. With a single source there is no
+        // contention and the filter the plugin migrates out of a legacy
+        // `strip.filter` belongs in the path; past that the default runs straight
+        // into each track's own inserts and the filters are left to be wired
+        // deliberately.
+        const bool useFilters = generator_.tracks.size() == 1;
+        for(const auto &t : generator_.tracks)
+        {
+            synth::GridPortRef cursor { sourceRouterNodeId(t.id), 0 };
+            if(useFilters)
+                for(int fi = 0; fi < clampi(t.perVoiceFilterCount, 0, synth::kMaxPerVoiceFilters); ++fi)
+                {
+                    const uint32_t node = perVoiceNodeId(t.id, fi + 1);
+                    link(cursor, { node, 0 });
+                    cursor = { node, 1 };
+                }
+            for(size_t ii = 0; ii < t.inserts.size() && ii < size_t(synth::kMaxStripInserts); ++ii)
+            {
+                const uint32_t node = stripNodeId(t.id, int(ii) + 1);
+                link(cursor, { node, 0 });
+                cursor = { node, 1 };
+            }
+            link(cursor, { masterNodeId(), 0 });
+        }
+        pushGroups();
+        rebuildSelectedPerVoiceRouteFromWires();
+    }
+
 void KapibaraUI::cleanupRouteGraphForCurrentTracks()
 {
         for(const auto &wire : routeWires_)
@@ -73,8 +134,24 @@ void KapibaraUI::cleanupRouteGraphForCurrentTracks()
         // Strip nodes are user-managed: their wires are only removed when the node is
         // explicitly deleted, NOT when the source track disappears. This prevents a source
         // deletion from silently disconnecting the downstream effects chain.
+        //
+        // That exemption must not extend to a strip node whose INSERT is gone, which
+        // is what a blanket `return false` did. Nothing draws such a node, so the wire
+        // is invisible — while it still holds its upstream node's single output port,
+        // still feeds createsCycle, and still counts toward componentOutPortCount,
+        // which stacks phantom output dots and shifts every real one off the pixel the
+        // user is aiming at. That is the "component will not connect until I wire
+        // something else first" case: the other edit rewrote the stale wire and the
+        // dots snapped back. Deleting a source still leaves other tracks' inserts
+        // alone, so the original intent survives — only genuinely dangling refs go.
+        //
+        // MASTER is tested first: it satisfies isStripNode, and putting it through
+        // insertExists resolves to "gone" and would erase every wire reaching output.
         const auto shouldAutoClean = [&](uint32_t nodeId) {
-            if(isStripNode(nodeId)) return false;
+            if(nodeId == masterNodeId())
+                return false;
+            if(isStripNode(nodeId))
+                return !insertExists(stripTrackId(nodeId), stripLocalId(nodeId));
             return !nodeValid(nodeId);
         };
         routeWires_.erase(std::remove_if(routeWires_.begin(), routeWires_.end(),
@@ -356,10 +433,30 @@ bool KapibaraUI::handleRouteGraphClick(float x, float y)
         const auto portCenter = [](const Rect &r) {
             return synth::GridPoint { int(std::round(r.x + r.w * 0.5f)), int(std::round(r.y + r.h * 0.5f)) };
         };
+        // Ports are checked before nodes, but NOT simply in registration order.
+        // The drag collision resolver parks a node's left edge exactly on its
+        // neighbour's right edge, which drops that neighbour's OUTPUT dot pixel
+        // for pixel onto this node's INPUT dot. First-hit-wins then restarted the
+        // draft instead of completing the wire, so the two nodes could not be
+        // connected at all until one was dragged away — the same click succeeding
+        // or failing purely on where the nodes had come to rest. With a draft in
+        // flight an input port outranks any output port sharing the pixel.
+        const RoutePortHit *sel = nullptr;
         for(const auto &hit : routePortHits_)
         {
             if(!hit.rect.contains(x, y))
                 continue;
+            if(sel == nullptr)
+                sel = &hit;
+            if(routeWireDraft_.active && !hit.output)
+            {
+                sel = &hit;
+                break;
+            }
+        }
+        if(sel != nullptr)
+        {
+            const RoutePortHit &hit = *sel;
             if(hit.output)
             {
                 routeWireDraft_.active = true;

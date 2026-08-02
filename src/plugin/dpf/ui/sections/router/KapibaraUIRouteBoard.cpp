@@ -82,14 +82,21 @@ void KapibaraUI::drawStripGrid(const Rect &r)
         beginPath(); ellipse(masterIn.x + 4.0f, masterIn.y + 4.0f, 4.0f, 4.0f);
         fillColor(rgba(0xffc857ff)); fill();
 
-        const auto portCenterFor = [&](const synth::GridPortRef &port, synth::GridPoint fallback) {
+        const auto portCenterLookup = [&](const synth::GridPortRef &port, synth::GridPoint &out) {
             for(const auto &hit : routePortHits_)
                 if(samePort(hit.port, port))
-                    return synth::GridPoint {
+                {
+                    out = synth::GridPoint {
                         int(std::round(hit.rect.x + hit.rect.w * 0.5f)),
                         int(std::round(hit.rect.y + hit.rect.h * 0.5f))
                     };
-            return fallback;
+                    return true;
+                }
+            return false;
+        };
+        const auto portCenterFor = [&](const synth::GridPortRef &port, synth::GridPoint fallback) {
+            synth::GridPoint p {};
+            return portCenterLookup(port, p) ? p : fallback;
         };
         renderedWirePaths_.clear();
         renderedWireIndices_.clear();
@@ -107,8 +114,10 @@ void KapibaraUI::drawStripGrid(const Rect &r)
             for(size_t i = 0; i < routeWires_.size(); ++i)
             {
                 const auto &w = routeWires_[i];
-                if(w.points.size() != 2) continue; // empty or manually-routed → leave alone
-                const auto start = portCenterFor(w.from, w.points.front());
+                if(w.points.size() > 2) continue; // manually-routed → leave alone
+                                                  // (empty = parsed from a preset, still auto)
+                const auto start = portCenterFor(w.from, w.points.empty() ? synth::GridPoint {}
+                                                                          : w.points.front());
                 auto it = std::find_if(groups.begin(), groups.end(),
                                        [&](const auto &g) { return samePort(g.first, w.to); });
                 if(it == groups.end()) groups.push_back({ w.to, { { i, start.y } } });
@@ -132,9 +141,24 @@ void KapibaraUI::drawStripGrid(const Rect &r)
         size_t wireListIdx = 0;
         for(const auto &w : routeWires_)
         {
-            if(w.points.empty()) { ++wireListIdx; continue; }
-            const auto start = portCenterFor(w.from, w.points.front());
-            const auto end   = portCenterFor(w.to,   w.points.back());
+            // A wire parsed out of a preset carries NO points — the `mwire` line
+            // stores the two port refs and nothing else, and the path is meant to
+            // be recomputed from live port positions anyway. Skipping those left
+            // every preset-loaded wire invisible, unselectable and undeletable,
+            // while it still held its source's single output port and still
+            // matched the duplicate-wire test — so re-drawing the connection by
+            // hand was silently swallowed and the pair looked unconnectable until
+            // something else freed that port.
+            synth::GridPoint start {}, end {};
+            const bool haveStart = portCenterLookup(w.from, start);
+            const bool haveEnd   = portCenterLookup(w.to,   end);
+            if(!haveStart || !haveEnd)
+            {
+                // Neither a live port nor a stored path: nothing to draw.
+                if(w.points.empty()) { ++wireListIdx; continue; }
+                if(!haveStart) start = w.points.front();
+                if(!haveEnd)   end   = w.points.back();
+            }
 
             std::vector<synth::GridPoint> points;
             if(w.points.size() > 2)
