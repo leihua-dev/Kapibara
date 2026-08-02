@@ -35,10 +35,31 @@ constexpr int InsertConvReverb = synth::InsertConvReverb;
 constexpr int InsertMultiband = synth::InsertMultiband;
 constexpr int kInsertTypeCount = 8; // filter,dist,eq,comp,delay,reverb,IR,multiband (kind 1..8)
 
+// Indexed by InsertFilterAlgo, so it keeps an entry per enum value. The three
+// allpass values share one label: section count is a parameter now (apStages),
+// not a type, so "APF 4" was naming a number the disperser editor already shows.
 constexpr int kFilterAlgoCount = 12;
 constexpr const char *kFilterAlgoNames[] = {
-    "LP 12","HP 12","BP 12","Notch","APF 2","APF 4","APF 8",
+    "LP 12","HP 12","BP 12","Notch","APF","APF","APF",
     "Peak","Lo Shelf","Hi Shelf","LP 24","HP 24"
+};
+
+// What the picker offers — one AP row, not three. AP4/AP8 stay in the enum
+// because FilterSlotParams is serialised as a raw POD blob (hexPod) with no
+// version tag of its own: renumbering would silently turn every saved APF 4
+// into a Peak and every APF 8 into a Lo Shelf. They remain fully loadable and
+// map onto this row; only new selections write AP2 + an explicit apStages.
+static_assert(sizeof(kFilterAlgoNames) / sizeof(kFilterAlgoNames[0]) == kFilterAlgoCount,
+              "kFilterAlgoNames is indexed by InsertFilterAlgo: add a label per enum value");
+
+constexpr int kFilterAlgoMenuCount = 10;
+constexpr synth::InsertFilterAlgo kFilterAlgoMenu[kFilterAlgoMenuCount] = {
+    synth::InsertFilterAlgo::LP2,   synth::InsertFilterAlgo::HP2,
+    synth::InsertFilterAlgo::BP2,   synth::InsertFilterAlgo::Notch,
+    synth::InsertFilterAlgo::AP2,
+    synth::InsertFilterAlgo::Peak,  synth::InsertFilterAlgo::LowShelf,
+    synth::InsertFilterAlgo::HighShelf,
+    synth::InsertFilterAlgo::LP4,   synth::InsertFilterAlgo::HP4
 };
 
 constexpr int kDistAlgoCount = 8;
@@ -187,7 +208,8 @@ enum class DragTarget
     LayoutVSplit, LayoutRackSplit, LayoutStripSplit,
     StripScroll, ModEntryDepth,
     FxInsertKnob,
-    DisperserStageFreq, DisperserStageQ,
+    DisperserStageFreq, DisperserStageQ, DisperserSlotDrive, DisperserSlotFb,
+    DisperserSlotOct, DisperserSlotQ,
     ModSyncDiv, UiTempo
 };
 
@@ -631,7 +653,7 @@ inline void fxKnobSetNorm(InsertEffect &e, int i, float n)
                 case 1: f.resonance = 0.05f + n * 9.95f; break;
                 case 2: f.drive = 1.0f + n * 15.0f; break;
                 case 3: f.mix = n; break;
-                // Disperser row (allpass algos only). Spread/Pinch/Curve are
+                // Cascade row, live for every filter algo. Spread/Pinch/Curve are
                 // generators: turning one re-draws the whole distribution from
                 // the macros, discarding hand edits the way a shape preset does.
                 case 4: f.apStages = uint8_t(1 + int(n * float(synth::kMaxDisperserStages - 1) + 0.5f)); break;

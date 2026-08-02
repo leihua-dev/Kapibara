@@ -96,7 +96,7 @@ bool KapibaraUI::handleInsertMenuClick(float x, float y)
 
 int KapibaraUI::fxModeCount(int kind) const
 {
-        if(kind == InsertFilter) return kFilterAlgoCount;
+        if(kind == InsertFilter) return kFilterAlgoMenuCount;
         if(kind == InsertDist)   return kDistAlgoCount;
         if(kind == InsertDelay)  return 2; // Stereo / PingPong
         if(kind == InsertConvReverb) return int(irFiles_.size());
@@ -105,7 +105,8 @@ int KapibaraUI::fxModeCount(int kind) const
 
 const char *KapibaraUI::fxModeName(int kind, int i)
 {
-        if(kind == InsertFilter) return kFilterAlgoNames[i];
+        if(kind == InsertFilter)
+            return kFilterAlgoNames[int(kFilterAlgoMenu[clampi(i, 0, kFilterAlgoMenuCount - 1)])];
         if(kind == InsertDist)   return kDistAlgoNames[i];
         if(kind == InsertDelay)  { static const char *D[2] = { "Stereo", "PingPong" }; return D[i]; }
         if(kind == InsertConvReverb) return (i >= 0 && i < int(irFiles_.size())) ? irFiles_[(size_t)i].first.c_str() : "";
@@ -114,7 +115,17 @@ const char *KapibaraUI::fxModeName(int kind, int i)
 
 int KapibaraUI::fxCurrentMode(const InsertEffect &ins, int kind)
 {
-        if(kind == InsertFilter) return int(ins.filter.algo);
+        if(kind == InsertFilter)
+        {
+            // A legacy AP4/AP8 has no row of its own; it reports as the AP row so
+            // the menu opens on the right entry instead of falling back to LP 12.
+            const auto algo = synth::isAllpassAlgo(ins.filter.algo) ? synth::InsertFilterAlgo::AP2
+                                                                    : ins.filter.algo;
+            for(int i = 0; i < kFilterAlgoMenuCount; ++i)
+                if(kFilterAlgoMenu[i] == algo)
+                    return i;
+            return 0;
+        }
         if(kind == InsertDist)   return int(ins.dist.algo);
         if(kind == InsertDelay)  return ins.delay.pingpong ? 1 : 0;
         if(kind == InsertConvReverb)
@@ -171,7 +182,19 @@ void KapibaraUI::commitModeMenuSelection()
         const int rows = std::min(fxModeCount(modeMenuKind_), int(modeMenuRects_.size()));
         const int i = clampi(modeMenuSelectedIndex_, 0, std::max(0, rows - 1));
         auto &ins = (*chain)[(size_t)modeMenuInsertIdx_];
-        if(modeMenuKind_ == InsertFilter)     ins.filter.algo = static_cast<synth::InsertFilterAlgo>(i);
+        if(modeMenuKind_ == InsertFilter)
+        {
+            const auto next = kFilterAlgoMenu[clampi(i, 0, kFilterAlgoMenuCount - 1)];
+            // Choosing AP pins an EXPLICIT section count. apStages == 0 means
+            // "derive from the algo", which for AP2 is one section — so picking
+            // AP on a legacy AP8 patch would quietly collapse four sections into
+            // one. Resolve what is playing right now, before the algo changes,
+            // and write it down. Coming from a non-allpass this resolves to 1,
+            // exactly what the old "APF 2" entry gave.
+            if(synth::isAllpassAlgo(next) && ins.filter.apStages == 0)
+                ins.filter.apStages = uint8_t(synth::disperserSections(ins.filter));
+            ins.filter.algo = next;
+        }
         else if(modeMenuKind_ == InsertDist)  ins.dist.algo = static_cast<synth::InsertDistAlgo>(i);
         else if(modeMenuKind_ == InsertDelay) ins.delay.pingpong = (i == 1);
         else if(modeMenuKind_ == InsertConvReverb && i < int(irFiles_.size()))

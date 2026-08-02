@@ -9,6 +9,17 @@ bool KapibaraUI::onScroll(const ScrollEvent &ev)
         // Wheel scroll for the MATRIX card list. Never mid-drag: shifting card
         // rects under an active gesture retargets it. The list rect is zeroed
         // whenever another branch overdraws the view.
+        // Slot list. Same rule as below: never while a gesture is live, or the
+        // rows shift out from under it.
+        if(dragTarget_ == DragTarget::None
+           && disperserSlotListRect_.w > 0.0f && disperserSlotListRect_.contains(x, y))
+        {
+            disperserSlotScroll_ = clampf(disperserSlotScroll_
+                                              - static_cast<float>(ev.delta.getY()) * 44.0f,
+                                          0.0f, disperserSlotMaxScroll_);
+            repaint();
+            return true;
+        }
         if(dragTarget_ == DragTarget::None
            && matrixRoutesListRect_.w > 0.0f && matrixRoutesListRect_.contains(x, y))
         {

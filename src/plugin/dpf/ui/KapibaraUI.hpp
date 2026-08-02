@@ -164,6 +164,9 @@ class KapibaraUI final : public KapibaraUIDrawing
     void drawInsertPanel(const Rect &p, InsertEffect &e, int trackId, int mergeIdx, int insertIdx);
     static bool fxHasGraph(int kind);
     static float biquadMagnitude(const synth::BiquadCoeffs &c, float w);
+    // Complex H(e^jw) of ONE biquad (stages ignored). Parallel bands add as
+    // vectors, so their curve cannot be built from magnitudes.
+    static void biquadResponse(const synth::BiquadCoeffs &c, float w, float &re, float &im);
     static float biquadPhase(const synth::BiquadCoeffs &c, float w);
     static synth::BiquadCoeffs sourceFilterBiquad(const synth::SourceFilterParams &f, double sampleRate);
     void drawSourceFilterGraph(const Rect &g, const synth::SourceFilterParams &f, bool phase);
@@ -173,6 +176,11 @@ class KapibaraUI final : public KapibaraUIDrawing
     // fx/KapibaraUIDisperserEditor
     void drawDisperserStageGraph(const Rect &g, const synth::FilterSlotParams &fs, int selStage);
     void drawDisperserEditor(const Rect &r, InsertEffect &e, int trackId, int mergeIdx, int insertIdx);
+    void drawDisperserSlotList(const Rect &r, synth::FilterSlotParams &fs, int sections);
+    // Is the focused node a strip insert that happens to be a filter? Decides
+    // whether the top tab row reads CONTROL/SLOTS or the generic DETAIL.
+    bool focusedInsertIsFilter();
+    void drawFilterResponsePair(const Rect &r, const synth::FilterSlotParams &fs);
     bool handleDisperserEditorPress(float x, float y);
     void applyDisperserDrag(float x, float y);
     void clearDisperserRects();
@@ -184,6 +192,8 @@ class KapibaraUI final : public KapibaraUIDrawing
     bool handleModColumnClick(float x, float y);
     bool handleModEditorClick(float x, float y);
     uint32_t adoptStripInsert(int fromTrackIdx, int insIdx, synth::SourceTrackParams &to);
+    bool ensurePerVoiceFilterSlot(synth::SourceTrackParams &track, int fi);
+    void resetRouterGraphToDefaultChains();
     void openModSourceMenu(int trackId, int slot, float x, float y);
     void drawModSourceMenu();
     bool modSourceCausesCycleFor(int selfIdx, int cand) const;
@@ -476,6 +486,12 @@ class KapibaraUI final : public KapibaraUIDrawing
                                            int oct, int sem, float fin, float crs);
     static Kwt2PackedBin packKwtBin(float amp, float phase);
     static synth::WavetableHarmonic unpackKwtBin(const Kwt2PackedBin &bin, int index);
+    // Preset-embedded wavetable frames: base64 of KWT2-packed bins, trailing
+    // silent bins trimmed. binCountOut == 0 means "nothing worth a line".
+    std::string encodeFrameBins(const synth::WavetableFrameStorage &frames, int frameIndex,
+                                int binLimit, int &binCountOut) const;
+    void decodeFrameBins(synth::WavetableFrameStorage &frames, int frameIndex,
+                         int binCount, const std::string &payload) const;
     void applyFramePreset(int preset);
 
     #include "state/KapibaraUIState.hpp"

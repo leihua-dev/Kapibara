@@ -75,6 +75,20 @@ struct FilterSlotParams
     uint8_t apCustom = 0;
     std::array<float, kMaxDisperserStages> apOct {};   // octaves off the cutoff
     std::array<float, kMaxDisperserStages> apQMul {};  // x the resonance knob
+    // Serial stacks only shape phase without saturating; magnitude types need
+    // their sections side by side instead — parallel bandpasses are a formant
+    // bank, parallel in series is silence. Zero-init is the historic serial
+    // chain at unity, so an old preset's blob tail still means exactly nothing.
+    uint8_t apParallel = 0;                             // 0 = chain, 1 = summed
+    std::array<float, kMaxDisperserStages> apGainDb {}; // per-band trim, parallel only
+    // Per-slot voicing: the cascade stops being N copies of one filter and
+    // becomes a chain of N configurable ones. Every field uses 0 to mean "as
+    // before", so a zero-init tail — which is what an old preset's blob decodes
+    // to — is byte-for-byte the behaviour these arrays replace.
+    std::array<uint8_t, kMaxDisperserStages> apAlgo {};   // 0 = inherit fs.algo, else algo+1
+    std::array<uint8_t, kMaxDisperserStages> apDist {};   // 0 = clean, else InsertDistAlgo+1
+    std::array<uint8_t, kMaxDisperserStages> apDrive {};  // 0..255 -> drive 1..16
+    std::array<uint8_t, kMaxDisperserStages> apFb {};     // 0..255 -> feedback 0..0.99
 };
 
 // Unit-domain bend, same family as the modulation curves: c>0 pushes the
@@ -93,21 +107,70 @@ constexpr float kDisperserMaxOct = 4.0f;
 constexpr float kDisperserMinQMul = 0.1f;
 constexpr float kDisperserMaxQMul = 8.0f;
 
-inline int disperserSections(const FilterSlotParams &fs)
+// The cascade depth an algo ships with when apStages says nothing. This is also
+// the line the resonance guard below keys off: at or under it the filter is
+// exactly what it always was.
+inline int naturalSections(InsertFilterAlgo a)
 {
-    if(fs.apStages != 0)
-        return fs.apStages < kMaxDisperserStages ? int(fs.apStages) : kMaxDisperserStages;
-    switch(fs.algo)
+    switch(a)
     {
-        case InsertFilterAlgo::AP4: return 2;
+        case InsertFilterAlgo::AP4:
+        case InsertFilterAlgo::LP4:
+        case InsertFilterAlgo::HP4: return 2;
         case InsertFilterAlgo::AP8: return 4;
         default: return 1;
     }
 }
 
+inline int disperserSections(const FilterSlotParams &fs)
+{
+    if(fs.apStages != 0)
+        return fs.apStages < kMaxDisperserStages ? int(fs.apStages) : kMaxDisperserStages;
+    return naturalSections(fs.algo);
+}
+
 inline bool isAllpassAlgo(InsertFilterAlgo a)
 {
     return a == InsertFilterAlgo::AP2 || a == InsertFilterAlgo::AP4 || a == InsertFilterAlgo::AP8;
+}
+
+// Which algos a SERIAL stack is musical for, i.e. which ones get the cascade
+// controls. Phase shaping does not saturate — every allpass section adds group
+// delay that is still audible at 32 — and serial notches spread apart are a real
+// comb. Magnitude shaping does saturate: measured on a lowpass, going from 4 to
+// 32 identical sections moves the stopband from -49 dB to -779 dB, which is the
+// same silence twice, while the corner quietly slides down. Worse, serial
+// bandpasses cancel to nothing (32 sections with spread measured rms 0.0000).
+// Those types need PARALLEL sections, not more of them in a row.
+inline bool isCascadeAlgo(InsertFilterAlgo a)
+{
+    return isAllpassAlgo(a) || a == InsertFilterAlgo::Notch;
+}
+
+// Identical RESONANT sections multiply their peaks: N of them at Q each reach
+// roughly Q^N at the cutoff, so 32 stages of a Q=10 lowpass is an explosion, not
+// a filter. An allpass is immune — flat magnitude, nothing to compound — and so
+// is any depth an algo already shipped with. The guard therefore engages only
+// ABOVE naturalSections(), territory no saved preset can be in, which is what
+// keeps every existing patch bit-identical while making deep cascades safe.
+inline float disperserMaxSectionQ(const FilterSlotParams &fs, InsertFilterAlgo algo, int sections)
+{
+    // Parallel sections sum, they do not chain, so nothing compounds — and a
+    // formant bank is exactly a row of narrow, high-Q bands. Only a serial stack
+    // of a magnitude type needs holding back.
+    if(fs.apParallel != 0 || isAllpassAlgo(algo) || sections <= naturalSections(algo))
+        return 10.0f;   // the historic clamp
+    // Hold the whole cascade's resonant peak near +12 dB however deep it goes.
+    // A 2-pole section peaks at Q / sqrt(1 - 1/(4Q^2)), not at Q — treating the
+    // two as equal is only true for large Q and badly under-clamps a deep stack
+    // (32 sections came out +38 dB). Invert that expression for this section's
+    // share of the target: with G^2 = 4Q^4/(4Q^2-1), Q^2 = (G^2 + G*sqrt(G^2-1))/2.
+    constexpr float kCascadePeak = 4.0f;   // +12 dB
+    const float g = std::pow(kCascadePeak, 1.0f / float(sections < 1 ? 1 : sections));
+    if(g <= 1.0f)
+        return 0.70710678f;   // no peak at all below Butterworth Q
+    const float q = std::sqrt((g * g + g * std::sqrt(g * g - 1.0f)) * 0.5f);
+    return q > 10.0f ? 10.0f : q;
 }
 
 // Where one section sits: octaves off the cutoff, and its Q as a multiple of
@@ -122,9 +185,20 @@ inline void disperserStage(const FilterSlotParams &fs, int sections, int k,
         octOut  = fs.apOct[(size_t)i];
         qMulOut = fs.apQMul[(size_t)i];
     }
+    else if(sections <= 1)
+    {
+        // A lone section has no distribution to be part of, so SPREAD / PINCH /
+        // CURVE have nothing to act on and it sits exactly on the filter's own
+        // cutoff and Q. The generic formula put it at t = 0, the BOTTOM of the
+        // spread range — with SPREAD at 1 a "1000 Hz" lowpass actually filtered
+        // at 250 Hz, and PINCH scaled its Q on top. The knob said one thing and
+        // the filter did another, which reads as the cutoff being broken.
+        octOut  = 0.0f;
+        qMulOut = 1.0f;
+    }
     else
     {
-        const float t  = sections > 1 ? float(k) / float(sections - 1) : 0.0f;
+        const float t  = float(k) / float(sections - 1);
         const float xb = apBend01(t, fs.apCurve) - 0.5f;
         octOut  = fs.apSpread * 4.0f * xb;
         qMulOut = 1.0f + fs.apQSpread * 1.5f * xb;
@@ -133,6 +207,96 @@ inline void disperserStage(const FilterSlotParams &fs, int sections, int k,
                                          : (octOut > kDisperserMaxOct ? kDisperserMaxOct : octOut);
     qMulOut = qMulOut < kDisperserMinQMul ? kDisperserMinQMul
                                           : (qMulOut > kDisperserMaxQMul ? kDisperserMaxQMul : qMulOut);
+}
+
+inline int disperserSlotIndex(int k)
+{
+    return k < 0 ? 0 : (k >= kMaxDisperserStages ? kMaxDisperserStages - 1 : k);
+}
+
+// What this slot IS. 0 means "whatever the filter is set to", which is how a
+// preset written before per-slot voicing keeps behaving like one filter.
+inline InsertFilterAlgo disperserSlotAlgo(const FilterSlotParams &fs, int k)
+{
+    const uint8_t v = fs.apAlgo[(size_t)disperserSlotIndex(k)];
+    if(v == 0 || v > uint8_t(InsertFilterAlgo::HP4) + 1)
+        return fs.algo;
+    return InsertFilterAlgo(v - 1);
+}
+
+// Feedback around THIS slot alone. Capped below 1: the loop gain of a single
+// section is what this multiplies, and at 1 it stops being a filter.
+inline float disperserSlotFeedback(const FilterSlotParams &fs, int k)
+{
+    return float(fs.apFb[(size_t)disperserSlotIndex(k)]) * (0.99f / 255.0f);
+}
+
+inline bool disperserSlotDistOn(const FilterSlotParams &fs, int k)
+{
+    return fs.apDist[(size_t)disperserSlotIndex(k)] != 0;
+}
+
+inline InsertDistAlgo disperserSlotDist(const FilterSlotParams &fs, int k)
+{
+    const uint8_t v = fs.apDist[(size_t)disperserSlotIndex(k)];
+    const uint8_t last = uint8_t(InsertDistAlgo::Tanh) + 1;
+    return InsertDistAlgo(v == 0 || v > last ? 0 : v - 1);
+}
+
+inline float disperserSlotDrive(const FilterSlotParams &fs, int k)
+{
+    return 1.0f + float(fs.apDrive[(size_t)disperserSlotIndex(k)]) * (15.0f / 255.0f);
+}
+
+// Has anything been voiced per slot? Once it has, the cascade controls are worth
+// showing whatever the base algo is: STAGES stops meaning "N copies of one
+// filter" and starts meaning "how much of my chain is live".
+inline bool anySlotVoiced(const FilterSlotParams &fs)
+{
+    for(int k = 0; k < kMaxDisperserStages; ++k)
+        if(fs.apAlgo[(size_t)k] != 0 || fs.apDist[(size_t)k] != 0 || fs.apFb[(size_t)k] != 0)
+            return true;
+    return false;
+}
+
+// One section's realised slot: the filter's cutoff/resonance moved to where that
+// section sits in the distribution. Audio thread, response graph and stage editor
+// all go through here, so the drawn cascade is the played one.
+inline FilterSlotParams disperserSectionSlot(const FilterSlotParams &fs, int sections, int k,
+                                             double sampleRate)
+{
+    float oct = 0.0f, qMul = 1.0f;
+    disperserStage(fs, sections, k, oct, qMul);
+    const float nyq = float((sampleRate > 1.0 ? sampleRate : 48000.0) * 0.45);
+    const InsertFilterAlgo algo = disperserSlotAlgo(fs, k);
+    const float maxQ = disperserMaxSectionQ(fs, algo, sections);
+    FilterSlotParams sec = fs;
+    sec.algo = algo;
+    sec.cutoffHz = fs.cutoffHz * std::pow(2.0f, oct);
+    sec.cutoffHz = sec.cutoffHz < 20.0f ? 20.0f : (sec.cutoffHz > nyq ? nyq : sec.cutoffHz);
+    sec.resonance = fs.resonance * qMul;
+    sec.resonance = sec.resonance < 0.05f ? 0.05f : (sec.resonance > maxQ ? maxQ : sec.resonance);
+    return sec;
+}
+
+// A band's level in the parallel sum. Serial sections have no such thing — a
+// gain in a chain is just a level trim that N sections would compound — so it
+// only applies when the sections are side by side.
+inline float disperserSectionGain(const FilterSlotParams &fs, int k)
+{
+    if(fs.apParallel == 0)
+        return 1.0f;
+    const int i = k < 0 ? 0 : (k >= kMaxDisperserStages ? kMaxDisperserStages - 1 : k);
+    return std::pow(10.0f, fs.apGainDb[(size_t)i] / 20.0f);
+}
+
+// Summing N bands needs a headroom rule. 1/sqrt(N) is the incoherent-sum answer:
+// bands spread apart stay near unity, and the worst case — every section landing
+// on the same frequency, where they add coherently — tops out at sqrt(N) instead
+// of N. At one section it is exactly 1, so serial and parallel agree there.
+inline float disperserParallelNorm(int sections)
+{
+    return sections > 1 ? 1.0f / std::sqrt(float(sections)) : 1.0f;
 }
 
 // Freeze the macro shape into the arrays so it can be hand-edited from exactly
@@ -357,13 +521,16 @@ inline float distShape(InsertDistAlgo algo, float x, float drive, float bias)
         case InsertDistAlgo::Diode:    return std::tanh(xb >= 0.0f ? xb : xb * 0.15f);
         case InsertDistAlgo::FoldBack:
         {
-            float v = xb;
-            for(int i = 0; i < 6 && (v > 1.0f || v < -1.0f); ++i)
-            {
-                if(v > 1.0f)  v = 2.0f - v;
-                if(v < -1.0f) v = -2.0f - v;
-            }
-            return v;
+            // Closed-form triangle fold. The old loop gave up after six
+            // reflections and returned whatever was left, so a hot input escaped
+            // the ±1 range entirely: drive 16 on a unit signal came out at 4.
+            // One shaper only sounded a bit loud, but sixteen of them in a slot
+            // chain compounded to 2e14. Wrapping analytically has no iteration
+            // count to run out of, and agrees with the loop everywhere the loop
+            // actually converged.
+            const float t = xb + 1.0f;
+            const float w = t - 4.0f * std::floor(t * 0.25f);   // [0, 4)
+            return w < 2.0f ? w - 1.0f : 3.0f - w;
         }
         case InsertDistAlgo::SineFold: return std::sin(xb * kPi * 0.5f);
         case InsertDistAlgo::BitCrush:
@@ -442,9 +609,24 @@ inline BiquadCoeffs designInsertBiquad(const FilterSlotParams &fs, double sample
             a0 = 1 + alpha; a1 = -2 * cosw0; a2 = 1 - alpha; stages = 2; break;
     }
     BiquadCoeffs c;
-    const float inv = a0 != 0.0f ? 1.0f / a0 : 1.0f;
-    c.b0 = b0 * inv; c.b1 = b1 * inv; c.b2 = b2 * inv;
-    c.a1 = a1 * inv; c.a2 = a2 * inv;
+    if(isAllpassAlgo(fs.algo) && a0 != 0.0f)
+    {
+        // Divide instead of multiplying by the reciprocal, and write b2's exact
+        // value (an allpass numerator is its denominator reversed, so it
+        // normalises to precisely 1). This is the form the hand-written allpass
+        // cascade used before the two filter paths merged. The reciprocal form
+        // lands a ulp off on b0/a2, and an allpass pole sits close enough to the
+        // unit circle that the recursion walks it up to ~-78 dB at a 40 Hz
+        // cutoff — inaudible, but there is no reason to move a saved patch at all.
+        c.b0 = b0 / a0; c.b1 = b1 / a0; c.b2 = 1.0f;
+        c.a1 = a1 / a0; c.a2 = a2 / a0;
+    }
+    else
+    {
+        const float inv = a0 != 0.0f ? 1.0f / a0 : 1.0f;
+        c.b0 = b0 * inv; c.b1 = b1 * inv; c.b2 = b2 * inv;
+        c.a1 = a1 * inv; c.a2 = a2 * inv;
+    }
     c.stages = stages;
     return c;
 }

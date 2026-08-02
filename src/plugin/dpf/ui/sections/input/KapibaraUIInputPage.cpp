@@ -75,6 +75,24 @@ bool KapibaraUI::handlePageClick(float x, float y)
             repaint();
             return true;
         }
+        // The filter slot/stage editor owns its pane outright, and it is claimed
+        // HERE — ahead of every other handler except the modal picker above.
+        // Several handlers further down keep rects that can sit under it (the
+        // focus page tabs, the insert panel's mode button, the bottom layout
+        // strip), and a press that reached one of those switched the whole view
+        // out from under the user instead of editing the slot they clicked.
+        // Nothing inside this rectangle belongs to anyone else.
+        if(disperserEditorRect_.w > 0.0f && disperserEditorRect_.contains(x, y))
+        {
+            // Its own controls first, then the knobs the CONTROL page hosts in
+            // the same rectangle, and only then swallow. Consuming outright left
+            // every knob dead; letting everything through sent stray presses to
+            // handlers that switched the whole view.
+            if(!handleDisperserEditorPress(x, y))
+                handleControlPress(x, y);
+            repaint();
+            return true;
+        }
         // Bottom expand/collapse arrows + draggable MOD-source strip.
         if(handleBottomLayoutPress(x, y))
             return true;

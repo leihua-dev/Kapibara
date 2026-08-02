@@ -77,6 +77,17 @@ void KapibaraUI::drawInsertPanel(const Rect &p, InsertEffect &e, int trackId, in
             fxModeHits_.push_back(FxBtnHit { modeR, trackId, mergeIdx, insertIdx });
             knobsY = p.y + 38.0f;
         }
+        // A focused filter is fully paged: the tabs come first and EVERYTHING
+        // else — knobs included — lives on one page or the other. Nothing floats
+        // above both. Keeping a knob row outside the pages is what kept the
+        // distribution controls parked on top of the slot list.
+        if(fxPanelFocused_ && e.kind == InsertFilter && (p.y + p.h - 5.0f) - knobsY > 120.0f)
+        {
+            drawDisperserEditor({ p.x + 5.0f, knobsY, p.w - 10.0f, p.y + p.h - 5.0f - knobsY },
+                                e, trackId, mergeIdx, insertIdx);
+            return;
+        }
+
         const float kw = (p.w - 12.0f) * 0.25f;
         const float knobH = 44.0f;
         for(int i = 0; i < 4; ++i)
@@ -85,33 +96,10 @@ void KapibaraUI::drawInsertPanel(const Rect &p, InsertEffect &e, int trackId, in
             drawKnob(kr, fxKnobName(e.kind, i), fxKnobNorm(e, i), fxKnobDisp(e, i));
             fxKnobHits_.push_back(FxKnobHit { kr, trackId, mergeIdx, insertIdx, i });
         }
-        // Disperser row: the allpass algos have four more controls, and only
-        // they do — drawing them for a lowpass would be four dead knobs.
-        float extraH = 0.0f;
-        if(e.kind == InsertFilter && synth::isAllpassAlgo(e.filter.algo))
-        {
-            const float row2Y = knobsY + knobH + 4.0f;
-            for(int i = 4; i < 8; ++i)
-            {
-                const Rect kr { p.x + 4.0f + float(i - 4) * (kw + 1.0f), row2Y, kw, knobH };
-                drawKnob(kr, fxKnobName(e.kind, i), fxKnobNorm(e, i), fxKnobDisp(e, i));
-                fxKnobHits_.push_back(FxKnobHit { kr, trackId, mergeIdx, insertIdx, i });
-            }
-            extraH = knobH + 4.0f;
-        }
 
         // Response/transfer graph below the knobs (filter / eq / dist / comp).
-        const float graphTop = knobsY + knobH + 6.0f + extraH;
+        const float graphTop = knobsY + knobH + 6.0f;
         const float graphBot = p.y + p.h - 5.0f;
-        // Focused allpass: the whole pane is free, so the stage distribution
-        // gets drawn as an editable lane instead of a thumbnail response.
-        if(fxPanelFocused_ && e.kind == InsertFilter && synth::isAllpassAlgo(e.filter.algo)
-           && graphBot - graphTop > 150.0f)
-        {
-            drawDisperserEditor({ p.x + 5.0f, graphTop + 8.0f, p.w - 10.0f, graphBot - graphTop - 8.0f },
-                                e, trackId, mergeIdx, insertIdx);
-            return;
-        }
         if(fxHasGraph(e.kind) && graphBot - graphTop > 22.0f)
             drawInsertGraph({ p.x + 5.0f, graphTop, p.w - 10.0f, graphBot - graphTop }, e);
     }
@@ -133,6 +121,20 @@ float KapibaraUI::biquadMagnitude(const synth::BiquadCoeffs &c, float w)
         const float num = std::sqrt(nRe * nRe + nIm * nIm);
         const float m = den > 1e-9f ? num / den : 0.0f;
         return std::pow(m, float(std::max(1, c.stages)));
+    }
+
+void KapibaraUI::biquadResponse(const synth::BiquadCoeffs &c, float w, float &re, float &im)
+{
+        const float cw = std::cos(w), sw = std::sin(w);
+        const float c2 = std::cos(2.0f * w), s2 = std::sin(2.0f * w);
+        const float nRe = c.b0 + c.b1 * cw + c.b2 * c2;
+        const float nIm = -(c.b1 * sw + c.b2 * s2);
+        const float dRe = 1.0f + c.a1 * cw + c.a2 * c2;
+        const float dIm = -(c.a1 * sw + c.a2 * s2);
+        const float d2 = dRe * dRe + dIm * dIm;
+        if(d2 < 1e-18f) { re = 0.0f; im = 0.0f; return; }
+        re = (nRe * dRe + nIm * dIm) / d2;
+        im = (nIm * dRe - nRe * dIm) / d2;
     }
 
 float KapibaraUI::biquadPhase(const synth::BiquadCoeffs &c, float w)
@@ -291,8 +293,28 @@ void KapibaraUI::drawInsertGraph(const Rect &g, const InsertEffect &e)
             // Log-frequency magnitude response, +/-24 dB window.
             synth::BiquadCoeffs eqc[3];
             int nb = 1;
-            synth::BiquadCoeffs single;
-            if(e.kind == InsertFilter) { single = synth::designInsertBiquad(e.filter, sr); }
+            // A filter is a cascade, so its curve is the product over its sections.
+            // Drawing one biquad also under-reported LP4/HP4 as a plain 2-pole:
+            // designInsertBiquad's `stages` was never applied here.
+            synth::BiquadCoeffs sect[synth::kMaxDisperserStages];
+            float sectGain[synth::kMaxDisperserStages];
+            float parNorm = 1.0f;
+            int ns = 0;
+            if(e.kind == InsertFilter)
+            {
+                ns = synth::disperserSections(e.filter);
+                for(int k = 0; k < ns; ++k)
+                {
+                    sect[k] = synth::designInsertBiquad(
+                        synth::disperserSectionSlot(e.filter, ns, k, sr), sr);
+                    // disperserSections() already counts an algo's built-in depth,
+                    // so a section is exactly one biquad here. Leaving `stages` in
+                    // would let biquadMagnitude square LP4's curve on top of it.
+                    sect[k].stages = 1;
+                    sectGain[k] = synth::disperserSectionGain(e.filter, k);
+                }
+                parNorm = synth::disperserParallelNorm(ns);
+            }
             else { synth::designEqBiquads(e.eq, sr, eqc); nb = 3; }
             const float fLo = 20.0f, fHi = 20000.0f;
             const float logLo = std::log10(fLo), logHi = std::log10(fHi);
@@ -303,7 +325,21 @@ void KapibaraUI::drawInsertGraph(const Rect &g, const InsertEffect &e)
                 const float f = std::pow(10.0f, logLo + t * (logHi - logLo));
                 const float w = 2.0f * kPi * f / float(sr);
                 float mag = 1.0f;
-                if(e.kind == InsertFilter) mag = biquadMagnitude(single, w);
+                if(e.kind == InsertFilter && e.filter.apParallel != 0)
+                {
+                    // Bands sum, so their responses add as vectors — a product of
+                    // magnitudes would draw the serial chain this is not.
+                    float re = 0.0f, im = 0.0f;
+                    for(int k = 0; k < ns; ++k)
+                    {
+                        float r1, i1;
+                        biquadResponse(sect[k], w, r1, i1);
+                        re += r1 * sectGain[k];
+                        im += i1 * sectGain[k];
+                    }
+                    mag = std::sqrt(re * re + im * im) * parNorm;
+                }
+                else if(e.kind == InsertFilter) for(int k = 0; k < ns; ++k) mag *= biquadMagnitude(sect[k], w);
                 else for(int b = 0; b < nb; ++b) mag *= biquadMagnitude(eqc[b], w);
                 const float db = 20.0f * std::log10(std::max(1e-4f, mag));
                 const float yn = clampf((db + 24.0f) / 48.0f, 0.0f, 1.0f);

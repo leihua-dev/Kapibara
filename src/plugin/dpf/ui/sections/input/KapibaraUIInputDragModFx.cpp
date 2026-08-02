@@ -165,6 +165,10 @@ bool KapibaraUI::applyModFxLayoutDragValue(float x, float y)
                 break;
             case DragTarget::DisperserStageFreq:
             case DragTarget::DisperserStageQ:
+            case DragTarget::DisperserSlotDrive:
+            case DragTarget::DisperserSlotFb:
+            case DragTarget::DisperserSlotOct:
+            case DragTarget::DisperserSlotQ:
                 applyDisperserDrag(x, y);
                 break;
             case DragTarget::ModEntryDepth:

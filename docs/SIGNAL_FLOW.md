@@ -170,6 +170,56 @@ compressor, delay, reverb, convolution reverb, multiband). Track inserts are
 processed by `SynthCore::renderStripBuses()` after voice accumulation. The
 fixed `Master` node represents the final bus output.
 
+Node ownership differs by kind, and the compile walk provisions on demand rather
+than truncating. A strip insert belongs to exactly one track, so a chain that
+crosses into another track's insert *adopts* it (`adoptStripInsert`, which
+rewrites the node id everywhere it appears). A per-voice filter node is the
+opposite: the node is global (`perVoiceNodeId` ignores the track id) while the
+params and the slot count are per track, so a chain entering a slot the track
+has not provisioned grows that track's `perVoiceFilterCount` and seeds the
+params from a track that already owns the slot (`ensurePerVoiceFilterSlot`).
+Both exist for the same reason — the board draws filter nodes up to the *global*
+max slot count, so a track sitting below it (added after the filter, or restored
+from a preset whose tracks disagree) would otherwise show a wire that hit-tests,
+draws, and silently carries no signal.
+
+## Filter Slots
+
+A filter insert is a chain of up to `kMaxDisperserStages` slots, not one filter
+repeated. `disperserStage()` places each slot (octaves off the cutoff, Q as a
+multiple of the knob) and `apAlgo` / `apDist` / `apDrive` / `apFb` voice it, all
+using 0 to mean "as before" so a zero-init tail is the previous behaviour exactly.
+
+Two rules are not negotiable, both measured:
+
+- **Feedback forces saturation.** An allpass loop is unconditionally stable —
+  `|H| == 1`, so the loop gain is exactly the feedback amount — but a resonant
+  slot has `|H| >> 1` at its peak. A 2-pole lowpass at Q 10 with 0.99 feedback
+  and no saturator ran away to 2.1e9 with a DC offset of -179000; with the
+  saturator it peaks at 1.5 at DC 0.0002. The saturator is applied unconditionally
+  to the fed-back sample, never as a user option.
+- **Asymmetric distortion needs a DC blocker.** Feedback alone is clean (0.97
+  feedback measured DC -0.00002). Tube and Diode are asymmetric by design — that
+  is their even-harmonic character — and leave offsets of 0.48 and 0.86. Over a
+  chain that offset biases every shaper downstream, so each distorting slot runs
+  a ~5 Hz blocker: harmonics kept, offset gone.
+
+Cost is per strip bus, not per voice, which is the only reason this fits: 32
+slots with feedback and distortion on every one measured 3.8% of a core, against
+0.03% for the single-slot filter it generalises. Slots with neither pay nothing —
+both are branch-guarded, and a wholly unvoiced chain takes the original path.
+
+`cleanupRouteGraphForCurrentTracks()` runs once per board frame and drops wires
+whose endpoints no longer resolve. Strip nodes are exempt from the *source
+deleted* case on purpose (deleting one source must not disconnect another
+track's downstream chain), but NOT from a vanished insert: nothing draws such a
+node, so the wire is invisible while it still holds its upstream output port,
+still feeds the cycle check, and still counts toward `componentOutPortCount()` —
+which stacks phantom output dots and shifts every real one off the pixel being
+clicked. MASTER is excluded first, since it satisfies `isStripNode` and would
+otherwise resolve as a vanished insert and take every wire to the output with
+it.
+
 ## Output
 
 Seed tone FX (`dsp/MasterEffects`: 3-band EQ + multi-mode filter) process the

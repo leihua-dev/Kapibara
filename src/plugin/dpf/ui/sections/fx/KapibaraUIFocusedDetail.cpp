@@ -33,6 +33,18 @@ bool KapibaraUI::focusedNodeValid() const
         return false;
     }
 
+bool KapibaraUI::focusedInsertIsFilter()
+{
+        const uint32_t id = focusedNodeId_;
+        if((id & 0xf0000000u) != 0x20000000u || id == 0x2fffffffu)
+            return false;
+        const int tid = int((id & 0x0fffff00u) >> 8u);
+        const int idx = int(id & 0xffu) - 1;
+        auto *chain = insertChainFor(tid, -1);
+        return chain != nullptr && idx >= 0 && idx < int(chain->size())
+               && (*chain)[(size_t)idx].kind == InsertFilter;
+    }
+
 void KapibaraUI::drawFocusedNodeDetail(const Rect &r)
 {
         drawPanel(r, rgba(0x0b1217ff), rgba(0x344852ff));
@@ -41,16 +53,30 @@ void KapibaraUI::drawFocusedNodeDetail(const Rect &r)
         const bool isSourceNode = (focusedNodeId_ & 0xff000000u) == 0x08000000u;
         if(!isSourceNode && focusPage_ == 2)
             focusPage_ = 0;
+        // A focused filter has no generic "detail" — it has a CONTROL page and a
+        // SLOTS page, and those are top-level, not tabs nested inside a tab.
+        const bool isFilterFx = (focusedNodeId_ & 0xf0000000u) == 0x20000000u
+                                && focusedInsertIsFilter();
         const float tabW = 78.0f, tabH = 16.0f;
         focusPageTabRects_[0] = { r.x + 10.0f, r.y + 8.0f, tabW, tabH };
         focusPageTabRects_[1] = { focusPageTabRects_[0].x + tabW + 4.0f, r.y + 8.0f, tabW, tabH };
         focusPageTabRects_[2] = {};
-        drawButton(focusPageTabRects_[0], "DETAIL", focusPage_ == 0);
-        drawButton(focusPageTabRects_[1], "STRUCTURE", focusPage_ == 1);
-        if(isSourceNode)
+        if(isFilterFx)
         {
+            drawButton(focusPageTabRects_[0], "CONTROL", focusPage_ == 0 && disperserPage_ == 0);
+            drawButton(focusPageTabRects_[1], "SLOTS", focusPage_ == 0 && disperserPage_ == 1);
             focusPageTabRects_[2] = { focusPageTabRects_[1].x + tabW + 4.0f, r.y + 8.0f, tabW, tabH };
-            drawButton(focusPageTabRects_[2], "OSC MOD", focusPage_ == 2);
+            drawButton(focusPageTabRects_[2], "STRUCTURE", focusPage_ == 1);
+        }
+        else
+        {
+            drawButton(focusPageTabRects_[0], "DETAIL", focusPage_ == 0);
+            drawButton(focusPageTabRects_[1], "STRUCTURE", focusPage_ == 1);
+            if(isSourceNode)
+            {
+                focusPageTabRects_[2] = { focusPageTabRects_[1].x + tabW + 4.0f, r.y + 8.0f, tabW, tabH };
+                drawButton(focusPageTabRects_[2], "OSC MOD", focusPage_ == 2);
+            }
         }
         ampFocusKnobRects_.fill({});
         clearTrackEditorRects();
@@ -105,7 +131,7 @@ void KapibaraUI::drawFocusedNodeDetail(const Rect &r)
         }
         else if((id & 0xf0000000u) == 0x20000000u)
         {
-            drawSectionTitle(r.x + 184.0f, r.y + 10.0f, "FX DETAIL");
+            drawSectionTitle(r.x + 268.0f, r.y + 10.0f, "FX DETAIL");
             const uint32_t tid = (id & 0x0fffff00u) >> 8u;
             const int idx = int(id & 0xffu) - 1;
             auto *chain = insertChainFor(int(tid), -1);
@@ -129,9 +155,25 @@ bool KapibaraUI::handleFocusedDetailPress(float x, float y)
         if(routeBoardRect_.w > 0.0f && routeBoardRect_.contains(x, y))
             return false;
         if(focusedCloseRect_.contains(x, y)) { focusedNodeId_ = 0; repaint(); return true; }
+        const bool isFilterFx = (focusedNodeId_ & 0xf0000000u) == 0x20000000u
+                                && focusedInsertIsFilter();
         for(int i = 0; i < 3; ++i)
             if(focusPageTabRects_[(size_t)i].w > 0.0f && focusPageTabRects_[(size_t)i].contains(x, y))
-            { focusPage_ = i; repaint(); return true; }
+            {
+                // CONTROL and SLOTS are both the detail page; they differ only in
+                // which half of the filter editor is showing.
+                if(isFilterFx)
+                {
+                    focusPage_ = (i == 2) ? 1 : 0;
+                    if(i < 2) disperserPage_ = i;
+                }
+                else
+                {
+                    focusPage_ = i;
+                }
+                repaint();
+                return true;
+            }
         // OSC MOD diagram page: click a mode chip → mode / remove menu.
         if(focusPage_ == 2 && (focusedNodeId_ & 0xff000000u) == 0x08000000u)
         {

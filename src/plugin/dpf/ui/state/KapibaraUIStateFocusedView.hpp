@@ -11,6 +11,23 @@
     int disperserLaneStages_ = 0;
     int disperserSelStage_ = -1;
     FxKnobHit disperserTarget_ {};   // which insert the lanes edit (knob field unused)
+    // Two pages, because "what each slot IS" and "where the slots SIT" are
+    // different jobs and fight for the same space. SHAPE keeps the response
+    // graph and the distribution lanes; SLOTS is a plain list with no graph at
+    // all, one row per live slot.
+    int disperserPage_ = 0;                  // 0 = shape/distribution, 1 = slots
+    std::array<Rect, 2> disperserPageTabs_ {};
+    // The editor owns this whole area. Without it a press that misses a control
+    // fell through to the generic FX chain, where the insert's mode button
+    // answered instead and the algo menu appeared out of nowhere.
+    Rect disperserEditorRect_ {};
+    Rect disperserVoiceStripRect_ {};        // SHAPE: where something is voiced
+    Rect disperserSlotListRect_ {};          // SLOTS: the whole list body
+    // 32 rows squeezed into one pane leaves each ~12 px, too short to read or
+    // aim at. Rows keep a usable height and the list scrolls instead.
+    float disperserSlotScroll_ = 0.0f;       // px
+    float disperserSlotMaxScroll_ = 0.0f;    // computed at draw
+    float disperserSlotRowH_ = 0.0f;         // computed at draw (hit-test needs it)
     int focusPage_ = 0;             // 0 = detail, 1 = structure (output router), 2 = osc-mod diagram (sources only)
     std::array<Rect, 3> focusPageTabRects_ {};
     Rect structAddOutRect_ {};
