@@ -134,8 +134,9 @@ Legacy preset save/load lives in `KapibaraPlugin`. The UI appends a `modern`
 section to the same file (`saveModernState()` in
 `ui/sections/presets/KapibaraUIPresetState.cpp`) carrying the multi-track
 structure: tracks, per-voice filters, inserts, route graph, merge groups.
-Osc frame data is excluded from the modern section; Partial Bank frame tables
-persist through the `bankframes` / `bankframe` legacy keys.
+Oscillator content (Meta and Partial Bank wavetables) is carried per track as
+base64 KWT2 payloads; see PARAMETER_MODEL.md. The legacy `bankframes` keys hold
+only the single global seed and are not a per-track store.
 
 Wavetables are saved as binary `KWT2` `.kwt` files (frame/bin counts followed
 by packed 16-bit amplitude and phase bins); the loader still accepts the older

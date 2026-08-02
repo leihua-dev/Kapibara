@@ -154,10 +154,10 @@ reader as a full preset, which applies matrix rules and MOD curves only when the
 file actually contains them — so swapping architecture leaves the modulation
 alone by construction rather than by a special case.
 
-Caveat worth knowing: a router preset carries each track's parameters, but
-oscillator *frame data* is not in the modern section, so meta-oscillator
-wavetables come back at their defaults (same limitation as a full preset —
-tables travel as `.kwt` files).
+Caveat worth knowing: a router preset carries each track's parameters but
+deliberately omits oscillator *content*, so meta-oscillator wavetables come back
+at whatever the current patch has. That is the point — a `.krt` swaps
+architecture under a sound. A full preset does carry the tables.
 
 ## Presets And Wavetables
 

@@ -180,8 +180,23 @@ The plugin saves the legacy text preset; the UI appends a `modern` section
 (`ui/sections/presets/KapibaraUIPresetState.cpp`) with the multi-track
 structure: track params/names, per-voice filters, inserts, source mods, route
 graph, merge groups, matrix rules (`mrule`), and mask groups (`mgrp` + `mgt`).
-Osc frame data is not duplicated in the modern section; Partial Bank frames
-persist via the legacy `bankframes` / `bankframe` keys.
+Oscillator **content** is in the modern section too, per track: `mmeta` +
+`mmetaf` for a Meta oscillator, `mpb` + `mpbf` + `mpbp` + `mpbpf` for a Partial
+Bank. It has to be. The legacy `generator` / `bankframes` / `bankframe` /
+`partial` / `frame` keys describe ONE global `wavetableSeed`, which only ever
+reaches a track through `ensureSourceTracksNoLock()` — and that returns early
+the moment a track list exists, so with a modern section present it never runs.
+Since the parsed tracks are default-constructed apart from their `mtrack`
+scalars, assigning them over the live list destroyed every wavetable in the
+patch. Tracks the file says nothing about now inherit their tables from memory,
+matched by track id, so presets written before these tokens still load intact.
+
+Frames are stored as base64 of KWT2-packed bins — the same 16-bit amp/phase
+packing `.kwt` files use — with trailing silent bins trimmed, so a table using
+64 of its 1024 harmonic slots costs 64 bins rather than 1024. A silent frame
+writes no line at all. A payload that fails to decode leaves the frame at its
+default instead of half-filling it. Router presets skip all of this: a `.krt` is
+architecture, and a wavetable is the largest thing in a patch.
 
 Lines grow by appending optional fields at the END, each read with its own
 `if(!(ss >> x)) x = <default>;`. This is not stylistic: since C++11 a failed
@@ -193,6 +208,39 @@ field on the line fails too. `mgrp`'s tail is, in order: `enabled`,
 `msmp` + `msmpf`. The 8 MOD slots (`mslot`/`mslotp`), Chaos (`mchaos`) and Shape
 (`mshape`) are in the modern section too — they were persisted nowhere at all
 before, so every rule and mask group came back referencing a default curve.
+
+A preset with **no** `modern` section carries no router at all, and the loader
+must not fall through keeping the previous patch's graph — that left wires
+pointing into components the new patch does not have, holding output ports that
+nothing draws, so the components that did load could not be wired until some
+unrelated edit rewrote the leftovers. `resetRouterGraphToDefaultChains()` clears
+the graph and lays down what the pre-router engine ran: each source through its
+own insert chain into MASTER. Per-voice filter nodes join that default only when
+there is a single source — they are shared across the rack and the linear walk
+only leaves one by output port 1, so they cannot fan out per track.
+
+An `mwire` line stores the two port refs and nothing else — a wire's drawn path
+is recomputed from live port positions every frame, and `GridWire::points` is
+only a fallback for ports that are not currently on screen plus storage for a
+hand-routed path. The board must therefore render a wire whose `points` is
+**empty**, which is exactly the state every preset-loaded wire is in. Skipping
+those left them invisible, unselectable and undeletable while they still held
+their source's single output port and still matched the duplicate-wire test, so
+redrawing the connection by hand was silently swallowed.
+
+The router's *layout* is a separate concern from its wiring. `mwire` carries the
+top-level connections and `mnp` / `msw` the graph inside a focused node, but
+where the nodes sit on the main board rides `mrnp` (node id, x, y). All of it is
+replaced wholesale on load, never merged: the position map used to survive a
+preset change, so every node id that collided kept the previous patch's
+coordinates while the rest fell back to auto-layout. Merge groups are `msgn`
+(index + name, name last on the line so it may hold spaces) plus one `msgm` per
+member; members are track *indices*, so ones past the restored track list are
+dropped and any group left with fewer than two members goes with them. `maes`
+records which amp env each route-node instance drives, written only for assigned
+slots (255 = unassigned, which is the fill state). `mrnp`, `msgn`, `msgm` and
+`maes` all sit in the structure tail, so a router `.krt` and a full `.mfpreset`
+carry them alike.
 
 A mask group whose base is a wavetable stores only the *track id* of the table
 owner. Since per-track frames are not written to the modern section, such a

@@ -35,7 +35,116 @@ template <typename T> void unhexPod(const std::string &s, T &v)
         static_assert(std::is_trivially_copyable<T>::value, "unhexPod requires a POD struct");
         hexDecode(s, &v, sizeof(T));
 }
+// Wavetable payloads go in base64, not hex: at 1024 bins x 4 bytes a frame,
+// hex's 2x blowup is the difference between a readable preset and a huge one.
+const char *const kB64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+std::string b64Encode(const void *d, size_t n)
+{
+        const unsigned char *p = static_cast<const unsigned char *>(d);
+        std::string s;
+        s.reserve((n + 2) / 3 * 4);
+        for(size_t i = 0; i < n; i += 3)
+        {
+            const unsigned a0 = p[i];
+            const unsigned a1 = (i + 1 < n) ? p[i + 1] : 0u;
+            const unsigned a2 = (i + 2 < n) ? p[i + 2] : 0u;
+            const unsigned v = (a0 << 16) | (a1 << 8) | a2;
+            s.push_back(kB64[(v >> 18) & 0x3f]);
+            s.push_back(kB64[(v >> 12) & 0x3f]);
+            s.push_back(i + 1 < n ? kB64[(v >> 6) & 0x3f] : '=');
+            s.push_back(i + 2 < n ? kB64[v & 0x3f] : '=');
+        }
+        return s;
+}
+// Returns bytes written. Anything unexpected yields a short count, which the
+// caller treats as "corrupt payload, leave the frame alone" — a half-decoded
+// wavetable would be worse than the default one.
+size_t b64Decode(const std::string &s, void *out, size_t maxBytes)
+{
+        static int rev[256];
+        static const bool init = [] {
+            for(int i = 0; i < 256; ++i) rev[i] = -1;
+            for(int i = 0; i < 64; ++i) rev[(unsigned char)kB64[i]] = i;
+            return true;
+        }();
+        (void)init;
+        unsigned char *p = static_cast<unsigned char *>(out);
+        size_t written = 0;
+        unsigned acc = 0;
+        int have = 0;
+        for(const char ch : s)
+        {
+            if(ch == '=') break;
+            const int v = rev[(unsigned char)ch];
+            if(v < 0) return written;   // stray character: stop, report short
+            acc = (acc << 6) | unsigned(v);
+            have += 6;
+            if(have >= 8)
+            {
+                have -= 8;
+                if(written >= maxBytes) return written;
+                p[written++] = (unsigned char)((acc >> have) & 0xff);
+            }
+        }
+        return written;
+}
 } // namespace
+
+// Wavetable frames ride the preset as base64 of KWT2-packed bins — the exact
+// 16-bit amp/phase packing the .kwt files use, so one encoder serves both.
+// Trailing all-zero bins are dropped: a table using 64 of its 1024 harmonic
+// slots stores 64. That trimming is what keeps a multi-track patch from
+// exploding — the legacy text form spent ~6 KB on a frame that was mostly zeros,
+// and that was for ONE global oscillator, not one per track.
+std::string KapibaraUI::encodeFrameBins(const synth::WavetableFrameStorage &frames, int frameIndex,
+                                        int binLimit, int &binCountOut) const
+{
+        binCountOut = 0;
+        if(frameIndex < 0 || frameIndex >= synth::kMaxWavetableFrames)
+            return {};
+        const auto &fp = frames.get()[(size_t)frameIndex];
+        if(!fp)
+            return {};
+        const auto &frame = *fp;
+        const int limit = clampi(binLimit, 1, synth::kMaxWavetableHarmonics);
+        int last = -1;
+        for(int b = 0; b < limit; ++b)
+            if(frame.harmonics[(size_t)b].amp != 0.0f || frame.harmonics[(size_t)b].phase != 0.0f)
+                last = b;
+        if(last < 0)
+            return {};   // silent frame: no line at all
+        const int n = last + 1;
+        std::vector<Kwt2PackedBin> bins((size_t)n);
+        for(int b = 0; b < n; ++b)
+            bins[(size_t)b] = packKwtBin(frame.harmonics[(size_t)b].amp,
+                                         frame.harmonics[(size_t)b].phase);
+        binCountOut = n;
+        return b64Encode(bins.data(), bins.size() * sizeof(Kwt2PackedBin));
+    }
+
+void KapibaraUI::decodeFrameBins(synth::WavetableFrameStorage &frames, int frameIndex,
+                                 int binCount, const std::string &payload) const
+{
+        if(frameIndex < 0 || frameIndex >= synth::kMaxWavetableFrames)
+            return;
+        const int n = clampi(binCount, 0, synth::kMaxWavetableHarmonics);
+        if(n <= 0)
+            return;
+        std::vector<Kwt2PackedBin> bins((size_t)n);
+        const size_t want = bins.size() * sizeof(Kwt2PackedBin);
+        if(b64Decode(payload, bins.data(), want) != want)
+            return;   // corrupt: leave the frame at its default rather than half-fill it
+        auto &arr = frames.ensure();
+        if(!arr[(size_t)frameIndex])
+            arr[(size_t)frameIndex] = std::make_shared<synth::WavetableFrame>();
+        auto &frame = *arr[(size_t)frameIndex];
+        frame.useImportedWaveform = false;
+        frame.waveform.reset();
+        frame.spectrum.reset();
+        frame.harmonics.fill(synth::WavetableHarmonic {});
+        for(int b = 0; b < n; ++b)
+            frame.harmonics[(size_t)b] = unpackKwtBin(bins[(size_t)b], b);
+    }
 
 // Modern-state persistence: the legacy preset (plugin side) doesn't save the
 // multi-track routing/structure, so the UI appends it here and parses it back.
@@ -98,6 +207,61 @@ void KapibaraUI::writeModernState(std::ostream &out, bool structureOnly)
                 // impulse response. A moved file simply comes back empty.
                 if(!sp.samplePath.empty())
                     out << "msmpf " << ti << ' ' << sp.samplePath << "\n";
+            }
+            // Oscillator CONTENT (as opposed to its parameters). Skipped for a
+            // router preset: that file is the architecture, and a wavetable is
+            // the single largest thing in a patch. A full preset must carry it —
+            // without these lines the track list restored below is built from
+            // default-constructed tracks, so loading a preset actively wiped
+            // every Partial Bank and Meta wavetable it was meant to restore.
+            if(!structureOnly && t.type == synth::SourceTrackType::MetaOscillator)
+            {
+                const auto &m = t.metaOsc;
+                out << "mmeta " << ti << ' ' << int(m.enabled) << ' ' << m.ratio << ' ' << m.amp
+                    << ' ' << m.phase << ' ' << m.phaseRandom << ' ' << m.pan << ' ' << m.frameCount
+                    << ' ' << m.morph << ' ' << int(m.warpMode) << ' ' << m.warpAmount
+                    << ' ' << m.pitchOct << ' ' << m.pitchSem << ' ' << m.pitchFin << ' ' << m.pitchCrs << "\n";
+                for(int f = 0; f < clampi(m.frameCount, 1, synth::kMaxWavetableFrames); ++f)
+                {
+                    int bins = 0;
+                    const std::string payload = encodeFrameBins(m.frames, f, synth::kMaxWavetableHarmonics, bins);
+                    if(bins > 0)
+                        out << "mmetaf " << ti << ' ' << f << ' ' << bins << ' ' << payload << "\n";
+                }
+            }
+            if(!structureOnly && t.type == synth::SourceTrackType::PartialBank)
+            {
+                const auto &b = t.partialBank;
+                out << "mpb " << ti << ' ' << b.partialCount << ' ' << int(b.freqShape) << ' '
+                    << b.inharmonicAmount << ' ' << b.frameCount << ' ' << b.morph << "\n";
+                for(int f = 0; f < clampi(b.frameCount, 1, synth::kMaxWavetableFrames); ++f)
+                {
+                    int bins = 0;
+                    // A bank frame maps only the 64 additive partials, not 1024 harmonics.
+                    const std::string payload = encodeFrameBins(b.frames, f, synth::kMaxWavetablePartials, bins);
+                    if(bins > 0)
+                        out << "mpbf " << ti << ' ' << f << ' ' << bins << ' ' << payload << "\n";
+                }
+                for(int i = 0; i < synth::kMaxWavetablePartials; ++i)
+                {
+                    const auto &p = b.partials[(size_t)i];
+                    out << "mpbp " << ti << ' ' << i << ' ' << int(p.enabled) << ' ' << p.ratio
+                        << ' ' << p.amp << ' ' << p.phase << ' ' << p.phaseRandom << ' ' << p.pan
+                        << ' ' << p.frameCount << ' ' << p.morph << ' ' << int(p.warpMode)
+                        << ' ' << p.warpAmount << ' ' << p.pitchOct << ' ' << p.pitchSem
+                        << ' ' << p.pitchFin << ' ' << p.pitchCrs << "\n";
+                    // Only the editable meta partials own frame tables, same bound
+                    // the legacy `frame` key used.
+                    if(i >= synth::kEditableMetaPartials)
+                        continue;
+                    for(int f = 0; f < clampi(p.frameCount, 1, synth::kMaxWavetableFrames); ++f)
+                    {
+                        int bins = 0;
+                        const std::string payload = encodeFrameBins(p.frames, f, synth::kMaxWavetableHarmonics, bins);
+                        if(bins > 0)
+                            out << "mpbpf " << ti << ' ' << i << ' ' << f << ' ' << bins << ' ' << payload << "\n";
+                    }
+                }
             }
             out << "mtname " << ti << ' ' << t.name << "\n";
             for(int s = 0; s < t.perVoiceFilterCount && s < synth::kMaxPerVoiceFilters; ++s)
@@ -207,6 +371,25 @@ void KapibaraUI::writeModernStructureTail(std::ostream &out)
         for(const auto &kv : structWires_)
             for(const auto &w : kv.second)
                 out << "msw " << kv.first << ' ' << w.from.nodeId << ' ' << int(w.from.port) << ' ' << w.to.nodeId << ' ' << int(w.to.port) << "\n";
+        // Top-level board layout. mnp above is the layout INSIDE a focused node;
+        // this is where the nodes sit on the main board. Without it the wires came
+        // back but every node dropped to the auto-layout slot its draw pass hands
+        // to routeNodePositions_.try_emplace, so a hand-arranged rack never
+        // survived a reload.
+        for(const auto &kv : routeNodePositions_)
+            out << "mrnp " << kv.first << ' ' << kv.second.x << ' ' << kv.second.y << "\n";
+        // Merge groups. Name is written last on its line so it may hold spaces.
+        for(size_t gi = 0; gi < stripGroups_.size(); ++gi)
+        {
+            out << "msgn " << gi << ' ' << stripGroups_[gi].name << "\n";
+            for(const int mi : stripGroups_[gi].memberIndices)
+                out << "msgm " << gi << ' ' << mi << "\n";
+        }
+        // Which amp env each route-node instance drives. 255 = unassigned, which
+        // is the fill state, so only real assignments are worth a line.
+        for(int i = 0; i < synth::kMaxAmpEnvRouteNodes; ++i)
+            if(ampEnvRouteNodeSlots_[(size_t)i] != 255)
+                out << "maes " << i << ' ' << int(ampEnvRouteNodeSlots_[(size_t)i]) << "\n";
     }
 
 void KapibaraUI::loadModernState(const std::string &path)
@@ -226,6 +409,10 @@ void KapibaraUI::readModernState(std::istream &in)
         std::unordered_map<uint64_t, synth::RouteUtilParams> utilParams;
         std::unordered_map<uint32_t, std::unordered_map<int, synth::GridPoint>> nodePos;
         std::unordered_map<uint32_t, std::vector<synth::GridWire>> sWires;
+        std::unordered_map<uint32_t, synth::GridPoint> boardPos;
+        std::vector<StripGroup> groups;
+        std::array<uint8_t, synth::kMaxAmpEnvRouteNodes> envSlots {};
+        envSlots.fill(255);
         std::array<synth::MatrixRule, synth::kMaxMatrixRules> parsedRules {};
         std::array<synth::MaskGroup, synth::kMaxMaskGroups> parsedGroups {};
         bool hasRules = false;
@@ -234,6 +421,14 @@ void KapibaraUI::readModernState(std::istream &in)
         synth::ShapeSourceParams parsedShape {};
         bool hasSlots = false;
         const auto ensureTrack = [&](int ti) { if(ti >= 0 && ti >= int(tracks.size())) tracks.resize((size_t)ti + 1); };
+        // Which tracks the file actually described oscillator CONTENT for. A
+        // preset written before those tokens existed lists none, and its tracks
+        // must keep the content already in memory rather than come back empty.
+        std::vector<int> oscSeen;
+        const auto markOsc = [&](int ti) {
+            if(std::find(oscSeen.begin(), oscSeen.end(), ti) == oscSeen.end())
+                oscSeen.push_back(ti);
+        };
         std::string line;
         while(std::getline(in, line))
         {
@@ -557,9 +752,120 @@ void KapibaraUI::readModernState(std::istream &in)
                 synth::GridWire w; w.from = { fn, uint8_t(fp) }; w.to = { tn, uint8_t(tp) };
                 sWires[c].push_back(w);
             }
+            else if(tok == "mmeta")
+            {
+                int ti; ss >> ti; if(ti < 0) continue; ensureTrack(ti);
+                auto &m = tracks[(size_t)ti].metaOsc;
+                int en = 1, warp = 0;
+                ss >> en >> m.ratio >> m.amp >> m.phase >> m.phaseRandom >> m.pan
+                   >> m.frameCount >> m.morph >> warp >> m.warpAmount
+                   >> m.pitchOct >> m.pitchSem >> m.pitchFin >> m.pitchCrs;
+                m.enabled = en != 0;
+                m.warpMode = synth::WavetableWarpMode(warp);
+                markOsc(ti);
+            }
+            else if(tok == "mmetaf")
+            {
+                int ti, f, bins; ss >> ti >> f >> bins; if(ti < 0) continue; ensureTrack(ti);
+                std::string payload; ss >> payload;
+                decodeFrameBins(tracks[(size_t)ti].metaOsc.frames, f, bins, payload);
+                markOsc(ti);
+            }
+            else if(tok == "mpb")
+            {
+                int ti; ss >> ti; if(ti < 0) continue; ensureTrack(ti);
+                auto &b = tracks[(size_t)ti].partialBank;
+                int shape = 0;
+                ss >> b.partialCount >> shape >> b.inharmonicAmount >> b.frameCount >> b.morph;
+                b.freqShape = synth::FreqShape(shape);
+                markOsc(ti);
+            }
+            else if(tok == "mpbf")
+            {
+                int ti, f, bins; ss >> ti >> f >> bins; if(ti < 0) continue; ensureTrack(ti);
+                std::string payload; ss >> payload;
+                decodeFrameBins(tracks[(size_t)ti].partialBank.frames, f, bins, payload);
+                markOsc(ti);
+            }
+            else if(tok == "mpbp")
+            {
+                int ti, i; ss >> ti >> i; if(ti < 0 || i < 0 || i >= synth::kMaxWavetablePartials) continue;
+                ensureTrack(ti);
+                auto &p = tracks[(size_t)ti].partialBank.partials[(size_t)i];
+                int en = 1, warp = 0;
+                ss >> en >> p.ratio >> p.amp >> p.phase >> p.phaseRandom >> p.pan
+                   >> p.frameCount >> p.morph >> warp >> p.warpAmount
+                   >> p.pitchOct >> p.pitchSem >> p.pitchFin >> p.pitchCrs;
+                p.enabled = en != 0;
+                p.warpMode = synth::WavetableWarpMode(warp);
+                markOsc(ti);
+            }
+            else if(tok == "mpbpf")
+            {
+                int ti, i, f, bins; ss >> ti >> i >> f >> bins;
+                if(ti < 0 || i < 0 || i >= synth::kMaxWavetablePartials) continue;
+                ensureTrack(ti);
+                std::string payload; ss >> payload;
+                decodeFrameBins(tracks[(size_t)ti].partialBank.partials[(size_t)i].frames, f, bins, payload);
+                markOsc(ti);
+            }
+            else if(tok == "mrnp") { unsigned id; int x, y; ss >> id >> x >> y; boardPos[id] = { x, y }; }
+            else if(tok == "msgn")
+            {
+                int gi; ss >> gi; if(gi < 0) continue;
+                if(gi >= int(groups.size())) groups.resize((size_t)gi + 1);
+                std::string name; std::getline(ss, name);
+                if(!name.empty() && name.front() == ' ') name.erase(name.begin());
+                groups[(size_t)gi].name = name;
+            }
+            else if(tok == "msgm")
+            {
+                int gi, mi; ss >> gi >> mi; if(gi < 0 || mi < 0) continue;
+                if(gi >= int(groups.size())) groups.resize((size_t)gi + 1);
+                groups[(size_t)gi].memberIndices.push_back(mi);
+            }
+            else if(tok == "maes")
+            {
+                int i, slot; ss >> i >> slot;
+                if(i >= 0 && i < synth::kMaxAmpEnvRouteNodes && slot >= 0 && slot < 256)
+                    envSlots[(size_t)i] = uint8_t(slot);
+            }
         }
-        if(!hasModern) return;
-        if(!tracks.empty()) generator_.tracks = tracks;
+        // No modern section => this patch has no router. Do NOT fall through
+        // keeping the previous one's graph; rebuild a coherent default instead.
+        if(!hasModern)
+        {
+            resetRouterGraphToDefaultChains();
+            return;
+        }
+        // Oscillator content is carried across for any track the file did not
+        // describe. Every preset written before the osc tokens existed lands
+        // here: the parsed tracks are default-constructed apart from the scalars
+        // on their `mtrack` line, so assigning them straight over would silently
+        // destroy the Partial Bank and Meta wavetables the patch is playing —
+        // the load wiping exactly what it was asked to restore. Match by track
+        // id, not index, so a reordered rack still finds its own tables.
+        if(!tracks.empty())
+        {
+            for(size_t i = 0; i < tracks.size(); ++i)
+            {
+                if(std::find(oscSeen.begin(), oscSeen.end(), int(i)) != oscSeen.end())
+                    continue;
+                for(const auto &prev : generator_.tracks)
+                {
+                    if(prev.id != tracks[i].id)
+                        continue;
+                    // `mtrack` carries partialCount even in an old preset, so it
+                    // stays authoritative; only the tables come from memory.
+                    const int pc = tracks[i].partialBank.partialCount;
+                    tracks[i].partialBank = prev.partialBank;
+                    tracks[i].partialBank.partialCount = pc;
+                    tracks[i].metaOsc = prev.metaOsc;
+                    break;
+                }
+            }
+            generator_.tracks = tracks;
+        }
         // Sample audio is not embedded in the preset; re-read each referenced
         // file now that the track list is in place.
         for(auto &t : generator_.tracks)
@@ -587,6 +893,31 @@ void KapibaraUI::readModernState(std::istream &in)
         structUtilParams_ = utilParams;
         structNodePos_ = nodePos;
         structWires_ = sWires;
+        // Replaced wholesale rather than merged. Leaving the previous patch's
+        // entries in place made try_emplace a no-op for every node id that
+        // happened to collide, so a freshly loaded rack came up wearing the old
+        // one's coordinates while the rest fell to defaults. An absent mrnp
+        // section now means "lay it out fresh", not "keep whatever was there".
+        routeNodePositions_ = boardPos;
+        ampEnvRouteNodeSlots_ = envSlots;
+        // Members are track INDICES, so they only mean anything against the track
+        // list restored just above: drop stale ones, then the groups they empty
+        // out (two members minimum, the same invariant the delete path keeps).
+        for(auto &g : groups)
+        {
+            std::vector<int> kept;
+            for(const int mi : g.memberIndices)
+                if(mi >= 0 && mi < int(generator_.tracks.size()))
+                    kept.push_back(mi);
+            g.memberIndices = std::move(kept);
+        }
+        groups.erase(std::remove_if(groups.begin(), groups.end(),
+                                    [](const StripGroup &g) { return g.memberIndices.size() < 2; }),
+                     groups.end());
+        stripGroups_ = std::move(groups);
+        if(selectedGroupView_ >= int(stripGroups_.size()))
+            selectedGroupView_ = -1;
+        pushGroups();
         selectedTrack_ = clampi(selectedTrack_, 0, std::max(0, int(generator_.tracks.size()) - 1));
         // Rules restored before the rebuild so any strip-insert adoption during the
         // rebuild remaps them consistently with the wires.
